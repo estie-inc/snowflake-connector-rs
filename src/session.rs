@@ -57,7 +57,7 @@ pub struct QueryResponse {
     pub query_id: String,
     pub returned: i64,
     pub total: i64,
-    pub rowset: Vec<Vec<String>>,
+    pub rowset: Vec<Vec<Option<String>>>,
     pub rowtype: Vec<QueryResponseRowType>,
 }
 #[derive(Debug, serde::Deserialize)]
