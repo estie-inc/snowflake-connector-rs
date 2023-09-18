@@ -1,10 +1,12 @@
 mod auth;
+mod chunk;
 mod error;
+mod query;
 mod session;
-mod types;
 
 pub use error::{Error, Result};
-pub use session::{QueryRequest, QueryResponse, SnowflakeSession};
+pub use query::{QueryRequest, ResponseRowType};
+pub use session::SnowflakeSession;
 
 use auth::login;
 

@@ -1,6 +1,6 @@
 use reqwest::Client;
 
-use crate::{types::SnowflakeResponse, Error, Result, SnowflakeClientConfig};
+use crate::{Error, Result, SnowflakeClientConfig};
 
 /// Login to Snowflake and return a session token.
 pub(super) async fn login(
@@ -46,8 +46,7 @@ pub(super) async fn login(
         return Err(Error::Communication(body));
     }
 
-    let response: SnowflakeResponse<LoginResponse> =
-        serde_json::from_str(&body).map_err(|_| Error::Communication(body))?;
+    let response: Response = serde_json::from_str(&body).map_err(|_| Error::Communication(body))?;
     if !response.success {
         return Err(Error::Communication(response.message.unwrap_or_default()));
     }
@@ -71,4 +70,11 @@ struct LoginRequestData {
 #[derive(serde::Deserialize)]
 struct LoginResponse {
     token: String,
+}
+
+#[derive(serde:: Deserialize)]
+struct Response {
+    data: LoginResponse,
+    message: Option<String>,
+    success: bool,
 }
