@@ -4,7 +4,7 @@
 ## Connecting to Snowflake
 
 ```rust
-use snowflake_connector::{QueryRequest, SnowflakeClient, SnowflakeClientConfig};
+use snowflake_connector::{SnowflakeClient, SnowflakeClientConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,12 +21,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = SnowflakeClient::new(username, password, config)?;
     let session = client.create_session().await?;
-    let response = session
-        .query(&QueryRequest {
-            sql_text: "SELECT * FROM YOUR_TABLE LIMIT 10".into(),
-        })
-        .await?;
-    eprintln!("{:#?}", response);
+    let (row_types, rows) = session.query("SELECT * FROM your_table").await?;
+    eprintln!("{:#?}", row_types);
+    eprintln!("{:#?}", rows);
 
     Ok(())
 }

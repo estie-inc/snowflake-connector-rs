@@ -1,6 +1,7 @@
 use std::string::FromUtf8Error;
 
 use reqwest::header::InvalidHeaderValue;
+use tokio::task::JoinError;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -33,6 +34,9 @@ pub enum Error {
 
     #[error("utf-8 error: {0}")]
     Utf8Error(#[from] FromUtf8Error),
+
+    #[error("future join error: {0}")]
+    FutureJoin(#[from] JoinError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

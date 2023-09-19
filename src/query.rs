@@ -59,16 +59,31 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         response.data.query_result_format
     );
 
+    let http = http.clone();
+    let qrmk = response.data.qrmk;
+    let chunks = response.data.chunks;
+    let row_types = response.data.row_types;
     let mut row_set = response.data.row_set;
-    let chunk_headers = HeaderMap::try_from(&response.data.chunk_headers)?;
-    for chunk in response.data.chunks.iter() {
-        let rows = download_chunk(http, &chunk.url, &chunk_headers, &response.data.qrmk).await?;
+
+    let chunk_headers: HeaderMap = HeaderMap::try_from(&response.data.chunk_headers)?;
+
+    let mut handles = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let http = http.clone();
+        let chunk_headers = chunk_headers.clone();
+        let qrmk = qrmk.clone();
+        handles.push(tokio::spawn(async move {
+            download_chunk(http, chunk.url, chunk_headers, qrmk).await
+        }));
+    }
+
+    for fut in handles {
+        let result = fut.await?;
+        let rows = result?;
         row_set.extend(rows);
     }
 
-    let row_types = response
-        .data
-        .row_types
+    let row_types = row_types
         .into_iter()
         .map(|row_type| ResponseRowType {
             name: row_type.name,

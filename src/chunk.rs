@@ -10,12 +10,11 @@ const HEADER_SSE_C_KEY: &str = "x-amz-server-side-encryption-customer-key";
 const AES256: &str = "AES256";
 
 pub(crate) async fn download_chunk(
-    client: &reqwest::Client,
-    chunk_url: &str,
-    chunk_headers: &HeaderMap,
-    qrmk: &str,
+    client: reqwest::Client,
+    chunk_url: String,
+    mut headers: HeaderMap,
+    qrmk: String,
 ) -> Result<Vec<Vec<Option<String>>>> {
-    let mut headers = chunk_headers.clone();
     if headers.is_empty() {
         headers.append(HEADER_SSE_C_ALGORITHM, AES256.parse()?);
         headers.append(HEADER_SSE_C_KEY, qrmk.parse()?);
