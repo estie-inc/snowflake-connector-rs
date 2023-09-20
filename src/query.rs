@@ -40,7 +40,7 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
     }
 
     let response: SnowflakeResponse =
-        serde_json::from_str(&body).map_err(|_| Error::Communication(body))?;
+        serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
 
     match response.code.as_ref().map(|s| s.as_str()) {
         Some(SESSION_EXPIRED) => {
@@ -60,12 +60,13 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
     );
 
     let http = http.clone();
-    let qrmk = response.data.qrmk;
-    let chunks = response.data.chunks;
+    let qrmk = response.data.qrmk.unwrap_or_default();
+    let chunks = response.data.chunks.unwrap_or_default();
     let row_types = response.data.row_types;
     let mut row_set = response.data.row_set;
 
-    let chunk_headers: HeaderMap = HeaderMap::try_from(&response.data.chunk_headers)?;
+    let chunk_headers = response.data.chunk_headers.unwrap_or_default();
+    let chunk_headers: HeaderMap = HeaderMap::try_from(&chunk_headers)?;
 
     let mut handles = Vec::with_capacity(chunks.len());
     for chunk in chunks {
@@ -145,11 +146,11 @@ struct RawQueryResponse {
     #[serde(rename = "rowtype")]
     row_types: Vec<RawQueryResponseRowType>,
 
-    chunk_headers: HashMap<String, String>,
+    chunk_headers: Option<HashMap<String, String>>,
 
-    qrmk: String,
+    qrmk: Option<String>,
 
-    chunks: Vec<RawQueryResponseChunk>,
+    chunks: Option<Vec<RawQueryResponseChunk>>,
     query_result_format: String,
 }
 #[derive(Debug, serde::Deserialize)]

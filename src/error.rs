@@ -26,8 +26,8 @@ pub enum Error {
     #[error("io error: {0}")]
     IO(#[from] std::io::Error),
 
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
+    #[error("json parse error: {0} {1}")]
+    Json(serde_json::Error, String),
 
     #[error("base64 decode error: {0}")]
     Base64Decode(#[from] base64::DecodeError),

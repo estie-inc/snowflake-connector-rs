@@ -43,6 +43,11 @@ pub(crate) async fn download_chunk(
     let mut buf = vec![b'['];
     buf.extend(bytes);
     buf.push(b']');
-    let rows: Vec<Vec<Option<String>>> = serde_json::from_slice(&buf)?;
+    let rows: Vec<Vec<Option<String>>> = match serde_json::from_slice(&buf) {
+        Ok(rows) => rows,
+        Err(e) => {
+            return Err(Error::Json(e, String::from_utf8_lossy(&buf).into_owned()));
+        }
+    };
     Ok(rows)
 }
