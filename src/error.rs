@@ -29,14 +29,14 @@ pub enum Error {
     #[error("json parse error: {0} {1}")]
     Json(serde_json::Error, String),
 
-    #[error("base64 decode error: {0}")]
-    Base64Decode(#[from] base64::DecodeError),
-
     #[error("utf-8 error: {0}")]
     Utf8Error(#[from] FromUtf8Error),
 
     #[error("future join error: {0}")]
     FutureJoin(#[from] JoinError),
+
+    #[error("decode error: {0}")]
+    Decode(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
