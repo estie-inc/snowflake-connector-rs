@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use http::{
     header::{ACCEPT, AUTHORIZATION},
@@ -6,7 +6,7 @@ use http::{
 };
 use reqwest::Client;
 
-use crate::{chunk::download_chunk, Error, Result};
+use crate::{chunk::download_chunk, Error, Result, SnowflakeRow};
 
 pub(super) const SESSION_EXPIRED: &str = "390112";
 
@@ -15,7 +15,7 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
     account: &str,
     request: Q,
     session_token: &str,
-) -> Result<(Vec<ResponseRowType>, Vec<Vec<Option<String>>>)> {
+) -> Result<Vec<SnowflakeRow>> {
     let request_id = uuid::Uuid::new_v4();
     let url = format!(
         r"https://{account}.snowflakecomputing.com/queries/v1/query-request?requestId={request_id}"
@@ -84,15 +84,19 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         row_set.extend(rows);
     }
 
-    let row_types = row_types
+    let column_names = row_types
         .into_iter()
-        .map(|row_type| ResponseRowType {
-            name: row_type.name,
-            nullable: row_type.nullable,
-            data_type: row_type.data_type,
+        .enumerate()
+        .map(|(i, name)| (name.name.to_ascii_uppercase(), i))
+        .collect::<HashMap<_, _>>();
+    let column_names = Arc::new(column_names);
+    Ok(row_set
+        .into_iter()
+        .map(|row| SnowflakeRow {
+            row,
+            column_names: Arc::clone(&column_names),
         })
-        .collect();
-    Ok((row_types, row_set))
+        .collect())
 }
 
 #[derive(Debug, serde::Serialize, Clone)]
@@ -119,13 +123,6 @@ impl Into<QueryRequest> for String {
             sql_text: self.to_string(),
         }
     }
-}
-
-#[derive(Debug)]
-pub struct ResponseRowType {
-    pub name: String,
-    pub nullable: bool,
-    pub data_type: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
