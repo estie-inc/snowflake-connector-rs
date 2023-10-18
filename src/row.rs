@@ -33,6 +33,15 @@ impl SnowflakeDecode for u64 {
     }
 }
 
+impl SnowflakeDecode for f64 {
+    fn try_decode(value: &Option<String>) -> Result<Self> {
+        let value = unwrap(value)?;
+        value
+            .parse()
+            .map_err(|_| Error::Decode(format!("'{value}' is not f64")))
+    }
+}
+
 impl SnowflakeDecode for String {
     fn try_decode(value: &Option<String>) -> Result<Self> {
         let value = unwrap(value)?;
