@@ -58,6 +58,15 @@ impl SnowflakeDecode for f64 {
     }
 }
 
+impl SnowflakeDecode for i8 {
+    fn try_decode(value: &Option<String>) -> Result<Self> {
+        let value = unwrap(value)?;
+        value
+            .parse()
+            .map_err(|_| Error::Decode(format!("'{value}' is not i8")))
+    }
+}
+
 impl SnowflakeDecode for String {
     fn try_decode(value: &Option<String>) -> Result<Self> {
         let value = unwrap(value)?;
