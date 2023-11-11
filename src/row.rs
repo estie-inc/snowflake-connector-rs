@@ -32,6 +32,22 @@ impl SnowflakeDecode for u64 {
             .map_err(|_| Error::Decode(format!("'{value}' is not u64")))
     }
 }
+impl SnowflakeDecode for i64 {
+    fn try_decode(value: &Option<String>) -> Result<Self> {
+        let value = unwrap(value)?;
+        value
+            .parse()
+            .map_err(|_| Error::Decode(format!("'{value}' is not i64")))
+    }
+}
+impl SnowflakeDecode for i32 {
+    fn try_decode(value: &Option<String>) -> Result<Self> {
+        let value = unwrap(value)?;
+        value
+            .parse()
+            .map_err(|_| Error::Decode(format!("'{value}' is not i32")))
+    }
+}
 
 impl SnowflakeDecode for f64 {
     fn try_decode(value: &Option<String>) -> Result<Self> {
