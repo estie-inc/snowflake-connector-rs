@@ -1,12 +1,18 @@
-use reqwest::Client;
+mod key_pair;
 
-use crate::{Error, Result, SnowflakeClientConfig};
+use chrono::Utc;
+use reqwest::Client;
+use serde_json::{json, Value};
+
+use crate::{Error, Result, SnowflakeAuthMethod, SnowflakeClientConfig};
+
+use self::key_pair::generate_jwt_from_key_pair;
 
 /// Login to Snowflake and return a session token.
 pub(super) async fn login(
     http: &Client,
     username: &str,
-    password: &str,
+    auth: &SnowflakeAuthMethod,
     config: &SnowflakeClientConfig,
 ) -> Result<String> {
     let url = format!(
@@ -28,16 +34,13 @@ pub(super) async fn login(
         queries.push(("roleName", role));
     }
 
+    let login_data = login_request_data(username, auth, config)?;
     let response = http
         .post(url)
         .query(&queries)
-        .json(&LoginRequest {
-            data: LoginRequestData {
-                login_name: username.to_string(),
-                password: password.to_string(),
-                account_name: config.account.clone(),
-            },
-        })
+        .json(&json!({
+            "data": login_data
+        }))
         .send()
         .await?;
     let status = response.status();
@@ -54,19 +57,38 @@ pub(super) async fn login(
     Ok(response.data.token)
 }
 
-#[derive(serde::Serialize)]
-struct LoginRequest {
-    data: LoginRequestData,
+fn login_request_data(
+    username: &str,
+    auth: &SnowflakeAuthMethod,
+    config: &SnowflakeClientConfig,
+) -> Result<Value> {
+    match auth {
+        SnowflakeAuthMethod::Password(password) => Ok(json!({
+            "LOGIN_NAME": username,
+            "PASSWORD": password,
+            "ACCOUNT_NAME": config.account
+        })),
+        SnowflakeAuthMethod::KeyPair {
+            encrypted_pem,
+            password,
+        } => {
+            let jwt = generate_jwt_from_key_pair(
+                encrypted_pem,
+                password,
+                username,
+                &config.account,
+                Utc::now().timestamp(),
+            )?;
+            Ok(json!({
+                "LOGIN_NAME": username,
+                "ACCOUNT_NAME": config.account,
+                "TOKEN": jwt,
+                "AUTHENTICATOR": "SNOWFLAKE_JWT"
+            }))
+        }
+    }
 }
-#[derive(serde::Serialize)]
-struct LoginRequestData {
-    #[serde(rename = "LOGIN_NAME")]
-    login_name: String,
-    #[serde(rename = "PASSWORD")]
-    password: String,
-    #[serde(rename = "ACCOUNT_NAME")]
-    account_name: String,
-}
+
 #[derive(serde::Deserialize)]
 struct LoginResponse {
     token: String,
