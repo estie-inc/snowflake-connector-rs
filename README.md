@@ -19,11 +19,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         schema: Some("COOL_SCHEMA".into()),
     };
 
-    let client = SnowflakeClient::new(username, password, config)?;
+    let client = SnowflakeClient::new(username, SnowflakeAuthMethod::Password(password), config)?;
     let session = client.create_session().await?;
-    let (row_types, rows) = session.query("SELECT * FROM your_table").await?;
-    eprintln!("{:#?}", row_types);
-    eprintln!("{:#?}", rows);
+    let rows = session.query("SELECT * FROM your_table").await?;
+    eprintln!("{}", rows.len());
 
     Ok(())
 }
