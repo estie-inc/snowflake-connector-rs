@@ -37,6 +37,15 @@ pub enum Error {
 
     #[error("decode error: {0}")]
     Decode(String),
+
+    #[error("decrypt error: {0}")]
+    Decryption(#[from] pkcs8::Error),
+
+    #[error("der error: {0}")]
+    Der(#[from] pkcs8::spki::Error),
+
+    #[error("jwt error: {0}")]
+    JWT(#[from] jsonwebtoken::errors::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

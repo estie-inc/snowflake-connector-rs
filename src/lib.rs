@@ -17,7 +17,7 @@ pub struct SnowflakeClient {
     http: Client,
 
     username: String,
-    password: String,
+    auth: SnowflakeAuthMethod,
     config: SnowflakeClientConfig,
 }
 
@@ -31,19 +31,31 @@ pub struct SnowflakeClientConfig {
     pub role: Option<String>,
 }
 
+pub enum SnowflakeAuthMethod {
+    Password(String),
+    KeyPair {
+        encrypted_pem: String,
+        password: Vec<u8>,
+    },
+}
+
 impl SnowflakeClient {
-    pub fn new(username: &str, password: &str, config: SnowflakeClientConfig) -> Result<Self> {
+    pub fn new(
+        username: &str,
+        auth: SnowflakeAuthMethod,
+        config: SnowflakeClientConfig,
+    ) -> Result<Self> {
         let client = ClientBuilder::new().gzip(true).build()?;
         Ok(Self {
             http: client,
             username: username.to_string(),
-            password: password.to_string(),
+            auth,
             config,
         })
     }
 
     pub async fn create_session(&self) -> Result<SnowflakeSession> {
-        let session_token = login(&self.http, &self.username, &self.password, &self.config).await?;
+        let session_token = login(&self.http, &self.username, &self.auth, &self.config).await?;
         Ok(SnowflakeSession {
             http: self.http.clone(),
             account: self.config.account.clone(),
