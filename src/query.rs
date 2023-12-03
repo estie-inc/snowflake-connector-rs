@@ -42,11 +42,8 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
     let response: SnowflakeResponse =
         serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
 
-    match response.code.as_ref().map(|s| s.as_str()) {
-        Some(SESSION_EXPIRED) => {
-            return Err(Error::SessionExpired);
-        }
-        _ => {}
+    if let Some(SESSION_EXPIRED) = response.code.as_deref() {
+        return Err(Error::SessionExpired);
     }
 
     if !response.success {
@@ -105,23 +102,22 @@ pub struct QueryRequest {
     pub sql_text: String,
 }
 
-impl Into<QueryRequest> for &QueryRequest {
-    fn into(self) -> QueryRequest {
-        self.clone()
-    }
-}
-impl Into<QueryRequest> for &str {
-    fn into(self) -> QueryRequest {
-        QueryRequest {
-            sql_text: self.to_string(),
+impl From<&str> for QueryRequest {
+    fn from(sql_text: &str) -> Self {
+        Self {
+            sql_text: sql_text.to_string(),
         }
     }
 }
-impl Into<QueryRequest> for String {
-    fn into(self) -> QueryRequest {
-        QueryRequest {
-            sql_text: self.to_string(),
-        }
+impl From<&QueryRequest> for QueryRequest {
+    fn from(request: &QueryRequest) -> Self {
+        request.clone()
+    }
+}
+
+impl From<String> for QueryRequest {
+    fn from(sql_text: String) -> Self {
+        Self { sql_text }
     }
 }
 
