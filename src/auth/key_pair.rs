@@ -20,13 +20,13 @@ pub(super) fn generate_jwt_from_key_pair(
         .map(|s| s.to_ascii_uppercase())
         .unwrap_or_default();
     let username = username.to_ascii_uppercase();
-    let private = RsaPrivateKey::from_pkcs8_encrypted_pem(&encrypted_pem, password)?;
+    let private = RsaPrivateKey::from_pkcs8_encrypted_pem(encrypted_pem, password)?;
     let public = private.to_public_key();
     let der = public.to_public_key_der()?;
     let mut hasher = Sha256::new();
     hasher.update(der);
     let hash = hasher.finalize();
-    let fingerprint = STANDARD.encode(&hash);
+    let fingerprint = STANDARD.encode(hash);
 
     let payload = json!({
         "iss": format!("{}.{}.SHA256:{}", account, username, fingerprint),

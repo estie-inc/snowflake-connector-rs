@@ -106,7 +106,7 @@ impl SnowflakeDecode for NaiveDateTime {
 impl SnowflakeDecode for serde_json::Value {
     fn try_decode(value: &Option<String>) -> Result<Self> {
         let value = unwrap(value)?;
-        serde_json::from_str(&value).map_err(|_| Error::Decode(format!("'{value}' is not json")))
+        serde_json::from_str(value).map_err(|_| Error::Decode(format!("'{value}' is not json")))
     }
 }
 
