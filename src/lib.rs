@@ -3,6 +3,8 @@
 //! A Rust client for Snowflake, which enables you to connect to Snowflake and run queries.
 //!
 //! ```rust
+//! # use snowflake_connector_rs::{Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
+//! # async fn run() -> Result<()> {
 //! let client = SnowflakeClient::new(
 //!     "USERNAME",
 //!     SnowflakeAuthMethod::Password("PASSWORD".to_string()),
@@ -27,6 +29,8 @@
 //! assert_eq!(rows.len(), 2);
 //! assert_eq!(rows[0].get::<i64>("ID")?, 1);
 //! assert_eq!(rows[0].get::<String>("VALUE")?, "hello");
+//! # Ok(())
+//! # }
 //! ```
 
 mod auth;
