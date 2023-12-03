@@ -3,6 +3,9 @@ use std::string::FromUtf8Error;
 use reqwest::header::InvalidHeaderValue;
 use tokio::task::JoinError;
 
+/// An error that can occur when interacting with Snowflake.
+///
+/// Note: Errors may include sensitive information from Snowflake.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("HTTP client error: {0}")]
@@ -46,6 +49,10 @@ pub enum Error {
 
     #[error("jwt error: {0}")]
     JWT(#[from] jsonwebtoken::errors::Error),
+
+    #[error("unsupported format: {0}")]
+    UnsupportedFormat(String),
 }
 
+/// A `Result` alias where the `Err` case is `snowflake::Error`.
 pub type Result<T> = std::result::Result<T, Error>;
