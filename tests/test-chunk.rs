@@ -1,4 +1,4 @@
-use snowflake_connector::{Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
+use snowflake_connector_rs::{Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
 
 #[tokio::test]
 async fn test_download_chunked_results() -> Result<()> {

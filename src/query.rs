@@ -50,11 +50,9 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         return Err(Error::Communication(response.message.unwrap_or_default()));
     }
 
-    assert_eq!(
-        response.data.query_result_format, "json",
-        "unsupported data format: {}",
-        response.data.query_result_format
-    );
+    if response.data.query_result_format != "json" {
+        return Err(Error::UnsupportedFormat(response.data.query_result_format));
+    }
 
     let http = http.clone();
     let qrmk = response.data.qrmk.unwrap_or_default();

@@ -1,29 +1,29 @@
 # Snowflake Connector for Rust
 
-# Usage
-## Connecting to Snowflake
+[![test](https://github.com/estie-inc/snowflake-connector-rs/actions/workflows/test.yml/badge.svg)](https://github.com/estie-inc/snowflake-connector-rs/actions/workflows/test.yml)
+
+A Rust client for Snowflake, which enables you to connect to Snowflake and run queries.
 
 ```rust
-use snowflake_connector::{SnowflakeClient, SnowflakeClientConfig};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let username = "...";
-    let password = "...";
-
-    let config = SnowflakeClientConfig {
-        account: "your-account.ap-northeast-1.aws".into(),
-        role: Some("YOUR_ROLE".into()),
-        warehouse: Some("YOUR_WAREHOUSE".into()),
-        database: Some("AMAZING_DATABASE".into()),
-        schema: Some("COOL_SCHEMA".into()),
-    };
-
-    let client = SnowflakeClient::new(username, SnowflakeAuthMethod::Password(password), config)?;
-    let session = client.create_session().await?;
-    let rows = session.query("SELECT * FROM your_table").await?;
-    eprintln!("{}", rows.len());
-
-    Ok(())
-}
+let client = SnowflakeClient::new(
+    "USERNAME",
+    SnowflakeAuthMethod::Password("PASSWORD".to_string()),
+    SnowflakeClientConfig {
+        account: "ACCOUNT".to_string(),
+        role: Some("ROLE".to_string()),
+        warehouse: Some("WAREHOUSE".to_string()),
+        database: Some("DATABASE".to_string()),
+        schema: Some("SCHEMA".to_string()),
+    },
+)?;
+let session = client.create_session().await?;
+let query = "CREATE TEMPORARY TABLE example (id NUMBER, value STRING)";
+session.query(query).await?;
+let query = "INSERT INTO example (id, value) VALUES (1, 'hello'), (2, 'world')";
+session.query(query).await?;
+let query = "SELECT * FROM example ORDER BY id";
+let rows = session.query(query).await?;
+assert_eq!(rows.len(), 2);
+assert_eq!(rows[0].get::<i64>("ID")?, 1);
+assert_eq!(rows[0].get::<String>("VALUE")?, "hello");
 ```

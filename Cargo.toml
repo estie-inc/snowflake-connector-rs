@@ -1,5 +1,5 @@
 [package]
-name = "snowflake-connector"
+name = "snowflake-connector-rs"
 version = "0.1.0"
 edition = "2021"
 
