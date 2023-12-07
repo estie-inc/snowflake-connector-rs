@@ -1,6 +1,7 @@
 # Snowflake Connector for Rust
 
 [![test](https://github.com/estie-inc/snowflake-connector-rs/actions/workflows/test.yml/badge.svg)](https://github.com/estie-inc/snowflake-connector-rs/actions/workflows/test.yml)
+![Crates.io](https://img.shields.io/crates/v/snowflake-connector-rs)
 
 A Rust client for Snowflake, which enables you to connect to Snowflake and run queries.
 
