@@ -18,6 +18,9 @@ impl SnowflakeRow {
             .ok_or_else(|| Error::Decode(format!("column not found: {}", column_name)))?;
         self.row[*index].try_get()
     }
+    pub fn column_names(&self) -> Vec<&str> {
+        self.column_names.iter().map(|(k, _)| k.as_str()).collect()
+    }
 }
 
 pub trait SnowflakeDecode: Sized {
