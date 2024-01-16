@@ -34,6 +34,8 @@ async fn test_download_chunked_results() -> Result<()> {
     assert_eq!(rows.len(), 10000);
     assert!(rows[0].get::<u64>("SEQ").is_ok());
     assert!(rows[0].get::<String>("RAND").is_ok());
+    assert!(rows[0].column_names().contains(&"SEQ"));
+    assert!(rows[0].column_names().contains(&"RAND"));
 
     Ok(())
 }
