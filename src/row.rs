@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use chrono::NaiveDateTime;
+use chrono::{Days, NaiveDate, NaiveDateTime};
 
 use crate::{Error, Result};
 
@@ -106,6 +106,19 @@ impl SnowflakeDecode for NaiveDateTime {
         Err(Error::Decode(format!("'{value}' is not datetime")))
     }
 }
+impl SnowflakeDecode for chrono::NaiveDate {
+    fn try_decode(value: &Option<String>) -> Result<Self> {
+        let value = unwrap(value)?;
+        let days_since_epoch = value
+            .parse::<u64>()
+            .map_err(|_| Error::Decode(format!("'{value}' is not Date type")))?;
+        NaiveDate::from_ymd_opt(1970, 1, 1)
+            .unwrap_or_default()
+            .checked_add_days(Days::new(days_since_epoch))
+            .ok_or(Error::Decode(format!("'{value}' is not a valid date")))
+    }
+}
+
 impl SnowflakeDecode for serde_json::Value {
     fn try_decode(value: &Option<String>) -> Result<Self> {
         let value = unwrap(value)?;
