@@ -1,6 +1,26 @@
 use snowflake_connector_rs::{Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
 
 #[tokio::test]
+async fn test_decode_naive_date() -> Result<()> {
+    // Arrange
+    let client = connect()?;
+    let session = client.create_session().await?;
+
+    // Act
+    let query = "SELECT '2020-01-01'::DATE AS date";
+    let rows = session.query(query).await?;
+
+    // Assert
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get::<chrono::NaiveDate>("DATE")?,
+        chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap()
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_basic_operations() -> Result<()> {
     // Connect to Snowflake
     let client = connect()?;
