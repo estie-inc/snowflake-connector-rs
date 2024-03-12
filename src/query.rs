@@ -1,16 +1,14 @@
 use std::{collections::HashMap, sync::Arc};
 use std::time::Duration;
 
-use http::{
-    header::{ACCEPT, AUTHORIZATION},
-    HeaderMap,
-};
+use http::{header::{ACCEPT, AUTHORIZATION}, HeaderMap};
 use reqwest::Client;
 use tokio::time::sleep;
 
 use crate::{chunk::download_chunk, Error, Result, SnowflakeRow};
 
 pub(super) const SESSION_EXPIRED: &str = "390112";
+pub(super) const QUERY_IN_PROGRESS_ASYNC_CODE: &str = "333334";
 
 pub(super) async fn query<Q: Into<QueryRequest>>(
     http: &Client,
@@ -43,20 +41,17 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         return Err(Error::Communication(body));
     }
 
-    let mut response: SnowflakeResponse =
-        serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
-
-    if let (Some(polling_interval), Some(max_polling_attempts)) = (polling_interval, max_polling_attempts) {
+    let mut response: SnowflakeResponse = serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
+    if response.code.as_deref() == Some(QUERY_IN_PROGRESS_ASYNC_CODE) && response.data.get_result_url.is_some() && polling_interval.is_some() && max_polling_attempts.is_some() {
         response = poll_for_results(
             http,
             account,
-            response,
+            response.data.get_result_url.unwrap(),
             session_token,
-            polling_interval,
-            max_polling_attempts,
-        )
-            .await?;
-    }
+            polling_interval.unwrap(),
+            max_polling_attempts.unwrap(),
+        ).await?
+    };
 
     if let Some(SESSION_EXPIRED) = response.code.as_deref() {
         return Err(Error::SessionExpired);
@@ -66,7 +61,7 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         return Err(Error::Communication(response.message.unwrap_or_default()));
     }
 
-    if let Some(format) = &response.data.query_result_format {
+    if let Some(format) = response.data.query_result_format {
         if format != "json" {
             return Err(Error::UnsupportedFormat(format.clone()));
         }
@@ -115,48 +110,42 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
 async fn poll_for_results(
     http: &Client,
     account: &str,
-    mut response: SnowflakeResponse,
+    result_url: String,
     session_token: &str,
     polling_interval: Duration,
     max_attempts: usize,
 ) -> Result<SnowflakeResponse> {
     let mut attempts = 0;
-
     while attempts < max_attempts {
-        if let Some(result_url) = response.data.get_result_url.clone() {
-            sleep(polling_interval).await;
-            let url = format!("https://{account}.snowflakecomputing.com{}", result_url);
+        sleep(polling_interval).await;
+        let url = format!("https://{account}.snowflakecomputing.com{}", result_url);
 
-            let resp = http
-                .get(url)
-                .header(ACCEPT, "application/snowflake")
-                .header(
-                    AUTHORIZATION,
-                    format!(r#"Snowflake Token="{}""#, session_token),
-                )
-                .send()
-                .await?;
+        let resp = http
+            .get(url)
+            .header(ACCEPT, "application/snowflake")
+            .header(
+                AUTHORIZATION,
+                format!(r#"Snowflake Token="{}""#, session_token),
+            )
+            .send()
+            .await?;
 
-            let status = resp.status();
-            let body = resp.text().await?;
-            if !status.is_success() {
-                return Err(Error::Communication(body));
-            }
+        let status = resp.status();
+        let body = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Communication(body));
+        }
 
-            response =
-                serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
-        } else {
-            break;
+        let response: SnowflakeResponse = serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
+        if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE) {
+            return Ok(response);
         }
 
         attempts += 1;
     }
 
-    if attempts == max_attempts {
-        return Err(Error::Communication("max polling attempts reached".into()));
-    }
 
-    Ok(response)
+    return Err(Error::Polling("max polling attempts reached".into()));
 }
 
 #[derive(Debug, serde::Serialize, Clone)]

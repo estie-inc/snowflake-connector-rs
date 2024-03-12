@@ -21,6 +21,8 @@ async fn test_download_chunked_results() -> Result<()> {
             database,
             schema,
             role,
+            polling_interval: None,
+            max_polling_attempts: None,
         },
     )?;
 
