@@ -53,8 +53,11 @@ pub enum Error {
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
 
-    #[error("polling error: {0}")]
-    Polling(String),
+    #[error("async response doesn't contain a URL to poll for results")]
+    NoPollingUrlAsyncQuery,
+
+    #[error("timed out waiting for query results")]
+    TimedOut,
 }
 
 /// A `Result` alias where the `Err` case is `snowflake::Error`.

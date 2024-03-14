@@ -40,6 +40,8 @@ mod query;
 mod row;
 mod session;
 
+use std::time::Duration;
+
 pub use error::{Error, Result};
 pub use row::{SnowflakeDecode, SnowflakeRow};
 pub use session::SnowflakeSession;
@@ -64,8 +66,7 @@ pub struct SnowflakeClientConfig {
     pub database: Option<String>,
     pub schema: Option<String>,
     pub role: Option<String>,
-    pub polling_interval: Option<std::time::Duration>,
-    pub max_polling_attempts: Option<usize>,
+    pub timeout: Option<Duration>,
 }
 
 pub enum SnowflakeAuthMethod {
@@ -97,8 +98,7 @@ impl SnowflakeClient {
             http: self.http.clone(),
             account: self.config.account.clone(),
             session_token,
-            polling_interval: self.config.polling_interval,
-            max_polling_attempts: self.config.max_polling_attempts,
+            timeout: self.config.timeout,
         })
     }
 }

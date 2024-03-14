@@ -72,8 +72,7 @@ fn connect() -> Result<SnowflakeClient> {
             database,
             schema,
             role,
-            polling_interval: None,
-            max_polling_attempts: None,
+            timeout: None,
         },
     )?;
 

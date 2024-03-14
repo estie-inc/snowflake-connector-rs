@@ -1,7 +1,10 @@
+use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
-use std::time::Duration;
 
-use http::{header::{ACCEPT, AUTHORIZATION}, HeaderMap};
+use http::{
+    header::{ACCEPT, AUTHORIZATION},
+    HeaderMap,
+};
 use reqwest::Client;
 use tokio::time::sleep;
 
@@ -15,8 +18,7 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
     account: &str,
     request: Q,
     session_token: &str,
-    polling_interval: Option<Duration>,
-    max_polling_attempts: Option<usize>,
+    timeout: Duration,
 ) -> Result<Vec<SnowflakeRow>> {
     let request_id = uuid::Uuid::new_v4();
     let url = format!(
@@ -41,17 +43,21 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         return Err(Error::Communication(body));
     }
 
-    let mut response: SnowflakeResponse = serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
-    if response.code.as_deref() == Some(QUERY_IN_PROGRESS_ASYNC_CODE) && response.data.get_result_url.is_some() && polling_interval.is_some() && max_polling_attempts.is_some() {
-        response = poll_for_results(
-            http,
-            account,
-            response.data.get_result_url.unwrap(),
-            session_token,
-            polling_interval.unwrap(),
-            max_polling_attempts.unwrap(),
-        ).await?
-    };
+    let mut response: SnowflakeResponse =
+        serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
+
+    if response.code.as_deref() == Some(QUERY_IN_PROGRESS_ASYNC_CODE) {
+        match response.data.get_result_url {
+            Some(result_url) => {
+                response =
+                    poll_for_async_results(http, account, &result_url, session_token, timeout)
+                        .await?
+            }
+            None => {
+                return Err(Error::NoPollingUrlAsyncQuery);
+            }
+        }
+    }
 
     if let Some(SESSION_EXPIRED) = response.code.as_deref() {
         return Err(Error::SessionExpired);
@@ -70,8 +76,12 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
     let http = http.clone();
     let qrmk = response.data.qrmk.unwrap_or_default();
     let chunks = response.data.chunks.unwrap_or_default();
-    let row_types = response.data.row_types.unwrap_or_default();
-    let mut row_set = response.data.row_set.unwrap_or_default();
+    let row_types = response.data.row_types.ok_or_else(|| {
+        Error::UnsupportedFormat("the response doesn't contain 'rowtype'".to_string())
+    })?;
+    let mut row_set = response.data.row_set.ok_or_else(|| {
+        Error::UnsupportedFormat("the response doesn't contain 'rowset'".to_string())
+    })?;
 
     let chunk_headers = response.data.chunk_headers.unwrap_or_default();
     let chunk_headers: HeaderMap = HeaderMap::try_from(&chunk_headers)?;
@@ -107,17 +117,16 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         .collect())
 }
 
-async fn poll_for_results(
+async fn poll_for_async_results(
     http: &Client,
     account: &str,
-    result_url: String,
+    result_url: &str,
     session_token: &str,
-    polling_interval: Duration,
-    max_attempts: usize,
+    timeout: Duration,
 ) -> Result<SnowflakeResponse> {
-    let mut attempts = 0;
-    while attempts < max_attempts {
-        sleep(polling_interval).await;
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        sleep(Duration::from_secs(10)).await;
         let url = format!("https://{account}.snowflakecomputing.com{}", result_url);
 
         let resp = http
@@ -136,16 +145,14 @@ async fn poll_for_results(
             return Err(Error::Communication(body));
         }
 
-        let response: SnowflakeResponse = serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
+        let response: SnowflakeResponse =
+            serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
         if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE) {
             return Ok(response);
         }
-
-        attempts += 1;
     }
 
-
-    return Err(Error::Polling("max polling attempts reached".into()));
+    return Err(Error::TimedOut);
 }
 
 #[derive(Debug, serde::Serialize, Clone)]
