@@ -1,3 +1,4 @@
+use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
 
 use http::{
@@ -5,16 +6,19 @@ use http::{
     HeaderMap,
 };
 use reqwest::Client;
+use tokio::time::sleep;
 
 use crate::{chunk::download_chunk, Error, Result, SnowflakeRow};
 
 pub(super) const SESSION_EXPIRED: &str = "390112";
+pub(super) const QUERY_IN_PROGRESS_ASYNC_CODE: &str = "333334";
 
 pub(super) async fn query<Q: Into<QueryRequest>>(
     http: &Client,
     account: &str,
     request: Q,
     session_token: &str,
+    timeout: Duration,
 ) -> Result<Vec<SnowflakeRow>> {
     let request_id = uuid::Uuid::new_v4();
     let url = format!(
@@ -39,8 +43,21 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         return Err(Error::Communication(body));
     }
 
-    let response: SnowflakeResponse =
+    let mut response: SnowflakeResponse =
         serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
+
+    if response.code.as_deref() == Some(QUERY_IN_PROGRESS_ASYNC_CODE) {
+        match response.data.get_result_url {
+            Some(result_url) => {
+                response =
+                    poll_for_async_results(http, account, &result_url, session_token, timeout)
+                        .await?
+            }
+            None => {
+                return Err(Error::NoPollingUrlAsyncQuery);
+            }
+        }
+    }
 
     if let Some(SESSION_EXPIRED) = response.code.as_deref() {
         return Err(Error::SessionExpired);
@@ -50,15 +67,21 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         return Err(Error::Communication(response.message.unwrap_or_default()));
     }
 
-    if response.data.query_result_format != "json" {
-        return Err(Error::UnsupportedFormat(response.data.query_result_format));
+    if let Some(format) = response.data.query_result_format {
+        if format != "json" {
+            return Err(Error::UnsupportedFormat(format.clone()));
+        }
     }
 
     let http = http.clone();
     let qrmk = response.data.qrmk.unwrap_or_default();
     let chunks = response.data.chunks.unwrap_or_default();
-    let row_types = response.data.row_types;
-    let mut row_set = response.data.row_set;
+    let row_types = response.data.row_types.ok_or_else(|| {
+        Error::UnsupportedFormat("the response doesn't contain 'rowtype'".to_string())
+    })?;
+    let mut row_set = response.data.row_set.ok_or_else(|| {
+        Error::UnsupportedFormat("the response doesn't contain 'rowset'".to_string())
+    })?;
 
     let chunk_headers = response.data.chunk_headers.unwrap_or_default();
     let chunk_headers: HeaderMap = HeaderMap::try_from(&chunk_headers)?;
@@ -94,6 +117,44 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         .collect())
 }
 
+async fn poll_for_async_results(
+    http: &Client,
+    account: &str,
+    result_url: &str,
+    session_token: &str,
+    timeout: Duration,
+) -> Result<SnowflakeResponse> {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        sleep(Duration::from_secs(10)).await;
+        let url = format!("https://{account}.snowflakecomputing.com{}", result_url);
+
+        let resp = http
+            .get(url)
+            .header(ACCEPT, "application/snowflake")
+            .header(
+                AUTHORIZATION,
+                format!(r#"Snowflake Token="{}""#, session_token),
+            )
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let body = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Communication(body));
+        }
+
+        let response: SnowflakeResponse =
+            serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
+        if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE) {
+            return Ok(response);
+        }
+    }
+
+    Err(Error::TimedOut)
+}
+
 #[derive(Debug, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
@@ -123,26 +184,28 @@ impl From<String> for QueryRequest {
 #[serde(rename_all = "camelCase")]
 struct RawQueryResponse {
     #[allow(unused)]
-    parameters: Vec<RawQueryResponseParameter>,
+    parameters: Option<Vec<RawQueryResponseParameter>>,
     #[allow(unused)]
     query_id: String,
     #[allow(unused)]
-    returned: i64,
+    get_result_url: Option<String>,
     #[allow(unused)]
-    total: i64,
+    returned: Option<i64>,
+    #[allow(unused)]
+    total: Option<i64>,
 
     #[serde(rename = "rowset")]
-    row_set: Vec<Vec<Option<String>>>,
+    row_set: Option<Vec<Vec<Option<String>>>>,
 
     #[serde(rename = "rowtype")]
-    row_types: Vec<RawQueryResponseRowType>,
+    row_types: Option<Vec<RawQueryResponseRowType>>,
 
     chunk_headers: Option<HashMap<String, String>>,
 
     qrmk: Option<String>,
 
     chunks: Option<Vec<RawQueryResponseChunk>>,
-    query_result_format: String,
+    query_result_format: Option<String>,
 }
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

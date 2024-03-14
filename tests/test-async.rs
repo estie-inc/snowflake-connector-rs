@@ -1,7 +1,7 @@
 use snowflake_connector_rs::{Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
 
 #[tokio::test]
-async fn test_download_chunked_results() -> Result<()> {
+async fn test_async_query() -> Result<()> {
     // Arrange
     let username = std::env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME for testing");
     let password = std::env::var("SNOWFLAKE_PASSWORD").expect("set SNOWFLAKE_PASSWORD for testing");
@@ -27,16 +27,12 @@ async fn test_download_chunked_results() -> Result<()> {
 
     // Act
     let session = client.create_session().await?;
-    let query =
-        "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS RAND FROM TABLE(GENERATOR(ROWCOUNT=>10000))";
+    let query = r#"CALL SYSTEM$WAIT(120)"#;
     let rows = session.query(query).await?;
 
     // Assert
-    assert_eq!(rows.len(), 10000);
-    assert!(rows[0].get::<u64>("SEQ").is_ok());
-    assert!(rows[0].get::<String>("RAND").is_ok());
-    assert!(rows[0].column_names().contains(&"SEQ"));
-    assert!(rows[0].column_names().contains(&"RAND"));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get::<String>("SYSTEM$WAIT")?, "waited 120 seconds");
 
     Ok(())
 }

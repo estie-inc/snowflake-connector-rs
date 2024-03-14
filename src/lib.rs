@@ -14,6 +14,7 @@
 //!         warehouse: Some("WAREHOUSE".to_string()),
 //!         database: Some("DATABASE".to_string()),
 //!         schema: Some("SCHEMA".to_string()),
+//!         timeout: Some(std::time::Duration::from_secs(30)),
 //!     },
 //! )?;
 //! let session = client.create_session().await?;
@@ -40,6 +41,8 @@ mod query;
 mod row;
 mod session;
 
+use std::time::Duration;
+
 pub use error::{Error, Result};
 pub use row::{SnowflakeDecode, SnowflakeRow};
 pub use session::SnowflakeSession;
@@ -64,6 +67,7 @@ pub struct SnowflakeClientConfig {
     pub database: Option<String>,
     pub schema: Option<String>,
     pub role: Option<String>,
+    pub timeout: Option<Duration>,
 }
 
 pub enum SnowflakeAuthMethod {
@@ -95,6 +99,7 @@ impl SnowflakeClient {
             http: self.http.clone(),
             account: self.config.account.clone(),
             session_token,
+            timeout: self.config.timeout,
         })
     }
 }

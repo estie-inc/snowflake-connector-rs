@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use chrono::{Days, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, Days, NaiveDate, NaiveDateTime};
 
 use crate::{Error, Result};
 
@@ -96,9 +96,9 @@ impl SnowflakeDecode for NaiveDateTime {
         if let Ok(v) = value.parse::<f64>() {
             let secs = v.trunc() as i64;
             let nsec = (v.fract() * 1_000_000_000.0) as u32;
-            let dt = NaiveDateTime::from_timestamp_opt(secs, nsec)
+            let dt = DateTime::from_timestamp(secs, nsec)
                 .ok_or_else(|| Error::Decode(format!("invalid datetime: {}", value)))?;
-            return Ok(dt);
+            return Ok(dt.naive_utc());
         }
         if let Ok(v) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
             return Ok(v);
