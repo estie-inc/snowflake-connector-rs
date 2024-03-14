@@ -152,7 +152,7 @@ async fn poll_for_async_results(
         }
     }
 
-    return Err(Error::TimedOut);
+    Err(Error::TimedOut)
 }
 
 #[derive(Debug, serde::Serialize, Clone)]
