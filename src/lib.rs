@@ -14,6 +14,7 @@
 //!         warehouse: Some("WAREHOUSE".to_string()),
 //!         database: Some("DATABASE".to_string()),
 //!         schema: Some("SCHEMA".to_string()),
+//!         timeout: Some(std::time::Duration::from_secs(30)),
 //!     },
 //! )?;
 //! let session = client.create_session().await?;
