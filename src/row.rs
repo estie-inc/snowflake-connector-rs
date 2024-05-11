@@ -1,25 +1,54 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use chrono::{DateTime, Days, NaiveDate, NaiveDateTime};
 
 use crate::{Error, Result};
 
 #[derive(Debug)]
+pub struct SnowflakeColumn {
+    pub name: String,
+    pub column_type: SnowflakeColumnType,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnowflakeColumnType {
+    /// The index of the column in the row
+    pub index: usize,
+    /// Data type of the column in Snowflake
+    pub snowflake_type: String,
+    /// Whether the column is nullable
+    pub nullable: bool,
+}
+
+#[derive(Debug)]
 pub struct SnowflakeRow {
     pub(crate) row: Vec<Option<String>>,
-    pub(crate) column_names: Arc<HashMap<String, usize>>,
+    pub(crate) column_types: Arc<HashMap<String, SnowflakeColumnType>>,
 }
 
 impl SnowflakeRow {
     pub fn get<T: SnowflakeDecode>(&self, column_name: &str) -> Result<T> {
-        let index = self
-            .column_names
+        let column_type = self
+            .column_types
             .get(&column_name.to_ascii_uppercase())
             .ok_or_else(|| Error::Decode(format!("column not found: {}", column_name)))?;
-        self.row[*index].try_get()
+        self.row[column_type.index].try_get()
     }
     pub fn column_names(&self) -> Vec<&str> {
-        self.column_names.iter().map(|(k, _)| k.as_str()).collect()
+        self.column_types.iter().map(|(k, _)| k.as_str()).collect()
+    }
+    pub fn column_types(&self) -> Vec<SnowflakeColumn> {
+        let column_types = self.column_types.deref();
+        let mut v: Vec<_> = column_types
+            .iter()
+            .map(|(k, v)| SnowflakeColumn {
+                name: k.clone(),
+                column_type: v.clone(),
+            })
+            .collect();
+        // sort by column index
+        v.sort_by_key(|c| c.column_type.index);
+        v
     }
 }
 

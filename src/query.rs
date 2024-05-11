@@ -8,6 +8,7 @@ use http::{
 use reqwest::Client;
 use tokio::time::sleep;
 
+use crate::row::SnowflakeColumnType;
 use crate::{chunk::download_chunk, Error, Result, SnowflakeRow};
 
 pub(super) const SESSION_EXPIRED: &str = "390112";
@@ -102,17 +103,26 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         row_set.extend(rows);
     }
 
-    let column_names = row_types
+    let column_types = row_types
         .into_iter()
         .enumerate()
-        .map(|(i, name)| (name.name.to_ascii_uppercase(), i))
+        .map(|(i, row_type)| {
+            (
+                row_type.name.to_ascii_uppercase(),
+                SnowflakeColumnType {
+                    index: i,
+                    snowflake_type: row_type.data_type,
+                    nullable: row_type.nullable,
+                },
+            )
+        })
         .collect::<HashMap<_, _>>();
-    let column_names = Arc::new(column_names);
+    let column_types = Arc::new(column_types);
     Ok(row_set
         .into_iter()
         .map(|row| SnowflakeRow {
             row,
-            column_names: Arc::clone(&column_names),
+            column_types: Arc::clone(&column_types),
         })
         .collect())
 }
