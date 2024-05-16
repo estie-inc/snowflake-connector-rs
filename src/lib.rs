@@ -44,6 +44,7 @@ mod session;
 use std::time::Duration;
 
 pub use error::{Error, Result};
+pub use query::QueryExecutor;
 pub use row::{SnowflakeDecode, SnowflakeRow};
 pub use session::SnowflakeSession;
 

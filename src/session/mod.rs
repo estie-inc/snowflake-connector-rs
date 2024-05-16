@@ -1,11 +1,9 @@
 use std::time::Duration;
 
 use crate::{
-    query::{query, QueryRequest},
+    query::{QueryExecutor, QueryRequest},
     Result, SnowflakeRow,
 };
-
-const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 
 pub struct SnowflakeSession {
     pub(super) http: reqwest::Client,
@@ -16,15 +14,7 @@ pub struct SnowflakeSession {
 
 impl SnowflakeSession {
     pub async fn query<Q: Into<QueryRequest>>(&self, request: Q) -> Result<Vec<SnowflakeRow>> {
-        let rows = query(
-            &self.http,
-            &self.account,
-            request,
-            &self.session_token,
-            self.timeout
-                .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS)),
-        )
-        .await?;
-        Ok(rows)
+        let mut executor = QueryExecutor::create(self, request).await?;
+        executor.fetch_all().await.map(|v| v.unwrap_or(vec![]))
     }
 }
