@@ -1,6 +1,4 @@
-use snowflake_connector_rs::{
-    Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig, SnowflakeColumnType,
-};
+use snowflake_connector_rs::{Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
 
 #[tokio::test]
 async fn test_download_chunked_results() -> Result<()> {
@@ -42,17 +40,23 @@ async fn test_download_chunked_results() -> Result<()> {
 
     let columns = rows[0].column_types();
     assert_eq!(
-        columns[0].column_type.snowflake_type.to_ascii_uppercase(),
+        columns[0]
+            .column_type()
+            .snowflake_type()
+            .to_ascii_uppercase(),
         "FIXED"
     );
-    assert_eq!(columns[0].column_type.nullable, false);
-    assert_eq!(columns[0].column_type.index, 0);
+    assert_eq!(columns[0].column_type().nullable(), false);
+    assert_eq!(columns[0].index(), 0);
     assert_eq!(
-        columns[1].column_type.snowflake_type.to_ascii_uppercase(),
+        columns[1]
+            .column_type()
+            .snowflake_type()
+            .to_ascii_uppercase(),
         "TEXT"
     );
-    assert_eq!(columns[1].column_type.nullable, false);
-    assert_eq!(columns[1].column_type.index, 1);
+    assert_eq!(columns[1].column_type().nullable(), false);
+    assert_eq!(columns[1].index(), 1);
 
     Ok(())
 }

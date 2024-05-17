@@ -109,11 +109,13 @@ pub(super) async fn query<Q: Into<QueryRequest>>(
         .map(|(i, row_type)| {
             (
                 row_type.name.to_ascii_uppercase(),
-                SnowflakeColumnType {
-                    index: i,
-                    snowflake_type: row_type.data_type,
-                    nullable: row_type.nullable,
-                },
+                (
+                    i,
+                    SnowflakeColumnType {
+                        snowflake_type: row_type.data_type,
+                        nullable: row_type.nullable,
+                    },
+                ),
             )
         })
         .collect::<HashMap<_, _>>();

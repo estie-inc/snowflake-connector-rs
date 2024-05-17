@@ -6,33 +6,52 @@ use crate::{Error, Result};
 
 #[derive(Debug)]
 pub struct SnowflakeColumn {
-    pub name: String,
-    pub column_type: SnowflakeColumnType,
+    pub(super) name: String,
+    pub(super) index: usize,
+    pub(super) column_type: SnowflakeColumnType,
+}
+
+impl SnowflakeColumn {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn column_type(&self) -> &SnowflakeColumnType {
+        &self.column_type
+    }
+
+    pub fn index(&self) -> usize {
+        self.index
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct SnowflakeColumnType {
-    /// The index of the column in the row
-    pub index: usize,
-    /// Data type of the column in Snowflake
-    pub snowflake_type: String,
-    /// Whether the column is nullable
-    pub nullable: bool,
+    pub(super) snowflake_type: String,
+    pub(super) nullable: bool,
+}
+
+impl SnowflakeColumnType {
+    pub fn snowflake_type(&self) -> &str {
+        &self.snowflake_type
+    }
+    pub fn nullable(&self) -> bool {
+        self.nullable
+    }
 }
 
 #[derive(Debug)]
 pub struct SnowflakeRow {
     pub(crate) row: Vec<Option<String>>,
-    pub(crate) column_types: Arc<HashMap<String, SnowflakeColumnType>>,
+    pub(crate) column_types: Arc<HashMap<String, (usize, SnowflakeColumnType)>>,
 }
 
 impl SnowflakeRow {
     pub fn get<T: SnowflakeDecode>(&self, column_name: &str) -> Result<T> {
-        let column_type = self
+        let (idx, _) = self
             .column_types
             .get(&column_name.to_ascii_uppercase())
             .ok_or_else(|| Error::Decode(format!("column not found: {}", column_name)))?;
-        self.row[column_type.index].try_get()
+        self.row[*idx].try_get()
     }
     pub fn column_names(&self) -> Vec<&str> {
         self.column_types.iter().map(|(k, _)| k.as_str()).collect()
@@ -41,13 +60,14 @@ impl SnowflakeRow {
         let column_types = self.column_types.deref();
         let mut v: Vec<_> = column_types
             .iter()
-            .map(|(k, v)| SnowflakeColumn {
-                name: k.clone(),
-                column_type: v.clone(),
+            .map(|(name, (idx, ty))| SnowflakeColumn {
+                name: name.clone(),
+                index: *idx,
+                column_type: ty.clone(),
             })
             .collect();
         // sort by column index
-        v.sort_by_key(|c| c.column_type.index);
+        v.sort_by_key(|c| c.index);
         v
     }
 }
