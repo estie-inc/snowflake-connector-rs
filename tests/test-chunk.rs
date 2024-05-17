@@ -46,7 +46,7 @@ async fn test_download_chunked_results() -> Result<()> {
             .to_ascii_uppercase(),
         "FIXED"
     );
-    assert_eq!(columns[0].column_type().nullable(), false);
+    assert!(!columns[0].column_type().nullable());
     assert_eq!(columns[0].index(), 0);
     assert_eq!(
         columns[1]
@@ -55,7 +55,7 @@ async fn test_download_chunked_results() -> Result<()> {
             .to_ascii_uppercase(),
         "TEXT"
     );
-    assert_eq!(columns[1].column_type().nullable(), false);
+    assert!(!columns[1].column_type().nullable());
     assert_eq!(columns[1].index(), 1);
 
     Ok(())
