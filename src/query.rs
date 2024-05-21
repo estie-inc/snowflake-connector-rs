@@ -9,124 +9,188 @@ use reqwest::Client;
 use tokio::time::sleep;
 
 use crate::row::SnowflakeColumnType;
+use crate::SnowflakeSession;
 use crate::{chunk::download_chunk, Error, Result, SnowflakeRow};
 
 pub(super) const SESSION_EXPIRED: &str = "390112";
 pub(super) const QUERY_IN_PROGRESS_ASYNC_CODE: &str = "333334";
+const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 
-pub(super) async fn query<Q: Into<QueryRequest>>(
-    http: &Client,
-    account: &str,
-    request: Q,
-    session_token: &str,
-    timeout: Duration,
-) -> Result<Vec<SnowflakeRow>> {
-    let request_id = uuid::Uuid::new_v4();
-    let url = format!(
-        r"https://{account}.snowflakecomputing.com/queries/v1/query-request?requestId={request_id}"
-    );
+pub struct QueryExecutor {
+    http: Client,
+    qrmk: String,
+    chunks: Vec<RawQueryResponseChunk>,
+    chunk_headers: HeaderMap,
+    column_types: Arc<HashMap<String, (usize, SnowflakeColumnType)>>,
+    row_set: Option<Vec<Vec<Option<String>>>>,
+}
 
-    let request: QueryRequest = request.into();
-    let response = http
-        .post(url)
-        .header(ACCEPT, "application/snowflake")
-        .header(
-            AUTHORIZATION,
-            format!(r#"Snowflake Token="{}""#, session_token),
-        )
-        .json(&request)
-        .send()
-        .await?;
+impl QueryExecutor {
+    pub(super) async fn create<Q: Into<QueryRequest>>(
+        sess: &SnowflakeSession,
+        request: Q,
+    ) -> Result<Self> {
+        let SnowflakeSession {
+            http,
+            account,
+            session_token,
+            timeout,
+        } = sess;
+        let timeout = timeout.unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS));
 
-    let status = response.status();
-    let body = response.text().await?;
-    if !status.is_success() {
-        return Err(Error::Communication(body));
-    }
+        let request_id = uuid::Uuid::new_v4();
+        let url = format!(
+            r"https://{account}.snowflakecomputing.com/queries/v1/query-request?requestId={request_id}"
+        );
 
-    let mut response: SnowflakeResponse =
-        serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
-
-    if response.code.as_deref() == Some(QUERY_IN_PROGRESS_ASYNC_CODE) {
-        match response.data.get_result_url {
-            Some(result_url) => {
-                response =
-                    poll_for_async_results(http, account, &result_url, session_token, timeout)
-                        .await?
-            }
-            None => {
-                return Err(Error::NoPollingUrlAsyncQuery);
-            }
-        }
-    }
-
-    if let Some(SESSION_EXPIRED) = response.code.as_deref() {
-        return Err(Error::SessionExpired);
-    }
-
-    if !response.success {
-        return Err(Error::Communication(response.message.unwrap_or_default()));
-    }
-
-    if let Some(format) = response.data.query_result_format {
-        if format != "json" {
-            return Err(Error::UnsupportedFormat(format.clone()));
-        }
-    }
-
-    let http = http.clone();
-    let qrmk = response.data.qrmk.unwrap_or_default();
-    let chunks = response.data.chunks.unwrap_or_default();
-    let row_types = response.data.row_types.ok_or_else(|| {
-        Error::UnsupportedFormat("the response doesn't contain 'rowtype'".to_string())
-    })?;
-    let mut row_set = response.data.row_set.ok_or_else(|| {
-        Error::UnsupportedFormat("the response doesn't contain 'rowset'".to_string())
-    })?;
-
-    let chunk_headers = response.data.chunk_headers.unwrap_or_default();
-    let chunk_headers: HeaderMap = HeaderMap::try_from(&chunk_headers)?;
-
-    let mut handles = Vec::with_capacity(chunks.len());
-    for chunk in chunks {
-        let http = http.clone();
-        let chunk_headers = chunk_headers.clone();
-        let qrmk = qrmk.clone();
-        handles.push(tokio::spawn(async move {
-            download_chunk(http, chunk.url, chunk_headers, qrmk).await
-        }));
-    }
-
-    for fut in handles {
-        let result = fut.await?;
-        let rows = result?;
-        row_set.extend(rows);
-    }
-
-    let column_types = row_types
-        .into_iter()
-        .enumerate()
-        .map(|(i, row_type)| {
-            (
-                row_type.name.to_ascii_uppercase(),
-                (
-                    i,
-                    SnowflakeColumnType {
-                        snowflake_type: row_type.data_type,
-                        nullable: row_type.nullable,
-                    },
-                ),
+        let request: QueryRequest = request.into();
+        let response = http
+            .post(url)
+            .header(ACCEPT, "application/snowflake")
+            .header(
+                AUTHORIZATION,
+                format!(r#"Snowflake Token="{}""#, session_token),
             )
+            .json(&request)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            return Err(Error::Communication(body));
+        }
+
+        let mut response: SnowflakeResponse =
+            serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
+
+        if response.code.as_deref() == Some(QUERY_IN_PROGRESS_ASYNC_CODE) {
+            match response.data.get_result_url {
+                Some(result_url) => {
+                    response =
+                        poll_for_async_results(http, account, &result_url, session_token, timeout)
+                            .await?
+                }
+                None => {
+                    return Err(Error::NoPollingUrlAsyncQuery);
+                }
+            }
+        }
+
+        if let Some(SESSION_EXPIRED) = response.code.as_deref() {
+            return Err(Error::SessionExpired);
+        }
+
+        if !response.success {
+            return Err(Error::Communication(response.message.unwrap_or_default()));
+        }
+
+        if let Some(format) = response.data.query_result_format {
+            if format != "json" {
+                return Err(Error::UnsupportedFormat(format.clone()));
+            }
+        }
+
+        let http = http.clone();
+        let qrmk = response.data.qrmk.unwrap_or_default();
+        let chunks = response.data.chunks.unwrap_or_default();
+        let row_types = response.data.row_types.ok_or_else(|| {
+            Error::UnsupportedFormat("the response doesn't contain 'rowtype'".to_string())
+        })?;
+        let row_set = response.data.row_set.ok_or_else(|| {
+            Error::UnsupportedFormat("the response doesn't contain 'rowset'".to_string())
+        })?;
+
+        let column_types = row_types
+            .into_iter()
+            .enumerate()
+            .map(|(i, row_type)| {
+                (
+                    row_type.name.to_ascii_uppercase(),
+                    (
+                        i,
+                        SnowflakeColumnType {
+                            snowflake_type: row_type.data_type,
+                            nullable: row_type.nullable,
+                        },
+                    ),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let column_types = Arc::new(column_types);
+
+        let chunk_headers = response.data.chunk_headers.unwrap_or_default();
+        let chunk_headers: HeaderMap = HeaderMap::try_from(&chunk_headers)?;
+
+        Ok(Self {
+            http,
+            qrmk,
+            chunks,
+            chunk_headers,
+            column_types,
+            row_set: Some(row_set),
         })
-        .collect::<HashMap<_, _>>();
-    let column_types = Arc::new(column_types);
-    Ok(row_set
-        .into_iter()
-        .map(|row| SnowflakeRow {
+    }
+
+    /// Check if there are no more rows to fetch
+    pub fn eof(&self) -> bool {
+        self.row_set.is_none() && self.chunks.is_empty()
+    }
+
+    /// Fetch a single chunk
+    pub async fn fetch_next_chunk(&mut self) -> Result<Option<Vec<SnowflakeRow>>> {
+        if let Some(row_set) = self.row_set.take() {
+            let rows = row_set.into_iter().map(|r| self.convert_row(r)).collect();
+            return Ok(Some(rows));
+        }
+
+        let http = self.http.clone();
+        let chunk_headers = self.chunk_headers.clone();
+        let qrmk = self.qrmk.clone();
+        let Some(chunk) = self.chunks.pop() else {
+            // Nothing to fetch
+            return Ok(None);
+        };
+
+        let rows = download_chunk(http, chunk.url, chunk_headers, qrmk).await?;
+        let rows = rows.into_iter().map(|r| self.convert_row(r)).collect();
+        Ok(Some(rows))
+    }
+
+    /// Fetch all the remaining chunks at once
+    pub async fn fetch_all(&mut self) -> Result<Vec<SnowflakeRow>> {
+        let mut rows = Vec::new();
+        if let Some(row_set) = self.row_set.take() {
+            rows.extend(row_set.into_iter().map(|r| self.convert_row(r)));
+        } else if self.chunks.is_empty() {
+            // Nothing to fetch
+            return Ok(vec![]);
+        }
+
+        let mut handles = Vec::with_capacity(self.chunks.len());
+        while let Some(chunk) = self.chunks.pop() {
+            let http = self.http.clone();
+            let chunk_headers = self.chunk_headers.clone();
+            let qrmk = self.qrmk.clone();
+            handles.push(tokio::spawn(async move {
+                download_chunk(http, chunk.url, chunk_headers, qrmk).await
+            }));
+        }
+
+        for fut in handles {
+            let result = fut.await?;
+            rows.extend(result?.into_iter().map(|r| self.convert_row(r)));
+        }
+
+        Ok(rows)
+    }
+
+    fn convert_row(&self, row: Vec<Option<String>>) -> SnowflakeRow {
+        SnowflakeRow {
             row,
-            column_types: Arc::clone(&column_types),
-        })
-        .collect())
+            column_types: Arc::clone(&self.column_types),
+        }
+    }
 }
 
 async fn poll_for_async_results(
