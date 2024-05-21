@@ -26,7 +26,7 @@ pub struct QueryExecutor {
 }
 
 impl QueryExecutor {
-    pub async fn create<Q: Into<QueryRequest>>(
+    pub(super) async fn create<Q: Into<QueryRequest>>(
         sess: &SnowflakeSession,
         request: Q,
     ) -> Result<Self> {
@@ -158,13 +158,13 @@ impl QueryExecutor {
     }
 
     /// Fetch all the remaining chunks at once
-    pub async fn fetch_all(&mut self) -> Result<Option<Vec<SnowflakeRow>>> {
+    pub async fn fetch_all(&mut self) -> Result<Vec<SnowflakeRow>> {
         let mut rows = Vec::new();
         if let Some(row_set) = self.row_set.take() {
             rows.extend(row_set.into_iter().map(|r| self.convert_row(r)));
         } else if self.chunks.is_empty() {
             // Nothing to fetch
-            return Ok(None);
+            return Ok(vec![]);
         }
 
         let mut handles = Vec::with_capacity(self.chunks.len());
@@ -182,7 +182,7 @@ impl QueryExecutor {
             rows.extend(result?.into_iter().map(|r| self.convert_row(r)));
         }
 
-        Ok(Some(rows))
+        Ok(rows)
     }
 
     fn convert_row(&self, row: Vec<Option<String>>) -> SnowflakeRow {
