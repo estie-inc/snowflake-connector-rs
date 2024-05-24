@@ -1,8 +1,6 @@
 use snowflake_connector_rs::{Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
 
-#[tokio::test]
-async fn test_download_chunked_results() -> Result<()> {
-    // Arrange
+async fn setup_client() -> Result<SnowflakeClient> {
     let username = std::env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME for testing");
     let password = std::env::var("SNOWFLAKE_PASSWORD").expect("set SNOWFLAKE_PASSWORD for testing");
     let account = std::env::var("SNOWFLAKE_ACCOUNT").expect("set SNOWFLAKE_ACCOUNT for testing");
@@ -24,6 +22,14 @@ async fn test_download_chunked_results() -> Result<()> {
             timeout: None,
         },
     )?;
+
+    Ok(client)
+}
+
+#[tokio::test]
+async fn test_download_chunked_results() -> Result<()> {
+    // Arrange
+    let client = setup_client().await?;
 
     // Act
     let session = client.create_session().await?;
@@ -57,6 +63,32 @@ async fn test_download_chunked_results() -> Result<()> {
     );
     assert!(!columns[1].column_type().nullable());
     assert_eq!(columns[1].index(), 1);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_query_executor() -> Result<()> {
+    // Arrange
+    let client = setup_client().await?;
+
+    // Act
+    let session = client.create_session().await?;
+    let query =
+        "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS RAND FROM TABLE(GENERATOR(ROWCOUNT=>10000))";
+
+    let mut executor = session.execute(query).await?;
+    let mut rows = Vec::with_capacity(10000);
+    while let Some(mut r) = executor.fetch_next_chunk().await? {
+        rows.append(&mut r);
+    }
+
+    // Assert
+    assert_eq!(rows.len(), 10000);
+    assert!(rows[0].get::<u64>("SEQ").is_ok());
+    assert!(rows[0].get::<String>("RAND").is_ok());
+    assert!(rows[0].column_names().contains(&"SEQ"));
+    assert!(rows[0].column_names().contains(&"RAND"));
 
     Ok(())
 }
