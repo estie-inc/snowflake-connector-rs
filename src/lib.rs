@@ -44,7 +44,7 @@ mod session;
 use std::time::Duration;
 
 pub use error::{Error, Result};
-pub use row::{SnowflakeDecode, SnowflakeRow};
+pub use row::{SnowflakeColumn, SnowflakeColumnType, SnowflakeDecode, SnowflakeRow};
 pub use session::SnowflakeSession;
 
 use auth::login;
