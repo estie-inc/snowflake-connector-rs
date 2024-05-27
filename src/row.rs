@@ -1,6 +1,6 @@
-use std::{collections::HashMap, ops::Deref, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-use chrono::{DateTime, Days, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime};
 
 use crate::{Error, Result};
 
@@ -40,6 +40,15 @@ impl SnowflakeColumnType {
     pub fn nullable(&self) -> bool {
         self.nullable
     }
+    pub fn length(&self) -> Option<i64> {
+        self.length
+    }
+    pub fn precision(&self) -> Option<i64> {
+        self.precision
+    }
+    pub fn scale(&self) -> Option<i64> {
+        self.scale
+    }
 }
 
 #[derive(Debug)]
@@ -55,10 +64,12 @@ impl SnowflakeRow {
             .column_indices
             .get(&column_name.to_ascii_uppercase())
             .ok_or_else(|| Error::Decode(format!("column not found: {}", column_name)))?;
-        self.row[*idx].try_get()
+        let ty = &self.column_types[*idx];
+        (&self.row[*idx], ty).try_get()
     }
     pub fn at<T: SnowflakeDecode>(&self, column_index: usize) -> Result<T> {
-        self.row[column_index].try_get()
+        let ty = &self.column_types[column_index];
+        (&self.row[column_index], ty).try_get()
     }
     pub fn column_names(&self) -> Vec<&str> {
         let mut names: Vec<(_, usize)> = self.column_indices.iter().map(|(k, v)| (k, *v)).collect();
@@ -84,11 +95,11 @@ impl SnowflakeRow {
 }
 
 pub trait SnowflakeDecode: Sized {
-    fn try_decode(value: &Option<String>) -> Result<Self>;
+    fn try_decode(value: &Option<String>, ty: &SnowflakeColumnType) -> Result<Self>;
 }
 
 impl SnowflakeDecode for u64 {
-    fn try_decode(value: &Option<String>) -> Result<Self> {
+    fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
         value
             .parse()
@@ -96,7 +107,7 @@ impl SnowflakeDecode for u64 {
     }
 }
 impl SnowflakeDecode for i64 {
-    fn try_decode(value: &Option<String>) -> Result<Self> {
+    fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
         value
             .parse()
@@ -104,7 +115,7 @@ impl SnowflakeDecode for i64 {
     }
 }
 impl SnowflakeDecode for i32 {
-    fn try_decode(value: &Option<String>) -> Result<Self> {
+    fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
         value
             .parse()
@@ -113,7 +124,7 @@ impl SnowflakeDecode for i32 {
 }
 
 impl SnowflakeDecode for f64 {
-    fn try_decode(value: &Option<String>) -> Result<Self> {
+    fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
         value
             .parse()
@@ -122,7 +133,7 @@ impl SnowflakeDecode for f64 {
 }
 
 impl SnowflakeDecode for i8 {
-    fn try_decode(value: &Option<String>) -> Result<Self> {
+    fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
         value
             .parse()
@@ -131,29 +142,29 @@ impl SnowflakeDecode for i8 {
 }
 
 impl SnowflakeDecode for String {
-    fn try_decode(value: &Option<String>) -> Result<Self> {
+    fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
         Ok(value.to_string())
     }
 }
 
 impl SnowflakeDecode for bool {
-    fn try_decode(value: &Option<String>) -> Result<Self> {
+    fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
-        if let Ok(v) = value.parse::<u16>() {
-            return Ok(v > 0);
+        match value.to_uppercase().as_str() {
+            "1" | "TRUE" => Ok(true),
+            "0" | "FALSE" => Ok(false),
+            _ => Err(Error::Decode(format!("'{value}' is not bool"))),
         }
-        if let Ok(v) = value.parse::<bool>() {
-            return Ok(v);
-        }
-        Err(Error::Decode(format!("'{value}' is not bool")))
     }
 }
 
 impl SnowflakeDecode for NaiveDateTime {
-    fn try_decode(value: &Option<String>) -> Result<Self> {
+    fn try_decode(value: &Option<String>, ty: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
-        if let Ok(v) = value.parse::<f64>() {
+        let scale = ty.scale.unwrap_or(0) as i32;
+        if let Ok(mut v) = value.parse::<f64>() {
+            v = v * 10_f64.powi(scale);
             let secs = v.trunc() as i64;
             let nsec = (v.fract() * 1_000_000_000.0) as u32;
             let dt = DateTime::from_timestamp(secs, nsec)
@@ -166,8 +177,25 @@ impl SnowflakeDecode for NaiveDateTime {
         Err(Error::Decode(format!("'{value}' is not datetime")))
     }
 }
-impl SnowflakeDecode for chrono::NaiveDate {
-    fn try_decode(value: &Option<String>) -> Result<Self> {
+
+impl SnowflakeDecode for NaiveTime {
+    fn try_decode(value: &Option<String>, ty: &SnowflakeColumnType) -> Result<Self> {
+        let value = unwrap(value)?;
+        let scale = ty.scale.unwrap_or(0) as i32;
+        if let Ok(mut v) = value.parse::<f64>() {
+            v = v * 10_f64.powi(scale);
+            let secs = v.trunc() as u32;
+            let nsec = (v.fract() * 1_000_000_000.0) as u32;
+            let t = NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
+                .ok_or_else(|| Error::Decode(format!("invalid time: {}", value)))?;
+            return Ok(t);
+        }
+        Err(Error::Decode(format!("'{value}' is not Time type")))
+    }
+}
+
+impl SnowflakeDecode for NaiveDate {
+    fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
         let days_since_epoch = value
             .parse::<u64>()
@@ -180,18 +208,18 @@ impl SnowflakeDecode for chrono::NaiveDate {
 }
 
 impl SnowflakeDecode for serde_json::Value {
-    fn try_decode(value: &Option<String>) -> Result<Self> {
+    fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
         serde_json::from_str(value).map_err(|_| Error::Decode(format!("'{value}' is not json")))
     }
 }
 
 impl<T: SnowflakeDecode> SnowflakeDecode for Option<T> {
-    fn try_decode(value: &Option<String>) -> Result<Self> {
+    fn try_decode(value: &Option<String>, ty: &SnowflakeColumnType) -> Result<Self> {
         if value.is_none() {
             return Ok(None);
         }
-        T::try_decode(value).map(|v| Some(v))
+        T::try_decode(value, ty).map(|v| Some(v))
     }
 }
 
@@ -199,9 +227,9 @@ trait TryGet {
     fn try_get<T: SnowflakeDecode>(&self) -> Result<T>;
 }
 
-impl TryGet for Option<String> {
+impl TryGet for (&Option<String>, &SnowflakeColumnType) {
     fn try_get<T: SnowflakeDecode>(&self) -> Result<T> {
-        T::try_decode(self)
+        T::try_decode(&self.0, &self.1)
     }
 }
 
