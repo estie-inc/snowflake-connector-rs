@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta};
 
 use crate::{Error, Result};
 
@@ -162,30 +162,97 @@ impl SnowflakeDecode for bool {
 impl SnowflakeDecode for NaiveDateTime {
     fn try_decode(value: &Option<String>, ty: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
-        let scale = ty.scale.unwrap_or(0) as i32;
-        if let Ok(mut v) = value.parse::<f64>() {
-            v = v * 10_f64.powi(scale);
-            let secs = v.trunc() as i64;
-            let nsec = (v.fract() * 1_000_000_000.0) as u32;
-            let dt = DateTime::from_timestamp(secs, nsec)
-                .ok_or_else(|| Error::Decode(format!("invalid datetime: {}", value)))?;
-            return Ok(dt.naive_utc());
+        let scale = ty.scale.unwrap_or(9);
+        match ty.snowflake_type().to_ascii_uppercase().as_str() {
+            "TIMESTAMP_LTZ" | "TIMESTAMP_NTZ" => parse_timestamp_ntz_ltz(value, scale),
+            "TIMESTAMP_TZ" => parse_timestamp_tz(value, scale),
+            _ => Err(Error::Decode(format!(
+                "'{value}' is of type {}",
+                ty.snowflake_type()
+            ))),
         }
-        if let Ok(v) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-            return Ok(v);
-        }
-        Err(Error::Decode(format!("'{value}' is not datetime")))
     }
+}
+
+fn parse_timestamp_tz(s: &str, scale: i64) -> Result<NaiveDateTime> {
+    // https://github.com/snowflakedb/snowflake-connector-nodejs/blob/5b7dcace7b7e994eb1323b4cc2f134d7549a5c54/lib/connection/result/column.js#L378
+    // result verion 0
+    if let Ok(v) = s.parse::<f64>() {
+        let scale_factor = 10i32.pow(scale as u32);
+        let frac_secs_with_tz = v * scale_factor as f64;
+        let frac_secs = frac_secs_with_tz / 16384.;
+        let mut min_addend = frac_secs_with_tz as i64 % 16384;
+        if min_addend < 0 {
+            min_addend += 16384;
+        }
+
+        let secs = frac_secs.trunc() as i64 / scale_factor as i64;
+        let nsec = (frac_secs.fract() * 10_f64.powi(9 - scale as i32)) as u32;
+        let dt = DateTime::from_timestamp(secs, nsec)
+            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {}", s)))?;
+        let dt = dt.naive_utc();
+        return dt
+            .checked_add_signed(TimeDelta::minutes(min_addend))
+            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {}", s)).into());
+    }
+
+    // other result version
+    let pair: Vec<_> = s.split_whitespace().collect();
+    let v = pair
+        .get(0)
+        .ok_or_else(|| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
+    let mut v = v
+        .parse::<f64>()
+        .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
+    let scale_factor = 10i32.pow(scale as u32);
+    v = v * scale_factor as f64;
+    let secs = v.trunc() as i64 / scale_factor as i64;
+    let nsec = (v.fract() * 10_f64.powi(9 - scale as i32)) as u32;
+    let dt = DateTime::from_timestamp(secs, nsec)
+        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {}", s)))?;
+    let dt = dt.naive_utc();
+
+    let tz = pair
+        .get(1)
+        .ok_or_else(|| Error::Decode(format!("invalid timezone for timestamp_tz: {}", s)))?;
+    let tz = tz
+        .parse::<i64>()
+        .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
+    if tz < 0 || 2880 < tz {
+        return Err(Error::Decode(format!(
+            "invalid timezone for timestamp_tz: {}",
+            s
+        )));
+    }
+    // subtract 24 hours from the timezone to map [0, 48] to [-24, 24]
+    let min_addend = 1440 - tz;
+    return dt
+        .checked_add_signed(TimeDelta::minutes(min_addend))
+        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {}", s)).into());
+}
+
+fn parse_timestamp_ntz_ltz(s: &str, scale: i64) -> Result<NaiveDateTime> {
+    let scale_factor = 10i32.pow(scale as u32);
+    if let Ok(mut v) = s.parse::<f64>() {
+        v = v * scale_factor as f64;
+        let secs = v.trunc() as i64 / scale_factor as i64;
+        let nsec = (v.fract() * 10_f64.powi(9 - scale as i32)) as u32;
+        let dt = DateTime::from_timestamp(secs, nsec)
+            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {}", s)))?;
+        return Ok(dt.naive_utc());
+    }
+    Err(Error::Decode(format!("Could not decode timestamp: {}", s)))
 }
 
 impl SnowflakeDecode for NaiveTime {
     fn try_decode(value: &Option<String>, ty: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
-        let scale = ty.scale.unwrap_or(0) as i32;
+        let scale = ty.scale.unwrap_or(0);
+        let scale_factor = 10i32.pow(scale as u32);
         if let Ok(mut v) = value.parse::<f64>() {
-            v = v * 10_f64.powi(scale);
-            let secs = v.trunc() as u32;
-            let nsec = (v.fract() * 1_000_000_000.0) as u32;
+            v = v * scale_factor as f64;
+            let secs = (v.trunc() / scale_factor as f64) as u32;
+            let nsec = (v.fract() * 10_f64.powi(9 - scale as i32)) as u32;
             let t = NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
                 .ok_or_else(|| Error::Decode(format!("invalid time: {}", value)))?;
             return Ok(t);
