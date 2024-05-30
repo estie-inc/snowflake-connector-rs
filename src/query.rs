@@ -21,7 +21,8 @@ pub struct QueryExecutor {
     qrmk: String,
     chunks: Vec<RawQueryResponseChunk>,
     chunk_headers: HeaderMap,
-    column_types: Arc<HashMap<String, (usize, SnowflakeColumnType)>>,
+    column_types: Arc<Vec<SnowflakeColumnType>>,
+    column_indices: Arc<HashMap<String, usize>>,
     row_set: Option<Vec<Vec<Option<String>>>>,
 }
 
@@ -101,22 +102,23 @@ impl QueryExecutor {
             Error::UnsupportedFormat("the response doesn't contain 'rowset'".to_string())
         })?;
 
+        let column_indices = row_types
+            .iter()
+            .enumerate()
+            .map(|(i, row_type)| (row_type.name.to_ascii_uppercase(), i))
+            .collect::<HashMap<_, _>>();
+        let column_indices = Arc::new(column_indices);
+
         let column_types = row_types
             .into_iter()
-            .enumerate()
-            .map(|(i, row_type)| {
-                (
-                    row_type.name.to_ascii_uppercase(),
-                    (
-                        i,
-                        SnowflakeColumnType {
-                            snowflake_type: row_type.data_type,
-                            nullable: row_type.nullable,
-                        },
-                    ),
-                )
+            .map(|row_type| SnowflakeColumnType {
+                snowflake_type: row_type.data_type,
+                nullable: row_type.nullable,
+                length: row_type.length,
+                precision: row_type.precision,
+                scale: row_type.scale,
             })
-            .collect::<HashMap<_, _>>();
+            .collect::<Vec<_>>();
         let column_types = Arc::new(column_types);
 
         let chunk_headers = response.data.chunk_headers.unwrap_or_default();
@@ -128,6 +130,7 @@ impl QueryExecutor {
             chunks,
             chunk_headers,
             column_types,
+            column_indices,
             row_set: Some(row_set),
         })
     }
@@ -188,6 +191,7 @@ impl QueryExecutor {
     fn convert_row(&self, row: Vec<Option<String>>) -> SnowflakeRow {
         SnowflakeRow {
             row,
+            column_indices: Arc::clone(&self.column_indices),
             column_types: Arc::clone(&self.column_types),
         }
     }
