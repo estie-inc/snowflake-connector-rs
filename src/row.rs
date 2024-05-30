@@ -167,7 +167,7 @@ impl SnowflakeDecode for NaiveDateTime {
             "TIMESTAMP_LTZ" | "TIMESTAMP_NTZ" => parse_timestamp_ntz_ltz(value, scale),
             "TIMESTAMP_TZ" => parse_timestamp_tz(value, scale),
             _ => Err(Error::Decode(format!(
-                "'{value}' is of type {}",
+                "Could not decode '{value}' as timestamp, found type {}",
                 ty.snowflake_type()
             ))),
         }
@@ -175,8 +175,9 @@ impl SnowflakeDecode for NaiveDateTime {
 }
 
 fn parse_timestamp_tz(s: &str, scale: i64) -> Result<NaiveDateTime> {
-    // https://github.com/snowflakedb/snowflake-connector-nodejs/blob/5b7dcace7b7e994eb1323b4cc2f134d7549a5c54/lib/connection/result/column.js#L378
-    // result verion 0
+    // First, we expect the string to be as the Result version 0,
+    // where timezone is baked into the value.
+    // Ref: https://github.com/snowflakedb/snowflake-connector-nodejs/blob/5b7dcace7b7e994eb1323b4cc2f134d7549a5c54/lib/connection/result/column.js#L378
     if let Ok(v) = s.parse::<f64>() {
         let scale_factor = 10i32.pow(scale as u32);
         let frac_secs_with_tz = v * scale_factor as f64;
@@ -195,8 +196,8 @@ fn parse_timestamp_tz(s: &str, scale: i64) -> Result<NaiveDateTime> {
             .checked_add_signed(TimeDelta::minutes(min_addend))
             .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {}", s)).into());
     }
-
-    // other result version
+    // Assume the value is encoded as the other format (i.e. result version > 0)
+    // once we cannot parse the string as a single float.
     let pair: Vec<_> = s.split_whitespace().collect();
     let v = pair
         .get(0)
