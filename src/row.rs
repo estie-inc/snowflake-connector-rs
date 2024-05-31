@@ -194,19 +194,19 @@ fn parse_timestamp_tz(s: &str, scale: i64) -> Result<NaiveDateTime> {
         let dt = dt.naive_utc();
         return dt
             .checked_add_signed(TimeDelta::minutes(min_addend))
-            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {}", s)).into());
+            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {}", s)));
     }
     // Assume the value is encoded as the other format (i.e. result version > 0)
     // once we cannot parse the string as a single float.
     let pair: Vec<_> = s.split_whitespace().collect();
     let v = pair
-        .get(0)
+        .first()
         .ok_or_else(|| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
     let mut v = v
         .parse::<f64>()
         .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
     let scale_factor = 10i32.pow(scale as u32);
-    v = v * scale_factor as f64;
+    v *= scale_factor as f64;
     let secs = v.trunc() as i64 / scale_factor as i64;
     let nsec = (v.fract() * 10_f64.powi(9 - scale as i32)) as u32;
     let dt = DateTime::from_timestamp(secs, nsec)
@@ -219,7 +219,7 @@ fn parse_timestamp_tz(s: &str, scale: i64) -> Result<NaiveDateTime> {
     let tz = tz
         .parse::<i64>()
         .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
-    if tz < 0 || 2880 < tz {
+    if !(0..=2880).contains(&tz) {
         return Err(Error::Decode(format!(
             "invalid timezone for timestamp_tz: {}",
             s
@@ -227,15 +227,14 @@ fn parse_timestamp_tz(s: &str, scale: i64) -> Result<NaiveDateTime> {
     }
     // subtract 24 hours from the timezone to map [0, 48] to [-24, 24]
     let min_addend = 1440 - tz;
-    return dt
-        .checked_add_signed(TimeDelta::minutes(min_addend))
-        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {}", s)).into());
+    dt.checked_add_signed(TimeDelta::minutes(min_addend))
+        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {}", s)))
 }
 
 fn parse_timestamp_ntz_ltz(s: &str, scale: i64) -> Result<NaiveDateTime> {
     let scale_factor = 10i32.pow(scale as u32);
     if let Ok(mut v) = s.parse::<f64>() {
-        v = v * scale_factor as f64;
+        v *= scale_factor as f64;
         let secs = v.trunc() as i64 / scale_factor as i64;
         let nsec = (v.fract() * 10_f64.powi(9 - scale as i32)) as u32;
         let dt = DateTime::from_timestamp(secs, nsec)
@@ -251,7 +250,7 @@ impl SnowflakeDecode for NaiveTime {
         let scale = ty.scale.unwrap_or(0);
         let scale_factor = 10i32.pow(scale as u32);
         if let Ok(mut v) = value.parse::<f64>() {
-            v = v * scale_factor as f64;
+            v *= scale_factor as f64;
             let secs = (v.trunc() / scale_factor as f64) as u32;
             let nsec = (v.fract() * 10_f64.powi(9 - scale as i32)) as u32;
             let t = NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
@@ -297,7 +296,7 @@ trait TryGet {
 
 impl TryGet for (&Option<String>, &SnowflakeColumnType) {
     fn try_get<T: SnowflakeDecode>(&self) -> Result<T> {
-        T::try_decode(&self.0, &self.1)
+        T::try_decode(self.0, self.1)
     }
 }
 

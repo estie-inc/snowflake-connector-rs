@@ -35,7 +35,7 @@ async fn test_decode() -> Result<()> {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get::<i64>("n")?, 42);
     assert_eq!(rows[0].get::<String>("s")?, "hello");
-    assert_eq!(rows[0].get::<bool>("b")?, false);
+    assert!(!(rows[0].get::<bool>("b")?));
     assert_eq!(
         rows[0].get::<chrono::NaiveDate>("d")?,
         chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
