@@ -53,7 +53,7 @@ async fn test_query_executor() -> Result<()> {
     let query =
         "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS RAND FROM TABLE(GENERATOR(ROWCOUNT=>10000))";
 
-    let mut executor = session.execute(query).await?;
+    let executor = session.execute(query).await?;
     let mut rows = Vec::with_capacity(10000);
     while let Some(mut r) = executor.fetch_next_chunk().await? {
         rows.append(&mut r);

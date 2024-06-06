@@ -265,12 +265,19 @@ impl SnowflakeDecode for NaiveDate {
     fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
         let days_since_epoch = value
-            .parse::<u64>()
+            .parse::<i64>()
             .map_err(|_| Error::Decode(format!("'{value}' is not Date type")))?;
-        NaiveDate::from_ymd_opt(1970, 1, 1)
-            .unwrap_or_default()
-            .checked_add_days(Days::new(days_since_epoch))
-            .ok_or(Error::Decode(format!("'{value}' is not a valid date")))
+        let unix_epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap_or_default();
+        if days_since_epoch >= 0 {
+            unix_epoch
+                .checked_add_days(Days::new(days_since_epoch as u64))
+                .ok_or(Error::Decode(format!("'{value}' is not a valid date")))
+        } else {
+            let d = days_since_epoch.abs() as u64;
+            unix_epoch
+                .checked_sub_days(Days::new(d))
+                .ok_or(Error::Decode(format!("'{value}' is not a valid date")))
+        }
     }
 }
 

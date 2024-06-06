@@ -14,7 +14,7 @@ pub struct SnowflakeSession {
 
 impl SnowflakeSession {
     pub async fn query<Q: Into<QueryRequest>>(&self, request: Q) -> Result<Vec<SnowflakeRow>> {
-        let mut executor = QueryExecutor::create(self, request).await?;
+        let executor = QueryExecutor::create(self, request).await?;
         executor.fetch_all().await
     }
 
