@@ -6,6 +6,7 @@ use http::{
     HeaderMap,
 };
 use reqwest::Client;
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 use crate::row::SnowflakeColumnType;
@@ -19,11 +20,11 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 pub struct QueryExecutor {
     http: Client,
     qrmk: String,
-    chunks: Vec<RawQueryResponseChunk>,
+    chunks: Mutex<Vec<RawQueryResponseChunk>>,
     chunk_headers: HeaderMap,
     column_types: Arc<Vec<SnowflakeColumnType>>,
     column_indices: Arc<HashMap<String, usize>>,
-    row_set: Option<Vec<Vec<Option<String>>>>,
+    row_set: Mutex<Option<Vec<Vec<Option<String>>>>>,
 }
 
 impl QueryExecutor {
@@ -95,12 +96,14 @@ impl QueryExecutor {
         let http = http.clone();
         let qrmk = response.data.qrmk.unwrap_or_default();
         let chunks = response.data.chunks.unwrap_or_default();
+        let chunks = Mutex::new(chunks);
         let row_types = response.data.row_types.ok_or_else(|| {
             Error::UnsupportedFormat("the response doesn't contain 'rowtype'".to_string())
         })?;
         let row_set = response.data.row_set.ok_or_else(|| {
             Error::UnsupportedFormat("the response doesn't contain 'rowset'".to_string())
         })?;
+        let row_set = Mutex::new(Some(row_set));
 
         let column_indices = row_types
             .iter()
@@ -131,18 +134,21 @@ impl QueryExecutor {
             chunk_headers,
             column_types,
             column_indices,
-            row_set: Some(row_set),
+            row_set,
         })
     }
 
     /// Check if there are no more rows to fetch
-    pub fn eof(&self) -> bool {
-        self.row_set.is_none() && self.chunks.is_empty()
+    pub async fn eof(&self) -> bool {
+        let row_set = &*self.row_set.lock().await;
+        let chunks = &*self.chunks.lock().await;
+        row_set.is_none() && chunks.is_empty()
     }
 
     /// Fetch a single chunk
-    pub async fn fetch_next_chunk(&mut self) -> Result<Option<Vec<SnowflakeRow>>> {
-        if let Some(row_set) = self.row_set.take() {
+    pub async fn fetch_next_chunk(&self) -> Result<Option<Vec<SnowflakeRow>>> {
+        let row_set = &mut *self.row_set.lock().await;
+        if let Some(row_set) = row_set.take() {
             let rows = row_set.into_iter().map(|r| self.convert_row(r)).collect();
             return Ok(Some(rows));
         }
@@ -150,7 +156,8 @@ impl QueryExecutor {
         let http = self.http.clone();
         let chunk_headers = self.chunk_headers.clone();
         let qrmk = self.qrmk.clone();
-        let Some(chunk) = self.chunks.pop() else {
+        let chunks = &mut *self.chunks.lock().await;
+        let Some(chunk) = chunks.pop() else {
             // Nothing to fetch
             return Ok(None);
         };
@@ -161,17 +168,19 @@ impl QueryExecutor {
     }
 
     /// Fetch all the remaining chunks at once
-    pub async fn fetch_all(&mut self) -> Result<Vec<SnowflakeRow>> {
+    pub async fn fetch_all(&self) -> Result<Vec<SnowflakeRow>> {
         let mut rows = Vec::new();
-        if let Some(row_set) = self.row_set.take() {
+        let row_set = &mut *self.row_set.lock().await;
+        let chunks = &mut *self.chunks.lock().await;
+        if let Some(row_set) = row_set.take() {
             rows.extend(row_set.into_iter().map(|r| self.convert_row(r)));
-        } else if self.chunks.is_empty() {
+        } else if chunks.is_empty() {
             // Nothing to fetch
             return Ok(vec![]);
         }
 
-        let mut handles = Vec::with_capacity(self.chunks.len());
-        while let Some(chunk) = self.chunks.pop() {
+        let mut handles = Vec::with_capacity(chunks.len());
+        while let Some(chunk) = chunks.pop() {
             let http = self.http.clone();
             let chunk_headers = self.chunk_headers.clone();
             let qrmk = self.qrmk.clone();
