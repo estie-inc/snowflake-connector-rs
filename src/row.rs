@@ -273,7 +273,7 @@ impl SnowflakeDecode for NaiveDate {
                 .checked_add_days(Days::new(days_since_epoch as u64))
                 .ok_or(Error::Decode(format!("'{value}' is not a valid date")))
         } else {
-            let d = days_since_epoch.abs() as u64;
+            let d = days_since_epoch.unsigned_abs();
             unix_epoch
                 .checked_sub_days(Days::new(d))
                 .ok_or(Error::Decode(format!("'{value}' is not a valid date")))
