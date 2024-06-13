@@ -85,7 +85,7 @@ impl SnowflakeClient {
         auth: SnowflakeAuthMethod,
         config: SnowflakeClientConfig,
     ) -> Result<Self> {
-        let client = ClientBuilder::new().gzip(true).build()?;
+        let client = ClientBuilder::new().gzip(true).use_rustls_tls().build()?;
         Ok(Self {
             http: client,
             username: username.to_string(),
