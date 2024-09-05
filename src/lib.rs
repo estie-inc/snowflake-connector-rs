@@ -52,6 +52,7 @@ use auth::login;
 
 use reqwest::{Client, ClientBuilder};
 
+#[derive(Clone)]
 pub struct SnowflakeClient {
     http: Client,
 
@@ -60,7 +61,7 @@ pub struct SnowflakeClient {
     config: SnowflakeClientConfig,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SnowflakeClientConfig {
     pub account: String,
 
@@ -71,6 +72,7 @@ pub struct SnowflakeClientConfig {
     pub timeout: Option<Duration>,
 }
 
+#[derive(Clone)]
 pub enum SnowflakeAuthMethod {
     Password(String),
     KeyPair {
