@@ -53,9 +53,9 @@ impl SnowflakeColumnType {
 
 #[derive(Debug)]
 pub struct SnowflakeRow {
-    pub(crate) row: Vec<Option<String>>,
-    pub(crate) column_types: Arc<Vec<SnowflakeColumnType>>,
-    pub(crate) column_indices: Arc<HashMap<String, usize>>,
+    pub row: Vec<Option<String>>,
+    pub column_types: Arc<Vec<SnowflakeColumnType>>,
+    pub column_indices: Arc<HashMap<String, usize>>,
 }
 
 impl SnowflakeRow {
