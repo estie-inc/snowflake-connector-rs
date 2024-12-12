@@ -14,7 +14,7 @@ use crate::SnowflakeSession;
 use crate::{chunk::download_chunk, Error, Result, SnowflakeRow};
 
 pub(super) const SESSION_EXPIRED: &str = "390112";
-pub(super) const QUERY_IN_PROGRESS_ASYNC_CODE: &str = "333334";
+pub(super) const QUERY_IN_PROGRESS_ASYNC_CODE: &str = "333333";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 
 pub struct QueryExecutor {
