@@ -14,6 +14,7 @@ use crate::SnowflakeSession;
 use crate::{chunk::download_chunk, Error, Result, SnowflakeRow};
 
 pub(super) const SESSION_EXPIRED: &str = "390112";
+pub(super) const QUERY_IN_PROGRESS_CODE: &str = "333333";
 pub(super) const QUERY_IN_PROGRESS_ASYNC_CODE: &str = "333334";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 
@@ -66,7 +67,10 @@ impl QueryExecutor {
         let mut response: SnowflakeResponse =
             serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
 
-        if response.code.as_deref() == Some(QUERY_IN_PROGRESS_ASYNC_CODE) {
+        let response_code = response.code.as_deref();
+        if response_code == Some(QUERY_IN_PROGRESS_ASYNC_CODE)
+            || response_code == Some(QUERY_IN_PROGRESS_CODE)
+        {
             match response.data.get_result_url {
                 Some(result_url) => {
                     response =
