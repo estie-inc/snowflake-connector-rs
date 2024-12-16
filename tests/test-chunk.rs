@@ -1,6 +1,39 @@
 mod common;
 
+use futures::StreamExt;
 use snowflake_connector_rs::Result;
+
+#[tokio::test]
+async fn test_fetch_all_ordered() -> Result<()> {
+    // Arrange
+    let client = common::connect()?;
+
+    // Act
+    let session = client.create_session().await?;
+    let query = "SELECT * FROM \"SNOWFLAKE_SAMPLE_DATA\".\"TPCH_SF10\".\"ORDERS\" ORDER BY \"O_ORDERKEY\" ASC LIMIT 1000000";
+    let executor = session.execute(query).await?;
+
+    // Assert
+    let mut row_count = 0;
+    let prev_order_key = 0;
+    let mut stream = executor.fetch_all_ordered().await;
+    while let Some(Ok(row)) = stream.next().await {
+        row_count += 1;
+        if prev_order_key >= row.get::<u64>("O_ORDERKEY").unwrap() {
+            panic!(
+                "Order key is not in order: received {} but already encountered {}",
+                row.get::<u64>("O_ORDERKEY").unwrap(),
+                prev_order_key
+            )
+        }
+    }
+
+    assert!(
+        row_count == 1000000,
+        "Expected 1000000 rows but got {row_count}"
+    );
+    Ok(())
+}
 
 #[tokio::test]
 async fn test_download_chunked_results() -> Result<()> {

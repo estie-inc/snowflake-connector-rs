@@ -8,6 +8,10 @@ async fn test_decode() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
+    session
+        .execute("ALTER SESSION SET timezone = 'UTC'")
+        .await?;
+
     // Create a temporary table
     // DATETIME aliases TIMESTAMP_NTZ
     let query = "CREATE TEMPORARY TABLE example (

@@ -1,13 +1,15 @@
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
 
+use futures::stream::{self, StreamExt};
 use http::{
     header::{ACCEPT, AUTHORIZATION},
     HeaderMap,
 };
 use reqwest::Client;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::row::SnowflakeColumnType;
 use crate::SnowflakeSession;
@@ -17,6 +19,7 @@ pub(super) const SESSION_EXPIRED: &str = "390112";
 pub(super) const QUERY_IN_PROGRESS_CODE: &str = "333333";
 pub(super) const QUERY_IN_PROGRESS_ASYNC_CODE: &str = "333334";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
+const MAXIMUM_CHUNK_DOWNLOAD_CONCURRENCY: usize = 10;
 
 pub struct QueryExecutor {
     http: Client,
@@ -201,6 +204,67 @@ impl QueryExecutor {
         Ok(rows)
     }
 
+    /// Fetch all the remaining chunks concurrently but stream rows in order
+    pub async fn fetch_all_ordered(&self) -> ReceiverStream<Result<SnowflakeRow>> {
+        let (tx, rx) = mpsc::channel(10);
+        let rx = ReceiverStream::new(rx);
+
+        // First process rows sent along with the initial results response
+        let row_set = &mut *self.row_set.lock().await;
+        if let Some(row_set) = row_set.take() {
+            for row in row_set.into_iter() {
+                let _ = tx.send(Ok(self.convert_row(row))).await;
+            }
+        }
+        let _ = row_set;
+
+        let mut chunks = std::mem::take(&mut *self.chunks.lock().await);
+        let http = self.http.clone();
+        let chunk_headers = self.chunk_headers.clone();
+        let qrmk = self.qrmk.clone();
+        let column_indices = Arc::clone(&self.column_indices);
+        let column_types = Arc::clone(&self.column_types);
+
+        tokio::spawn(async move {
+            stream::iter(chunks.drain(..))
+                .map(|chunk| {
+                    let http = http.clone();
+                    let chunk_headers = chunk_headers.clone();
+                    let qrmk = qrmk.clone();
+                    tokio::spawn(async move {
+                        let rows = download_chunk(http, chunk.url, chunk_headers, qrmk).await?;
+                        Ok(rows)
+                    })
+                })
+                .buffered(MAXIMUM_CHUNK_DOWNLOAD_CONCURRENCY)
+                .for_each(
+                    |chunks: std::result::Result<
+                        Result<Vec<Vec<Option<String>>>>,
+                        tokio::task::JoinError,
+                    >| async {
+                        for chunk in chunks.into_iter() {
+                            for rows in chunk.into_iter() {
+                                for row in rows.into_iter() {
+                                    let column_indices = Arc::clone(&column_indices);
+                                    let column_types = Arc::clone(&column_types);
+                                    let _ = tx
+                                        .send(Ok(SnowflakeRow {
+                                            row,
+                                            column_indices,
+                                            column_types,
+                                        }))
+                                        .await;
+                                }
+                            }
+                        }
+                    },
+                )
+                .await;
+        });
+
+        rx
+    }
+
     fn convert_row(&self, row: Vec<Option<String>>) -> SnowflakeRow {
         SnowflakeRow {
             row,
@@ -337,7 +401,7 @@ struct RawQueryResponseParameter {
     value: serde_json::Value,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawQueryResponseChunk {
     url: String,
