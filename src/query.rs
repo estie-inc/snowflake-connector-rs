@@ -233,32 +233,33 @@ impl QueryExecutor {
                     let qrmk = qrmk.clone();
                     tokio::spawn(async move {
                         let rows = download_chunk(http, chunk.url, chunk_headers, qrmk).await?;
-                        Ok(rows)
+                        Ok::<Vec<Vec<Option<String>>>, Error>(rows)
                     })
                 })
                 .buffered(MAXIMUM_CHUNK_DOWNLOAD_CONCURRENCY)
-                .for_each(
-                    |chunks: std::result::Result<
-                        Result<Vec<Vec<Option<String>>>>,
-                        tokio::task::JoinError,
-                    >| async {
-                        for chunk in chunks.into_iter() {
-                            for rows in chunk.into_iter() {
-                                for row in rows.into_iter() {
-                                    let column_indices = Arc::clone(&column_indices);
-                                    let column_types = Arc::clone(&column_types);
-                                    let _ = tx
-                                        .send(Ok(SnowflakeRow {
-                                            row,
-                                            column_indices,
-                                            column_types,
-                                        }))
-                                        .await;
-                                }
+                .for_each(|chunks| async {
+                    match chunks {
+                        Ok(Ok(rows)) => {
+                            for row in rows.into_iter() {
+                                let column_indices = Arc::clone(&column_indices);
+                                let column_types = Arc::clone(&column_types);
+                                let _ = tx
+                                    .send(Ok(SnowflakeRow {
+                                        row,
+                                        column_indices,
+                                        column_types,
+                                    }))
+                                    .await;
                             }
                         }
-                    },
-                )
+                        Ok(Err(err)) => {
+                            let _ = tx.send(Err(err)).await;
+                        }
+                        Err(err) => {
+                            let _ = tx.send(Err(Error::FutureJoin(err))).await;
+                        }
+                    }
+                })
                 .await;
         });
 
