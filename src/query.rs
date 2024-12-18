@@ -209,15 +209,7 @@ impl QueryExecutor {
         let (tx, rx) = mpsc::channel(10);
         let rx = ReceiverStream::new(rx);
 
-        // First process rows sent along with the initial results response
-        let row_set = &mut *self.row_set.lock().await;
-        if let Some(row_set) = row_set.take() {
-            for row in row_set.into_iter() {
-                let _ = tx.send(Ok(self.convert_row(row))).await;
-            }
-        }
-        let _ = row_set;
-
+        let mut row_set = std::mem::take(&mut *self.row_set.lock().await);
         let mut chunks = std::mem::take(&mut *self.chunks.lock().await);
         let http = self.http.clone();
         let chunk_headers = self.chunk_headers.clone();
@@ -226,6 +218,20 @@ impl QueryExecutor {
         let column_types = Arc::clone(&self.column_types);
 
         tokio::spawn(async move {
+            // First process rows sent along with the initial results response
+            if let Some(row_set) = row_set.take() {
+                for row in row_set.into_iter() {
+                    let _ = tx
+                        .send(Ok(SnowflakeRow {
+                            row,
+                            column_indices: Arc::clone(&column_indices),
+                            column_types: Arc::clone(&column_types),
+                        }))
+                        .await;
+                }
+            }
+            let _ = row_set;
+
             stream::iter(chunks.drain(..))
                 .map(|chunk| {
                     let http = http.clone();
