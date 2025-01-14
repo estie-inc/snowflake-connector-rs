@@ -1,7 +1,9 @@
 mod key_pair;
 
 use chrono::Utc;
+use pkcs8::DecodePrivateKey;
 use reqwest::Client;
+use rsa::RsaPrivateKey;
 use serde_json::{json, Value};
 
 use crate::{Error, Result, SnowflakeAuthMethod, SnowflakeClientConfig};
@@ -72,9 +74,13 @@ fn login_request_data(
             encrypted_pem,
             password,
         } => {
+            let private_key = match password.len() {
+                0 => RsaPrivateKey::from_pkcs8_pem(&encrypted_pem)?,
+                _ => RsaPrivateKey::from_pkcs8_encrypted_pem(encrypted_pem, password)?,
+            };
+
             let jwt = generate_jwt_from_key_pair(
-                encrypted_pem,
-                password,
+                private_key,
                 username,
                 &config.account,
                 Utc::now().timestamp(),

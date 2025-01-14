@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
+use pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::RsaPrivateKey;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -8,8 +8,7 @@ use sha2::{Digest, Sha256};
 use crate::Result;
 
 pub(super) fn generate_jwt_from_key_pair(
-    encrypted_pem: &str,
-    password: impl AsRef<[u8]>,
+    private_key: RsaPrivateKey,
     username: &str,
     account: &str,
     timestamp: i64,
@@ -20,8 +19,7 @@ pub(super) fn generate_jwt_from_key_pair(
         .map(|s| s.to_ascii_uppercase())
         .unwrap_or_default();
     let username = username.to_ascii_uppercase();
-    let private = RsaPrivateKey::from_pkcs8_encrypted_pem(encrypted_pem, password)?;
-    let public = private.to_public_key();
+    let public = private_key.to_public_key();
     let der = public.to_public_key_der()?;
     let mut hasher = Sha256::new();
     hasher.update(der);
@@ -34,7 +32,7 @@ pub(super) fn generate_jwt_from_key_pair(
         "iat": timestamp,
         "exp": timestamp + 600
     });
-    let key = EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF)?.as_bytes())?;
+    let key = EncodingKey::from_rsa_pem(private_key.to_pkcs8_pem(LineEnding::LF)?.as_bytes())?;
     let jwt = jsonwebtoken::encode(
         &Header {
             alg: Algorithm::RS256,
@@ -48,14 +46,17 @@ pub(super) fn generate_jwt_from_key_pair(
 
 #[cfg(test)]
 mod tests {
+    use pkcs8::DecodePrivateKey;
+
     use super::*;
 
     #[test]
     fn test_generate_jwt_from_key_pair() -> Result<()> {
         let encrypted_pem = include_str!("./test_snowflake_key.p8");
+        let private_key =
+            RsaPrivateKey::from_pkcs8_encrypted_pem(encrypted_pem, "12345".as_bytes())?;
         let jwt = generate_jwt_from_key_pair(
-            encrypted_pem,
-            "12345".as_bytes(),
+            private_key,
             "USER_NAME",
             "myaccount.ap-northeast-1.aws",
             1700746374,
