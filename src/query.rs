@@ -311,7 +311,9 @@ async fn poll_for_async_results(
 
         let response: SnowflakeResponse =
             serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
-        if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE) {
+        if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE)
+            && response.code.as_deref() != Some(QUERY_IN_PROGRESS_CODE)
+        {
             return Ok(response);
         }
     }

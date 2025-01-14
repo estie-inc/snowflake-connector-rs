@@ -1,6 +1,6 @@
 [package]
 name = "snowflake-connector-rs"
-version = "0.6.3"
+version = "0.6.5"
 edition = "2021"
 authors = ["kenkoooo <kenkou.n@gmail.com>"]
 description = "A Rust client for Snowflake"
@@ -18,7 +18,7 @@ reqwest = { version = "0.12", features = [
 ], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 uuid = { version = "1.11", features = ["v4"] }
 flate2 = "1.0"
 tokio = { version = "1.41", features = ["rt"] }
