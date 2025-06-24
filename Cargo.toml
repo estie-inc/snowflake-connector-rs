@@ -24,7 +24,7 @@ flate2 = "1.0"
 tokio = { version = "1.32", features = ["rt"] }
 chrono = "0.4"
 pkcs8 = { version = "0.10", features = ["pem", "pkcs5", "encryption"] }
-rsa = "0.9.4"
+rsa = { version = "0.9.4", features = ["pem"] }
 sha2 = "0.10.8"
 base64 = "0.21.5"
 jsonwebtoken = "9.1.0"

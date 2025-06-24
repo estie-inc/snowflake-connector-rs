@@ -68,13 +68,10 @@ fn login_request_data(
             "PASSWORD": password,
             "ACCOUNT_NAME": config.account
         })),
-        SnowflakeAuthMethod::KeyPair {
-            encrypted_pem,
-            password,
-        } => {
+        SnowflakeAuthMethod::KeyPair { pem, password } => {
             let jwt = generate_jwt_from_key_pair(
-                encrypted_pem,
-                password,
+                pem,
+                password.as_ref().map(|p| p.as_slice()),
                 username,
                 &config.account,
                 Utc::now().timestamp(),

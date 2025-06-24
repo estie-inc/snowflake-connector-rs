@@ -76,8 +76,8 @@ pub struct SnowflakeClientConfig {
 pub enum SnowflakeAuthMethod {
     Password(String),
     KeyPair {
-        encrypted_pem: String,
-        password: Vec<u8>,
+        pem: String,
+        password: Option<Vec<u8>>,
     },
 }
 

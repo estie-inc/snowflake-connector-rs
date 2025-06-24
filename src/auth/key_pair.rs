@@ -1,15 +1,16 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
+use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::RsaPrivateKey;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::Result;
+use crate::{Error, Result};
 
 pub(super) fn generate_jwt_from_key_pair(
-    encrypted_pem: &str,
-    password: impl AsRef<[u8]>,
+    pem: &str,
+    password: Option<&[u8]>,
     username: &str,
     account: &str,
     timestamp: i64,
@@ -20,7 +21,9 @@ pub(super) fn generate_jwt_from_key_pair(
         .map(|s| s.to_ascii_uppercase())
         .unwrap_or_default();
     let username = username.to_ascii_uppercase();
-    let private = RsaPrivateKey::from_pkcs8_encrypted_pem(encrypted_pem, password)?;
+
+    let private = try_parse_private_key(pem, password)?;
+
     let public = private.to_public_key();
     let der = public.to_public_key_der()?;
     let mut hasher = Sha256::new();
@@ -46,6 +49,18 @@ pub(super) fn generate_jwt_from_key_pair(
     Ok(jwt)
 }
 
+fn try_parse_private_key(pem: &str, password: Option<&[u8]>) -> Result<RsaPrivateKey> {
+    if let Some(password) = password {
+        if let Ok(private) = RsaPrivateKey::from_pkcs8_encrypted_pem(pem, password) {
+            return Ok(private);
+        }
+    }
+
+    RsaPrivateKey::from_pkcs8_pem(pem)
+        .or_else(|_| RsaPrivateKey::from_pkcs1_pem(pem))
+        .map_err(|e| Error::Decode(format!("Failed to parse private key: {}", e)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,7 +70,7 @@ mod tests {
         let encrypted_pem = include_str!("./test_snowflake_key.p8");
         let jwt = generate_jwt_from_key_pair(
             encrypted_pem,
-            "12345".as_bytes(),
+            Some("12345".as_bytes()),
             "USER_NAME",
             "myaccount.ap-northeast-1.aws",
             1700746374,
