@@ -8,6 +8,23 @@ use crate::{Error, Result, SnowflakeAuthMethod, SnowflakeClientConfig};
 
 use self::key_pair::generate_jwt_from_key_pair;
 
+fn get_base_url(config: &SnowflakeClientConfig) -> String {
+    let host = config
+        .host
+        .clone()
+        .unwrap_or_else(|| format!("{}.snowflakecomputing.com", config.account));
+    let port = config
+        .port
+        .map(|p| format!(":{p}"))
+        .unwrap_or_else(|| "".to_string());
+    let protocol = config
+        .protocol
+        .clone()
+        .unwrap_or_else(|| "https".to_string());
+
+    format!("{protocol}://{host}{port}")
+}
+
 /// Login to Snowflake and return a session token.
 pub(super) async fn login(
     http: &Client,
@@ -15,10 +32,8 @@ pub(super) async fn login(
     auth: &SnowflakeAuthMethod,
     config: &SnowflakeClientConfig,
 ) -> Result<String> {
-    let url = format!(
-        "https://{account}.snowflakecomputing.com/session/v1/login-request",
-        account = config.account
-    );
+    let base_url = get_base_url(config);
+    let url = format!("{base_url}/session/v1/login-request");
 
     let mut queries = vec![];
     if let Some(warehouse) = &config.warehouse {
@@ -86,6 +101,10 @@ fn login_request_data(
                 "AUTHENTICATOR": "SNOWFLAKE_JWT"
             }))
         }
+        SnowflakeAuthMethod::Oauth { token } => Ok(json!({
+            "AUTHENTICATOR": "OAUTH",
+            "TOKEN": token
+        })),
     }
 }
 

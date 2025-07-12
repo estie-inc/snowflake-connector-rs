@@ -70,6 +70,9 @@ pub struct SnowflakeClientConfig {
     pub schema: Option<String>,
     pub role: Option<String>,
     pub timeout: Option<Duration>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub protocol: Option<String>,
 }
 
 #[derive(Clone)]
@@ -78,6 +81,9 @@ pub enum SnowflakeAuthMethod {
     KeyPair {
         encrypted_pem: String,
         password: Vec<u8>,
+    },
+    Oauth {
+        token: String,
     },
 }
 
@@ -120,6 +126,9 @@ impl SnowflakeClient {
             account: self.config.account.clone(),
             session_token,
             timeout: self.config.timeout,
+            host: self.config.host.clone(),
+            port: self.config.port,
+            protocol: self.config.protocol.clone(),
         })
     }
 }

@@ -9,6 +9,10 @@ pub fn connect() -> Result<SnowflakeClient> {
     let warehouse = std::env::var("SNOWFLAKE_WAREHOUSE").ok();
     let database = std::env::var("SNOWFLAKE_DATABASE").ok();
     let schema = std::env::var("SNOWFLAKE_SCHEMA").ok();
+    let host = std::env::var("SNOWFLAKE_HOST").ok();
+    let port = std::env::var("SNOWFLAKE_PORT").ok().and_then(|var| var.parse().ok());
+    let protocol = std::env::var("SNOWFLAKE_PROTOCOL").ok();
+
 
     let client = SnowflakeClient::new(
         &username,
@@ -19,6 +23,9 @@ pub fn connect() -> Result<SnowflakeClient> {
             database,
             schema,
             role,
+            host,
+            port,
+            protocol,
             timeout: None,
         },
     )?;
