@@ -24,12 +24,15 @@ pub fn connect() -> Result<SnowflakeClient> {
             database,
             schema,
             role,
-            host,
-            port,
-            protocol,
             timeout: None,
         },
     )?;
+
+    let client = if let Some(ref host) = host {
+        client.with_address(host, port, protocol)?
+    } else {
+        client
+    };
 
     Ok(client)
 }

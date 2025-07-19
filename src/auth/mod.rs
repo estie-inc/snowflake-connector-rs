@@ -4,25 +4,29 @@ use chrono::Utc;
 use reqwest::Client;
 use serde_json::{json, Value};
 
-use crate::{Error, Result, SnowflakeAuthMethod, SnowflakeClientConfig};
+use crate::{Error, Result, SnowflakeAuthMethod, SnowflakeClientConfig, SnowflakeConnectionConfig};
 
 use self::key_pair::generate_jwt_from_key_pair;
 
-fn get_base_url(config: &SnowflakeClientConfig) -> String {
-    let host = config
-        .host
-        .clone()
-        .unwrap_or_else(|| format!("{}.snowflakecomputing.com", config.account));
-    let port = config
-        .port
-        .map(|p| format!(":{p}"))
-        .unwrap_or_else(|| "".to_string());
-    let protocol = config
-        .protocol
-        .clone()
-        .unwrap_or_else(|| "https".to_string());
+fn get_base_url(
+    config: &SnowflakeClientConfig,
+    connection_config: &Option<SnowflakeConnectionConfig>,
+) -> String {
+    if let Some(connection_config) = connection_config {
+        let host = &connection_config.host;
+        let port = connection_config
+            .port
+            .map(|p| format!(":{p}"))
+            .unwrap_or_else(|| "".to_string());
+        let protocol = connection_config
+            .protocol
+            .clone()
+            .unwrap_or_else(|| "https".to_string());
 
-    format!("{protocol}://{host}{port}")
+        format!("{protocol}://{host}{port}")
+    } else {
+        format!("https://{}.snowflakecomputing.com", config.account)
+    }
 }
 
 /// Login to Snowflake and return a session token.
@@ -31,8 +35,9 @@ pub(super) async fn login(
     username: &str,
     auth: &SnowflakeAuthMethod,
     config: &SnowflakeClientConfig,
+    connection_config: &Option<SnowflakeConnectionConfig>,
 ) -> Result<String> {
-    let base_url = get_base_url(config);
+    let base_url = get_base_url(config, connection_config);
     let url = format!("{base_url}/session/v1/login-request");
 
     let mut queries = vec![];
