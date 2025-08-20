@@ -91,10 +91,10 @@ impl QueryExecutor {
             return Err(Error::Communication(response.message.unwrap_or_default()));
         }
 
-        if let Some(format) = response.data.query_result_format
-            && format != "json"
-        {
-            return Err(Error::UnsupportedFormat(format.clone()));
+        if let Some(format) = response.data.query_result_format {
+            if format != "json" {
+                return Err(Error::UnsupportedFormat(format.clone()));
+            }
         }
 
         let http = http.clone();
