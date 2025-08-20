@@ -92,9 +92,10 @@ impl QueryExecutor {
         }
 
         if let Some(format) = response.data.query_result_format
-            && format != "json" {
-                return Err(Error::UnsupportedFormat(format.clone()));
-            }
+            && format != "json"
+        {
+            return Err(Error::UnsupportedFormat(format.clone()));
+        }
 
         let http = http.clone();
         let qrmk = response.data.qrmk.unwrap_or_default();
