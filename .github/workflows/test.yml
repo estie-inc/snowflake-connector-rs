@@ -15,14 +15,14 @@ env:
   SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
   SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
   SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
-  
+
 jobs:
   test:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        version: [1.74, stable]
+        version: [1.85, stable]
     name: Test with Rust ${{ matrix.version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     steps:

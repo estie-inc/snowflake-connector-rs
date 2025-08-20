@@ -2,16 +2,16 @@ use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
 
 use http::{
-    header::{ACCEPT, AUTHORIZATION},
     HeaderMap,
+    header::{ACCEPT, AUTHORIZATION},
 };
 use reqwest::Client;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-use crate::row::SnowflakeColumnType;
 use crate::SnowflakeSession;
-use crate::{chunk::download_chunk, Error, Result, SnowflakeRow};
+use crate::row::SnowflakeColumnType;
+use crate::{Error, Result, SnowflakeRow, chunk::download_chunk};
 
 pub(super) const SESSION_EXPIRED: &str = "390112";
 pub(super) const QUERY_IN_PROGRESS_CODE: &str = "333333";

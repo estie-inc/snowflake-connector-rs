@@ -2,7 +2,7 @@ mod key_pair;
 
 use chrono::Utc;
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{Error, Result, SnowflakeAuthMethod, SnowflakeClientConfig};
 
