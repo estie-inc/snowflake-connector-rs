@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::RsaPrivateKey;
