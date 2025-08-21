@@ -4,7 +4,36 @@ use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta};
 
 use crate::{Error, Result};
 
-#[derive(Debug)]
+/// Represents a Snowflake database column with its metadata.
+///
+/// This struct provides information about a column including its name, index position,
+/// and type information. It's typically used when working with query results to
+/// understand the structure of returned data.
+///
+/// # Examples
+///
+/// ```
+/// use snowflake_connector_rs::{SnowflakeColumn, SnowflakeColumnType};
+///
+/// let column_type = SnowflakeColumnType::new(
+///     "fixed".to_string(),
+///     false,
+///     None,
+///     None,
+///     None
+/// );
+///
+/// let column = SnowflakeColumn::new(
+///     "user_id".to_string(),
+///     0,
+///     column_type
+/// );
+///
+/// assert_eq!(column.name(), "user_id");
+/// assert_eq!(column.index(), 0);
+/// assert_eq!(column.column_type().snowflake_type(), "fixed");
+/// ```
+#[derive(Debug, PartialEq, Eq)]
 pub struct SnowflakeColumn {
     pub(super) name: String,
     pub(super) index: usize,
@@ -12,6 +41,44 @@ pub struct SnowflakeColumn {
 }
 
 impl SnowflakeColumn {
+    /// Creates a new `SnowflakeColumn`.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the column
+    /// * `index` - The zero-based index position of the column in the result set
+    /// * `column_type` - The type information for this column
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use snowflake_connector_rs::{SnowflakeColumn, SnowflakeColumnType};
+    ///
+    /// let column_type = SnowflakeColumnType::new(
+    ///     "text".to_string(),
+    ///     true,
+    ///     Some(255),
+    ///     None,
+    ///     None
+    /// );
+    ///
+    /// let column = SnowflakeColumn::new(
+    ///     "username".to_string(),
+    ///     1,
+    ///     column_type
+    /// );
+    ///
+    /// assert_eq!(column.name(), "username");
+    /// assert_eq!(column.index(), 1);
+    /// ```
+    pub fn new(name: String, index: usize, column_type: SnowflakeColumnType) -> Self {
+        Self {
+            name,
+            index,
+            column_type,
+        }
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -24,7 +91,35 @@ impl SnowflakeColumn {
     }
 }
 
-#[derive(Debug, Clone)]
+/// Represents the type information of a Snowflake column.
+///
+/// This struct contains metadata about a column including its Snowflake data type,
+/// whether it allows NULL values, and optional size/precision/scale parameters.
+///
+/// # Examples
+///
+/// ```
+/// use snowflake_connector_rs::SnowflakeColumnType;
+///
+/// // Create a text column type (VARCHAR/STRING in Snowflake)
+/// let text_type = SnowflakeColumnType::new(
+///     "text".to_string(),
+///     true,
+///     Some(255),
+///     None,
+///     None
+/// );
+///
+/// // Create a fixed column type (DECIMAL/NUMBER in Snowflake)
+/// let fixed_type = SnowflakeColumnType::new(
+///     "fixed".to_string(),
+///     false,
+///     None,
+///     Some(10),
+///     Some(2)
+/// );
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnowflakeColumnType {
     pub(super) snowflake_type: String,
     pub(super) nullable: bool,
@@ -34,6 +129,49 @@ pub struct SnowflakeColumnType {
 }
 
 impl SnowflakeColumnType {
+    /// Creates a new `SnowflakeColumnType`.
+    ///
+    /// # Arguments
+    ///
+    /// * `snowflake_type` - The Snowflake data type name (e.g., "text", "fixed", "boolean")
+    /// * `nullable` - Whether the column allows NULL values
+    /// * `length` - Optional length for character types (e.g., text with length 255)
+    /// * `precision` - Optional precision for numeric types (e.g., fixed(10,2))
+    /// * `scale` - Optional scale for numeric types (e.g., fixed(10,2))
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use snowflake_connector_rs::SnowflakeColumnType;
+    ///
+    /// let text_type = SnowflakeColumnType::new(
+    ///     "text".to_string(),
+    ///     true,
+    ///     Some(100),
+    ///     None,
+    ///     None
+    /// );
+    ///
+    /// assert_eq!(text_type.snowflake_type(), "text");
+    /// assert_eq!(text_type.nullable(), true);
+    /// assert_eq!(text_type.length(), Some(100));
+    /// ```
+    pub fn new(
+        snowflake_type: String,
+        nullable: bool,
+        length: Option<i64>,
+        precision: Option<i64>,
+        scale: Option<i64>,
+    ) -> Self {
+        Self {
+            snowflake_type,
+            nullable,
+            length,
+            precision,
+            scale,
+        }
+    }
+
     pub fn snowflake_type(&self) -> &str {
         &self.snowflake_type
     }
@@ -311,4 +449,105 @@ fn unwrap(value: &Option<String>) -> Result<&String> {
     value
         .as_ref()
         .ok_or_else(|| Error::Decode("value is null".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_snowflake_column_type_new() {
+        let column_type = SnowflakeColumnType::new("text".to_string(), true, Some(255), None, None);
+
+        assert_eq!(column_type.snowflake_type(), "text");
+        assert!(column_type.nullable());
+        assert_eq!(column_type.length(), Some(255));
+        assert_eq!(column_type.precision(), None);
+        assert_eq!(column_type.scale(), None);
+    }
+
+    #[test]
+    fn test_snowflake_column_type_new_decimal() {
+        let column_type =
+            SnowflakeColumnType::new("fixed".to_string(), false, None, Some(10), Some(2));
+
+        assert_eq!(column_type.snowflake_type(), "fixed");
+        assert!(!column_type.nullable());
+        assert_eq!(column_type.length(), None);
+        assert_eq!(column_type.precision(), Some(10));
+        assert_eq!(column_type.scale(), Some(2));
+    }
+
+    #[test]
+    fn test_snowflake_column_type_equality() {
+        let type1 = SnowflakeColumnType::new("fixed".to_string(), true, None, None, None);
+
+        let type2 = SnowflakeColumnType::new("fixed".to_string(), true, None, None, None);
+
+        let type3 = SnowflakeColumnType::new("text".to_string(), true, Some(100), None, None);
+
+        assert_eq!(type1, type2);
+        assert_ne!(type1, type3);
+    }
+
+    #[test]
+    fn test_snowflake_column_new() {
+        let column_type = SnowflakeColumnType::new("text".to_string(), true, Some(255), None, None);
+
+        let column = SnowflakeColumn::new("username".to_string(), 0, column_type.clone());
+
+        assert_eq!(column.name(), "username");
+        assert_eq!(column.index(), 0);
+        assert_eq!(column.column_type(), &column_type);
+    }
+
+    #[test]
+    fn test_snowflake_column_equality() {
+        let column_type1 = SnowflakeColumnType::new("fixed".to_string(), false, None, None, None);
+
+        let column_type2 = SnowflakeColumnType::new("fixed".to_string(), false, None, None, None);
+
+        let column_type3 = SnowflakeColumnType::new("text".to_string(), true, Some(50), None, None);
+
+        let column1 = SnowflakeColumn::new("id".to_string(), 0, column_type1);
+
+        let column2 = SnowflakeColumn::new("id".to_string(), 0, column_type2);
+
+        let column3 = SnowflakeColumn::new("name".to_string(), 1, column_type3);
+
+        let column4 = SnowflakeColumn::new(
+            "id".to_string(),
+            1, // Different index
+            column1.column_type().clone(),
+        );
+
+        assert_eq!(column1, column2);
+        assert_ne!(column1, column3);
+        assert_ne!(column1, column4); // Different index should make them unequal
+    }
+
+    #[test]
+    fn test_complex_column_types() {
+        // Test with all optional fields filled
+        let complex_type =
+            SnowflakeColumnType::new("fixed".to_string(), false, None, Some(18), Some(6));
+
+        let column = SnowflakeColumn::new("price".to_string(), 2, complex_type);
+
+        assert_eq!(column.name(), "price");
+        assert_eq!(column.index(), 2);
+        assert_eq!(column.column_type().snowflake_type(), "fixed");
+        assert!(!column.column_type().nullable());
+        assert_eq!(column.column_type().precision(), Some(18));
+        assert_eq!(column.column_type().scale(), Some(6));
+        assert_eq!(column.column_type().length(), None);
+    }
+
+    #[test]
+    fn test_column_type_clone() {
+        let original =
+            SnowflakeColumnType::new("timestamp_ntz".to_string(), true, None, None, Some(6));
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
 }
