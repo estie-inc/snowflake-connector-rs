@@ -46,17 +46,20 @@ async fn test_basic_operations() -> Result<()> {
 
     // Insert some data
     let query = "INSERT INTO example (id, value, price, is_active, created_date, updated_at) 
-                 VALUES (1, 'hello', 99.99, true, '2023-01-01', '2023-01-01 12:00:00')";
+                 VALUES (1, 'hello', 99.99, true, '2023-01-01', '2023-01-01 12:00:00'),
+                        (2, 'world', 149.99, false, '2023-01-02', '2023-01-02 15:30:00')";
     let rows = session.query(query).await?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get::<i64>("NUMBER OF ROWS INSERTED")?, 1);
+    assert_eq!(rows[0].get::<i64>("NUMBER OF ROWS INSERTED")?, 2);
 
     // Select the data back
     let query = "SELECT * FROM example ORDER BY id";
     let rows = session.query(query).await?;
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].get::<i64>("ID")?, 1);
     assert_eq!(rows[0].get::<String>("VALUE")?, "hello");
+    assert_eq!(rows[1].get::<i64>("ID")?, 2);
+    assert_eq!(rows[1].get::<String>("VALUE")?, "world");
 
     // Test column_types method with various data types
     let column_types = rows[0].column_types();
