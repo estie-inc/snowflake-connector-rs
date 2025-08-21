@@ -28,6 +28,17 @@ pub struct QueryExecutor {
     row_set: Mutex<Option<Vec<Vec<Option<String>>>>>,
 }
 
+fn get_base_url(sess: &SnowflakeSession) -> String {
+    let host = sess
+        .host
+        .clone()
+        .unwrap_or_else(|| format!("{}.snowflakecomputing.com", sess.account));
+    let port = sess.port.map(|p| format!(":{p}")).unwrap_or_default();
+    let protocol = sess.protocol.clone().unwrap_or_else(|| "https".to_string());
+
+    format!("{protocol}://{host}{port}")
+}
+
 impl QueryExecutor {
     pub(super) async fn create<Q: Into<QueryRequest>>(
         sess: &SnowflakeSession,
@@ -35,16 +46,15 @@ impl QueryExecutor {
     ) -> Result<Self> {
         let SnowflakeSession {
             http,
-            account,
             session_token,
             timeout,
+            ..
         } = sess;
         let timeout = timeout.unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS));
 
         let request_id = uuid::Uuid::new_v4();
-        let url = format!(
-            r"https://{account}.snowflakecomputing.com/queries/v1/query-request?requestId={request_id}"
-        );
+        let base_url = get_base_url(sess);
+        let url = format!(r"{base_url}/queries/v1/query-request?requestId={request_id}");
 
         let request: QueryRequest = request.into();
         let response = http
@@ -64,8 +74,18 @@ impl QueryExecutor {
             return Err(Error::Communication(body));
         }
 
-        let mut response: SnowflakeResponse =
+        let response: SnowflakeRawResponse =
             serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
+
+        if let Some(SESSION_EXPIRED) = response.code.as_deref() {
+            return Err(Error::SessionExpired);
+        }
+
+        if !response.success {
+            return Err(Error::Communication(response.message.unwrap_or_default()));
+        }
+
+        let mut response: SnowflakeResponse = response.try_into()?;
 
         let response_code = response.code.as_deref();
         if response_code == Some(QUERY_IN_PROGRESS_ASYNC_CODE)
@@ -74,21 +94,13 @@ impl QueryExecutor {
             match response.data.get_result_url {
                 Some(result_url) => {
                     response =
-                        poll_for_async_results(http, account, &result_url, session_token, timeout)
+                        poll_for_async_results(http, &result_url, session_token, timeout, base_url)
                             .await?
                 }
                 None => {
                     return Err(Error::NoPollingUrlAsyncQuery);
                 }
             }
-        }
-
-        if let Some(SESSION_EXPIRED) = response.code.as_deref() {
-            return Err(Error::SessionExpired);
-        }
-
-        if !response.success {
-            return Err(Error::Communication(response.message.unwrap_or_default()));
         }
 
         if let Some(format) = response.data.query_result_format {
@@ -212,15 +224,15 @@ impl QueryExecutor {
 
 async fn poll_for_async_results(
     http: &Client,
-    account: &str,
     result_url: &str,
     session_token: &str,
     timeout: Duration,
+    base_url: String,
 ) -> Result<SnowflakeResponse> {
     let start = Instant::now();
     while start.elapsed() < timeout {
         sleep(Duration::from_secs(10)).await;
-        let url = format!("https://{account}.snowflakecomputing.com{}", result_url);
+        let url = format!("{base_url}{result_url}");
 
         let resp = http
             .get(url)
@@ -357,7 +369,26 @@ struct RawQueryResponseChunk {
 #[derive(serde::Deserialize, Debug)]
 struct SnowflakeResponse {
     data: RawQueryResponse,
+    code: Option<String>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct SnowflakeRawResponse {
+    data: Option<RawQueryResponse>,
     message: Option<String>,
     success: bool,
     code: Option<String>,
+}
+
+impl TryInto<SnowflakeResponse> for SnowflakeRawResponse {
+    type Error = crate::Error;
+
+    fn try_into(self) -> std::result::Result<SnowflakeResponse, Self::Error> {
+        Ok(SnowflakeResponse {
+            data: self
+                .data
+                .ok_or_else(|| crate::error::Error::Decode("Expected data property".into()))?,
+            code: self.code,
+        })
+    }
 }

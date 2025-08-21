@@ -59,6 +59,7 @@ pub struct SnowflakeClient {
     username: String,
     auth: SnowflakeAuthMethod,
     config: SnowflakeClientConfig,
+    connection_config: Option<SnowflakeConnectionConfig>,
 }
 
 #[derive(Default, Clone)]
@@ -72,12 +73,22 @@ pub struct SnowflakeClientConfig {
     pub timeout: Option<Duration>,
 }
 
+#[derive(Default, Clone)]
+struct SnowflakeConnectionConfig {
+    host: String,
+    port: Option<u16>,
+    protocol: Option<String>,
+}
+
 #[derive(Clone)]
 pub enum SnowflakeAuthMethod {
     Password(String),
     KeyPair {
         encrypted_pem: String,
         password: Vec<u8>,
+    },
+    Oauth {
+        token: String,
     },
 }
 
@@ -93,6 +104,7 @@ impl SnowflakeClient {
             username: username.to_string(),
             auth,
             config,
+            connection_config: None,
         })
     }
 
@@ -110,16 +122,52 @@ impl SnowflakeClient {
             username: self.username,
             auth: self.auth,
             config: self.config,
+            connection_config: self.connection_config,
+        })
+    }
+
+    pub fn with_address(
+        self,
+        host: &str,
+        port: Option<u16>,
+        protocol: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            http: self.http,
+            username: self.username,
+            auth: self.auth,
+            config: self.config,
+            connection_config: Some(SnowflakeConnectionConfig {
+                host: host.to_string(),
+                port,
+                protocol,
+            }),
         })
     }
 
     pub async fn create_session(&self) -> Result<SnowflakeSession> {
-        let session_token = login(&self.http, &self.username, &self.auth, &self.config).await?;
+        let session_token = login(
+            &self.http,
+            &self.username,
+            &self.auth,
+            &self.config,
+            &self.connection_config,
+        )
+        .await?;
         Ok(SnowflakeSession {
             http: self.http.clone(),
             account: self.config.account.clone(),
             session_token,
             timeout: self.config.timeout,
+            host: self
+                .connection_config
+                .as_ref()
+                .map(|conf| conf.host.clone()),
+            port: self.connection_config.as_ref().and_then(|conf| conf.port),
+            protocol: self
+                .connection_config
+                .as_ref()
+                .and_then(|conf| conf.protocol.clone()),
         })
     }
 }
