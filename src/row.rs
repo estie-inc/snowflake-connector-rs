@@ -460,7 +460,7 @@ mod tests {
         let column_type = SnowflakeColumnType::new("text".to_string(), true, Some(255), None, None);
 
         assert_eq!(column_type.snowflake_type(), "text");
-        assert_eq!(column_type.nullable(), true);
+        assert!(column_type.nullable());
         assert_eq!(column_type.length(), Some(255));
         assert_eq!(column_type.precision(), None);
         assert_eq!(column_type.scale(), None);
@@ -472,7 +472,7 @@ mod tests {
             SnowflakeColumnType::new("fixed".to_string(), false, None, Some(10), Some(2));
 
         assert_eq!(column_type.snowflake_type(), "fixed");
-        assert_eq!(column_type.nullable(), false);
+        assert!(!column_type.nullable());
         assert_eq!(column_type.length(), None);
         assert_eq!(column_type.precision(), Some(10));
         assert_eq!(column_type.scale(), Some(2));
@@ -537,7 +537,7 @@ mod tests {
         assert_eq!(column.name(), "price");
         assert_eq!(column.index(), 2);
         assert_eq!(column.column_type().snowflake_type(), "fixed");
-        assert_eq!(column.column_type().nullable(), false);
+        assert!(!column.column_type().nullable());
         assert_eq!(column.column_type().precision(), Some(18));
         assert_eq!(column.column_type().scale(), Some(6));
         assert_eq!(column.column_type().length(), None);
