@@ -1,12 +1,12 @@
 use std::time::{Duration, Instant};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, mem, sync::Arc};
 
 use http::{
     HeaderMap,
     header::{ACCEPT, AUTHORIZATION},
 };
 use reqwest::Client;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::sleep;
 
 use crate::SnowflakeSession;
@@ -173,23 +173,54 @@ impl QueryExecutor {
 
     /// Fetch all the remaining chunks at once
     pub async fn fetch_all(&self) -> Result<Vec<SnowflakeRow>> {
+        self.fetch_all_with_limit(usize::MAX).await
+    }
+
+    /// Fetch all remaining chunks while capping concurrent downloads.
+    ///
+    /// `max_concurrency` values below `1` are treated as `1` to ensure progress.
+    pub async fn fetch_all_with_limit(&self, max_concurrency: usize) -> Result<Vec<SnowflakeRow>> {
         let mut rows = Vec::new();
-        let row_set = &mut *self.row_set.lock().await;
-        let chunks = &mut *self.chunks.lock().await;
-        if let Some(row_set) = row_set.take() {
-            rows.extend(row_set.into_iter().map(|r| self.convert_row(r)));
-        } else if chunks.is_empty() {
-            // Nothing to fetch
-            return Ok(vec![]);
+        {
+            let row_set = &mut *self.row_set.lock().await;
+            if let Some(row_set) = row_set.take() {
+                rows.extend(row_set.into_iter().map(|r| self.convert_row(r)));
+            }
         }
+
+        let mut chunks = {
+            let chunks = &mut *self.chunks.lock().await;
+            if chunks.is_empty() {
+                return Ok(rows);
+            }
+
+            mem::take(chunks)
+        };
+
+        let max_concurrency = max_concurrency.max(1);
+        let concurrency = chunks.len().clamp(1, max_concurrency);
+
+        // The semaphore ensures that no more than `concurrency` downloads are in flight.
+        let semaphore = Arc::new(Semaphore::new(concurrency));
 
         let mut handles = Vec::with_capacity(chunks.len());
         while let Some(chunk) = chunks.pop() {
             let http = self.http.clone();
             let chunk_headers = self.chunk_headers.clone();
             let qrmk = self.qrmk.clone();
+            let semaphore = semaphore.clone();
             handles.push(tokio::spawn(async move {
-                download_chunk(http, chunk.url, chunk_headers, qrmk).await
+                let permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| Error::Communication("concurrency limiter closed".into()))?;
+                let result = download_chunk(http, chunk.url, chunk_headers, qrmk).await;
+
+                // drop the permit ASAP. It's not needed right now, but is clearer, and in case
+                // extra work is added later it's good to have.
+                drop(permit);
+
+                result
             }));
         }
 
@@ -206,6 +237,115 @@ impl QueryExecutor {
             row,
             column_indices: Arc::clone(&self.column_indices),
             column_types: Arc::clone(&self.column_types),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        task::JoinSet,
+        time::{Duration, sleep},
+    };
+
+    async fn run_fetch_all_limit_test(limit: usize, chunk_count: usize) {
+        // Spin up a tiny HTTP server that simulates chunk downloads. Each incoming
+        // connection increments the "active" counter before pausing for a short
+        // delay, mimicking a request that is in-flight. This lets us observe the
+        // maximum number of concurrent downloads driven by fetch_all_with_limit.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let server_active = Arc::clone(&active);
+        let server_peak = Arc::clone(&peak);
+
+        let server = tokio::spawn(async move {
+            let mut handlers = JoinSet::new();
+            for _ in 0..chunk_count {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let active = Arc::clone(&server_active);
+                let peak = Arc::clone(&server_peak);
+                handlers.spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(current, Ordering::SeqCst);
+                    assert!(current <= limit, "observed {current} > limit {limit}");
+
+                    sleep(Duration::from_millis(25)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+
+                    let body = b"[\"ok\"]";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    socket.write_all(response.as_bytes()).await.unwrap();
+                    socket.write_all(body).await.unwrap();
+                    let _ = socket.shutdown().await;
+                });
+            }
+
+            while let Some(res) = handlers.join_next().await {
+                res.unwrap();
+            }
+        });
+
+        let mut chunks = Vec::new();
+        for i in 0..chunk_count {
+            chunks.push(RawQueryResponseChunk {
+                url: format!("http://{addr}/chunk{i}"),
+                row_count: 0,
+                uncompressed_size: 0,
+                compressed_size: 0,
+            });
+        }
+
+        let mut column_indices = HashMap::new();
+        column_indices.insert("COL1".to_string(), 0);
+
+        let executor = QueryExecutor {
+            http: reqwest::Client::new(),
+            qrmk: "dummy-key".to_string(),
+            chunks: Mutex::new(chunks),
+            chunk_headers: HeaderMap::new(),
+            column_types: Arc::new(vec![SnowflakeColumnType::new(
+                "text".to_string(),
+                true,
+                None,
+                None,
+                None,
+            )]),
+            column_indices: Arc::new(column_indices),
+            row_set: Mutex::new(None),
+        };
+
+        // The server records how many requests overlap at once; after fetch_all completes
+        // we assert that the observed maximum never exceeds the requested concurrency limit.
+        let fetch = executor.fetch_all_with_limit(limit);
+        let rows = fetch.await.unwrap();
+        server.await.unwrap();
+
+        assert_eq!(rows.len(), chunk_count);
+        let observed_peak = peak.load(Ordering::SeqCst);
+
+        // The limit should be low enough that we can safely assert that the observed peak
+        // is exactly the limit. I.e. the peak was reached.
+        assert_eq!(observed_peak, limit);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn fetch_all_with_limit_caps_concurrency_stress() {
+        // increase beyond 10 to test for concurrency issues
+        for _ in 0..10 {
+            run_fetch_all_limit_test(2, 8).await;
         }
     }
 }
