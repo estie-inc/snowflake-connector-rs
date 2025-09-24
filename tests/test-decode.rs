@@ -29,7 +29,7 @@ async fn test_decode() -> Result<()> {
     );
 
     // Insert some data
-    let query = "INSERT INTO example (n, s, b, d, tm, ltz, ntz, tz) VALUES (
+    let query = "INSERT INTO example (n, s, b, d, tm, ltz, ntz, tz, u) VALUES (
         42, 'hello', 0, '2024-01-01', '01:23:45',
         '2024-01-01 00:00:00', '2024-01-01 00:00:00', '2024-01-01 00:00:00', '00000000-0000-0000-0000-000000000000')";
     let rows = session.query(query).await?;
