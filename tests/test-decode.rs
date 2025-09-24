@@ -30,8 +30,16 @@ async fn test_decode() -> Result<()> {
 
     // Insert some data
     let query = "INSERT INTO example (n, s, b, d, tm, ltz, ntz, tz, u) VALUES (
-        42, 'hello', 0, '2024-01-01', '01:23:45',
-        '2024-01-01 00:00:00', '2024-01-01 00:00:00', '2024-01-01 00:00:00', '2af9c142-ca9d-4d7b-bf2c-ae4458bae85f')";
+        42,
+        'hello',
+        0,
+        '2024-01-01',
+        '01:23:45',
+        '2024-01-01 00:00:00',
+        '2024-01-01 00:00:00',
+        '2024-01-01 00:00:00',
+        '2af9c142-ca9d-4d7b-bf2c-ae4458bae85f'
+    )";
     let rows = session.query(query).await?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get::<i64>("NUMBER OF ROWS INSERTED")?, 1);
