@@ -278,6 +278,14 @@ impl SnowflakeDecode for i8 {
             .map_err(|_| Error::Decode(format!("'{value}' is not i8")))
     }
 }
+impl SnowflakeDecode for uuid::Uuid {
+    fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
+        let value = unwrap(value)?;
+        value
+            .parse()
+            .map_err(|_| Error::Decode(format!("'{value}' is not uuid")))
+    }
+}
 
 impl SnowflakeDecode for String {
     fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
