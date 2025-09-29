@@ -343,7 +343,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn fetch_all_with_limit_caps_concurrency_stress() {
-        // increase beyond 10 to test for concurrency issues
+        // increase beyond 10 to try harder to find a concurrency bug
         for _ in 0..10 {
             run_fetch_all_limit_test(2, 8).await;
         }
@@ -393,13 +393,19 @@ async fn poll_for_async_results(
 #[derive(Debug, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
+    /// SQL statement to execute against Snowflake.
     pub sql_text: String,
+    /// Optional cap on parallel chunk downloads when fetching results client-side. Not forwarded
+    /// to Snowflake.
+    #[serde(skip_serializing)]
+    pub max_concurrency: Option<usize>,
 }
 
 impl From<&str> for QueryRequest {
     fn from(sql_text: &str) -> Self {
         Self {
             sql_text: sql_text.to_string(),
+            max_concurrency: None,
         }
     }
 }
@@ -411,7 +417,10 @@ impl From<&QueryRequest> for QueryRequest {
 
 impl From<String> for QueryRequest {
     fn from(sql_text: String) -> Self {
-        Self { sql_text }
+        Self {
+            sql_text,
+            max_concurrency: None,
+        }
     }
 }
 
