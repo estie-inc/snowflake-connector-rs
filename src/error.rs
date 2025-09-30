@@ -1,6 +1,7 @@
 use std::string::FromUtf8Error;
 
 use reqwest::header::InvalidHeaderValue;
+use tokio::sync::AcquireError;
 use tokio::task::JoinError;
 
 /// An error that can occur when interacting with Snowflake.
@@ -37,6 +38,9 @@ pub enum Error {
 
     #[error("future join error: {0}")]
     FutureJoin(#[from] JoinError),
+
+    #[error("concurrency limiter closed while acquiring permit to fetch a chunk")]
+    ConcurrencyLimiterClosed(#[from] AcquireError),
 
     #[error("decode error: {0}")]
     Decode(String),

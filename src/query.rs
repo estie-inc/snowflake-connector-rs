@@ -213,7 +213,7 @@ impl QueryExecutor {
                 let permit = semaphore
                     .acquire_owned()
                     .await
-                    .map_err(|_| Error::Communication("concurrency limiter closed".into()))?;
+                    .map_err(Error::ConcurrencyLimiterClosed)?;
                 let result = download_chunk(http, chunk.url, chunk_headers, qrmk).await;
 
                 // drop the permit ASAP. It's not needed right now, but is clearer, and in case
