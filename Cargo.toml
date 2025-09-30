@@ -29,5 +29,12 @@ sha2 = "0.10"
 base64 = "0.22"
 jsonwebtoken = "9.1"
 
+[features]
+decrypt-des = ["pkcs8/des-insecure"]
+decrypt-3des = ["pkcs8/3des"]
+
+[package.metadata.docs.rs]
+all-features = true
+
 [dev-dependencies]
 tokio = { version = "1.41", features = ["macros", "rt-multi-thread"] }
