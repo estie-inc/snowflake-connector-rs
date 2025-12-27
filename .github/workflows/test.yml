@@ -26,8 +26,8 @@ jobs:
     name: Test with Rust ${{ matrix.version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561 # 2025-12-17
         with:
           toolchain: ${{ matrix.version }}
           components: rustfmt, clippy
