@@ -6,6 +6,7 @@ use http::{
     header::{ACCEPT, AUTHORIZATION},
 };
 use reqwest::Client;
+use serde::de::Error as _;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
@@ -71,7 +72,13 @@ impl QueryExecutor {
         if response_code == Some(QUERY_IN_PROGRESS_ASYNC_CODE)
             || response_code == Some(QUERY_IN_PROGRESS_CODE)
         {
-            match response.data.get_result_url {
+            let Some(data) = response.data else {
+                return Err(Error::Json(
+                    serde_json::Error::custom("missing data field in async query response"),
+                    "".to_string(),
+                ));
+            };
+            match data.get_result_url {
                 Some(result_url) => {
                     response =
                         poll_for_async_results(http, account, &result_url, session_token, timeout)
@@ -91,20 +98,27 @@ impl QueryExecutor {
             return Err(Error::Communication(response.message.unwrap_or_default()));
         }
 
-        if let Some(format) = response.data.query_result_format {
+        let Some(response_data) = response.data else {
+            return Err(Error::Json(
+                serde_json::Error::custom("missing data field in query response"),
+                "".to_string(),
+            ));
+        };
+
+        if let Some(format) = response_data.query_result_format {
             if format != "json" {
                 return Err(Error::UnsupportedFormat(format.clone()));
             }
         }
 
         let http = http.clone();
-        let qrmk = response.data.qrmk.unwrap_or_default();
-        let chunks = response.data.chunks.unwrap_or_default();
+        let qrmk = response_data.qrmk.unwrap_or_default();
+        let chunks = response_data.chunks.unwrap_or_default();
         let chunks = Mutex::new(chunks);
-        let row_types = response.data.row_types.ok_or_else(|| {
+        let row_types = response_data.row_types.ok_or_else(|| {
             Error::UnsupportedFormat("the response doesn't contain 'rowtype'".to_string())
         })?;
-        let row_set = response.data.row_set.ok_or_else(|| {
+        let row_set = response_data.row_set.ok_or_else(|| {
             Error::UnsupportedFormat("the response doesn't contain 'rowset'".to_string())
         })?;
         let row_set = Mutex::new(Some(row_set));
@@ -128,7 +142,7 @@ impl QueryExecutor {
             .collect::<Vec<_>>();
         let column_types = Arc::new(column_types);
 
-        let chunk_headers = response.data.chunk_headers.unwrap_or_default();
+        let chunk_headers = response_data.chunk_headers.unwrap_or_default();
         let chunk_headers: HeaderMap = HeaderMap::try_from(&chunk_headers)?;
 
         Ok(Self {
@@ -356,8 +370,27 @@ struct RawQueryResponseChunk {
 
 #[derive(serde::Deserialize, Debug)]
 struct SnowflakeResponse {
-    data: RawQueryResponse,
+    /// Response data payload. May be null when session has expired (e.g., code 390112).
+    data: Option<RawQueryResponse>,
     message: Option<String>,
     success: bool,
     code: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_session_expired() {
+        let json = serde_json::json!({
+            "data": null,
+            "code": "390112",
+            "message": "Your session has expired. Please login again.",
+            "success": false,
+            "headers": null
+        });
+        let resp: SnowflakeResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(resp.code.as_deref(), Some("390112"));
+    }
 }
