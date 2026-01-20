@@ -382,20 +382,64 @@ fn parse_timestamp_ntz_ltz(s: &str, scale: i64) -> Result<NaiveDateTime> {
     Err(Error::Decode(format!("Could not decode timestamp: {}", s)))
 }
 
+fn parse_time_seconds_and_nanos(value: &str, scale: usize) -> Result<(u32, u32)> {
+    // Snowflake TIME scale is documented as 0..=9 (nanoseconds).
+    if scale > 9 {
+        return Err(Error::Decode(format!("invalid time scale: {}", scale)));
+    }
+
+    let value = value.trim();
+
+    // Snowflake returns TIME as seconds-from-midnight with an optional fractional part.
+    // Parse as a decimal string to avoid floating point fractional loss.
+    let (secs_str, frac_str) = value.split_once('.').unwrap_or((value, ""));
+    let secs: u32 = secs_str
+        .parse::<u32>()
+        .map_err(|_| Error::Decode(format!("'{value}' is not Time type")))?;
+
+    if scale == 0 {
+        return Ok((secs, 0));
+    }
+
+    if !frac_str.as_bytes().iter().all(|b| b.is_ascii_digit()) {
+        return Err(Error::Decode(format!("invalid time: {}", value)));
+    }
+    let mut frac_digits: Vec<u8> = frac_str.as_bytes().to_vec();
+
+    // TIME(p) values are expected to already be quantized to `p` digits.
+    // If we see more digits, keep behavior deterministic by truncating.
+    if frac_digits.len() > scale {
+        frac_digits.truncate(scale);
+    }
+
+    if frac_digits.len() < scale {
+        frac_digits.extend(std::iter::repeat(b'0').take(scale - frac_digits.len()));
+    }
+
+    let frac_scaled: u32 = {
+        let s = std::str::from_utf8(&frac_digits)
+            .map_err(|_| Error::Decode(format!("invalid time: {}", value)))?;
+        s.parse::<u32>()
+            .map_err(|_| Error::Decode(format!("invalid time: {}", value)))?
+    };
+    let nsec = frac_scaled
+        .checked_mul(10u32.pow((9 - scale) as u32))
+        .ok_or_else(|| Error::Decode(format!("invalid time: {}", value)))?;
+
+    Ok((secs, nsec))
+}
+
 impl SnowflakeDecode for NaiveTime {
     fn try_decode(value: &Option<String>, ty: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
-        let scale = ty.scale.unwrap_or(0);
-        let scale_factor = 10i32.pow(scale as u32);
-        if let Ok(mut v) = value.parse::<f64>() {
-            v *= scale_factor as f64;
-            let secs = (v.trunc() / scale_factor as f64) as u32;
-            let nsec = (v.fract() * 10_f64.powi(9 - scale as i32)) as u32;
-            let t = NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
-                .ok_or_else(|| Error::Decode(format!("invalid time: {}", value)))?;
-            return Ok(t);
-        }
-        Err(Error::Decode(format!("'{value}' is not Time type")))
+        let scale = match ty.scale {
+            None => 0usize,
+            Some(s) if (0..=9).contains(&s) => s as usize,
+            Some(s) => return Err(Error::Decode(format!("invalid time scale: {}", s))),
+        };
+        let (secs, nsec) = parse_time_seconds_and_nanos(value, scale)?;
+        NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
+            .ok_or_else(|| Error::Decode(format!("invalid time: {}", value)))
     }
 }
 
@@ -453,6 +497,8 @@ fn unwrap(value: &Option<String>) -> Result<&String> {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Timelike;
+
     use super::*;
 
     #[test]
@@ -549,5 +595,88 @@ mod tests {
             SnowflakeColumnType::new("timestamp_ntz".to_string(), true, None, None, Some(6));
         let cloned = original.clone();
         assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_decode_naive_time_preserves_fractional_scale_3() {
+        let ty = SnowflakeColumnType::new("time".to_string(), false, None, None, Some(3));
+        let value = Some("45296.123".to_string());
+        let t = NaiveTime::try_decode(&value, &ty).unwrap();
+        assert_eq!(t, NaiveTime::from_hms_milli_opt(12, 34, 56, 123).unwrap());
+    }
+
+    #[test]
+    fn test_decode_naive_time_preserves_fractional_scale_9() {
+        let ty = SnowflakeColumnType::new("time".to_string(), false, None, None, Some(9));
+        let value = Some("45296.123456789".to_string());
+        let t = NaiveTime::try_decode(&value, &ty).unwrap();
+        assert_eq!(
+            t,
+            NaiveTime::from_hms_nano_opt(12, 34, 56, 123_456_789).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_decode_naive_time_scale_0_drops_fractional() {
+        let ty = SnowflakeColumnType::new("time".to_string(), false, None, None, Some(0));
+        let value = Some("45296.123".to_string());
+        let t = NaiveTime::try_decode(&value, &ty).unwrap();
+        assert_eq!(t, NaiveTime::from_hms_opt(12, 34, 56).unwrap());
+        assert_eq!(t.nanosecond(), 0);
+    }
+
+    #[test]
+    fn test_decode_naive_time_truncates_extra_fraction_digits() {
+        let ty = SnowflakeColumnType::new("time".to_string(), false, None, None, Some(2));
+        let value = Some("1.999".to_string());
+        let t = NaiveTime::try_decode(&value, &ty).unwrap();
+        assert_eq!(t, NaiveTime::from_hms_milli_opt(0, 0, 1, 990).unwrap());
+    }
+
+    #[test]
+    fn test_decode_naive_time_no_fraction() {
+        let ty = SnowflakeColumnType::new("time".to_string(), false, None, None, Some(3));
+        let value = Some("45296".to_string());
+        let t = NaiveTime::try_decode(&value, &ty).unwrap();
+        assert_eq!(t, NaiveTime::from_hms_opt(12, 34, 56).unwrap());
+        assert_eq!(t.nanosecond(), 0);
+    }
+
+    #[test]
+    fn test_decode_naive_time_fraction_padding() {
+        let ty = SnowflakeColumnType::new("time".to_string(), false, None, None, Some(3));
+        let value = Some("45296.1".to_string());
+        let t = NaiveTime::try_decode(&value, &ty).unwrap();
+        assert_eq!(t, NaiveTime::from_hms_milli_opt(12, 34, 56, 100).unwrap());
+    }
+
+    #[test]
+    fn test_decode_naive_time_scale_out_of_range_errors() {
+        let ty = SnowflakeColumnType::new("time".to_string(), false, None, None, Some(12));
+        let value = Some("45296.123456789123".to_string());
+        let err = NaiveTime::try_decode(&value, &ty).unwrap_err();
+        match err {
+            Error::Decode(_) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_naive_time_truncation_does_not_overflow_day() {
+        let ty = SnowflakeColumnType::new("time".to_string(), false, None, None, Some(2));
+        let value = Some("86399.999".to_string());
+        let t = NaiveTime::try_decode(&value, &ty).unwrap();
+        assert_eq!(t, NaiveTime::from_hms_milli_opt(23, 59, 59, 990).unwrap());
+    }
+
+    #[test]
+    fn test_decode_naive_time_invalid_fraction_rejected() {
+        let ty = SnowflakeColumnType::new("time".to_string(), false, None, None, Some(3));
+        let value = Some("1.2a3".to_string());
+        let err = NaiveTime::try_decode(&value, &ty).unwrap_err();
+        match err {
+            Error::Decode(_) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

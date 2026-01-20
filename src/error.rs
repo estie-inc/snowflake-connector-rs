@@ -54,6 +54,9 @@ pub enum Error {
     #[error("jwt error: {0}")]
     JWT(#[from] jsonwebtoken::errors::Error),
 
+    #[error("url error: {0}")]
+    Url(String),
+
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
 
@@ -66,3 +69,9 @@ pub enum Error {
 
 /// A `Result` alias where the `Err` case is `snowflake::Error`.
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<url::ParseError> for Error {
+    fn from(err: url::ParseError) -> Self {
+        Error::Url(err.to_string())
+    }
+}
