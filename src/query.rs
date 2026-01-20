@@ -1,5 +1,5 @@
 use std::time::{Duration, Instant};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, mem, sync::Arc};
 
 use http::{
     HeaderMap,
@@ -7,7 +7,7 @@ use http::{
 };
 use reqwest::{Client, Url};
 use serde::de::Error as _;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::sleep;
 
 use crate::SnowflakeSession;
@@ -207,22 +207,47 @@ impl QueryExecutor {
 
     /// Fetch all the remaining chunks at once
     pub async fn fetch_all(&self) -> Result<Vec<SnowflakeRow>> {
+        self.fetch_all_with_concurrency_limit(usize::MAX).await
+    }
+
+    /// Fetch all remaining chunks while capping concurrent downloads.
+    ///
+    /// `max_concurrency` values below `1` are treated as `1` to ensure progress.
+    pub async fn fetch_all_with_concurrency_limit(
+        &self,
+        max_concurrency: usize,
+    ) -> Result<Vec<SnowflakeRow>> {
         let mut rows = Vec::new();
-        let row_set = &mut *self.row_set.lock().await;
-        let chunks = &mut *self.chunks.lock().await;
-        if let Some(row_set) = row_set.take() {
-            rows.extend(row_set.into_iter().map(|r| self.convert_row(r)));
-        } else if chunks.is_empty() {
-            // Nothing to fetch
-            return Ok(vec![]);
+        {
+            let row_set = &mut *self.row_set.lock().await;
+            if let Some(row_set) = row_set.take() {
+                rows.extend(row_set.into_iter().map(|r| self.convert_row(r)));
+            }
         }
+
+        let mut chunks = {
+            let chunks = &mut *self.chunks.lock().await;
+            if chunks.is_empty() {
+                return Ok(rows);
+            }
+
+            mem::take(chunks)
+        };
+
+        let max_concurrency = max_concurrency.max(1);
+        let concurrency = chunks.len().clamp(1, max_concurrency);
+
+        // The semaphore ensures that no more than `concurrency` downloads are in flight.
+        let semaphore = Arc::new(Semaphore::new(concurrency));
 
         let mut handles = Vec::with_capacity(chunks.len());
         while let Some(chunk) = chunks.pop() {
             let http = self.http.clone();
             let chunk_headers = self.chunk_headers.clone();
             let qrmk = self.qrmk.clone();
+            let semaphore = semaphore.clone();
             handles.push(tokio::spawn(async move {
+                let _permit = semaphore.acquire_owned().await?;
                 download_chunk(http, chunk.url, chunk_headers, qrmk).await
             }));
         }
@@ -291,6 +316,7 @@ async fn poll_for_async_results(
 #[derive(Debug, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
+    /// SQL statement to execute against Snowflake.
     pub sql_text: String,
 }
 
