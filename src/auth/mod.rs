@@ -18,16 +18,17 @@ fn get_base_url(
             .protocol
             .clone()
             .unwrap_or_else(|| "https".to_string());
-        let mut url = Url::parse(&format!("{protocol}://{host}"))
-            .map_err(|e| Error::Decode(format!("invalid base url: {e}")))?;
+        let mut url = Url::parse(&format!("{protocol}://{host}"))?;
         if let Some(port) = connection_config.port {
             url.set_port(Some(port))
                 .map_err(|_| Error::Decode("invalid base url port".to_string()))?;
         }
         Ok(url)
     } else {
-        Url::parse(&format!("https://{}.snowflakecomputing.com", config.account))
-            .map_err(|e| Error::Decode(format!("invalid base url: {e}")))
+        Ok(Url::parse(&format!(
+            "https://{}.snowflakecomputing.com",
+            config.account
+        ))?)
     }
 }
 
@@ -40,9 +41,7 @@ pub(super) async fn login(
     connection_config: &Option<SnowflakeConnectionConfig>,
 ) -> Result<String> {
     let base_url = get_base_url(config, connection_config)?;
-    let url = base_url
-        .join("session/v1/login-request")
-        .map_err(|e| Error::Decode(format!("invalid login url: {e}")))?;
+    let url = base_url.join("session/v1/login-request")?;
 
     let mut queries = vec![];
     if let Some(warehouse) = &config.warehouse {

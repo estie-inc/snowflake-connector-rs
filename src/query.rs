@@ -34,8 +34,7 @@ fn get_base_url(sess: &SnowflakeSession) -> Result<Url> {
         .clone()
         .unwrap_or_else(|| format!("{}.snowflakecomputing.com", sess.account));
     let protocol = sess.protocol.clone().unwrap_or_else(|| "https".to_string());
-    let mut url = Url::parse(&format!("{protocol}://{host}"))
-        .map_err(|e| Error::Decode(format!("invalid base url: {e}")))?;
+    let mut url = Url::parse(&format!("{protocol}://{host}"))?;
     if let Some(port) = sess.port {
         url.set_port(Some(port))
             .map_err(|_| Error::Decode("invalid base url port".to_string()))?;
@@ -58,9 +57,7 @@ impl QueryExecutor {
 
         let request_id = uuid::Uuid::new_v4();
         let base_url = get_base_url(sess)?;
-        let mut url = base_url
-            .join("queries/v1/query-request")
-            .map_err(|e| Error::Decode(format!("invalid query url: {e}")))?;
+        let mut url = base_url.join("queries/v1/query-request")?;
         url.set_query(Some(&format!("requestId={request_id}")));
 
         let request: QueryRequest = request.into();
@@ -248,9 +245,7 @@ async fn poll_for_async_results(
         let url = if let Ok(url) = Url::parse(result_url) {
             url
         } else {
-            base_url
-                .join(result_url)
-                .map_err(|e| Error::Decode(format!("invalid result url: {e}")))?
+            base_url.join(result_url)?
         };
 
         let resp = http

@@ -50,6 +50,9 @@ pub enum Error {
     #[error("jwt error: {0}")]
     JWT(#[from] jsonwebtoken::errors::Error),
 
+    #[error("url parse error: {0}")]
+    Url(#[from] url::ParseError),
+
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
 
