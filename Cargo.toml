@@ -1,6 +1,6 @@
 [package]
 name = "snowflake-connector-rs"
-version = "0.7.5"
+version = "0.7.6"
 edition = "2024"
 authors = ["kenkoooo <kenkou.n@gmail.com>"]
 description = "A Rust client for Snowflake"
@@ -29,6 +29,13 @@ sha2 = "0.10"
 base64 = "0.22"
 jsonwebtoken = "9.1"
 url = "2.5"
+
+[features]
+pkcs8-des = ["pkcs8/des-insecure"]
+pkcs8-3des = ["pkcs8/3des"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dev-dependencies]
 tokio = { version = "1.41", features = ["macros", "rt-multi-thread"] }
