@@ -1,7 +1,7 @@
 mod key_pair;
 
 use chrono::Utc;
-use reqwest::Client;
+use reqwest::{Client, Url};
 use serde_json::{json, Value};
 
 use crate::{Error, Result, SnowflakeAuthMethod, SnowflakeClientConfig, SnowflakeConnectionConfig};
@@ -11,21 +11,23 @@ use self::key_pair::generate_jwt_from_key_pair;
 fn get_base_url(
     config: &SnowflakeClientConfig,
     connection_config: &Option<SnowflakeConnectionConfig>,
-) -> String {
+) -> Result<Url> {
     if let Some(connection_config) = connection_config {
         let host = &connection_config.host;
-        let port = connection_config
-            .port
-            .map(|p| format!(":{p}"))
-            .unwrap_or_else(|| "".to_string());
         let protocol = connection_config
             .protocol
             .clone()
             .unwrap_or_else(|| "https".to_string());
-
-        format!("{protocol}://{host}{port}")
+        let mut url = Url::parse(&format!("{protocol}://{host}"))
+            .map_err(|e| Error::Decode(format!("invalid base url: {e}")))?;
+        if let Some(port) = connection_config.port {
+            url.set_port(Some(port))
+                .map_err(|_| Error::Decode("invalid base url port".to_string()))?;
+        }
+        Ok(url)
     } else {
-        format!("https://{}.snowflakecomputing.com", config.account)
+        Url::parse(&format!("https://{}.snowflakecomputing.com", config.account))
+            .map_err(|e| Error::Decode(format!("invalid base url: {e}")))
     }
 }
 
@@ -37,8 +39,10 @@ pub(super) async fn login(
     config: &SnowflakeClientConfig,
     connection_config: &Option<SnowflakeConnectionConfig>,
 ) -> Result<String> {
-    let base_url = get_base_url(config, connection_config);
-    let url = format!("{base_url}/session/v1/login-request");
+    let base_url = get_base_url(config, connection_config)?;
+    let url = base_url
+        .join("session/v1/login-request")
+        .map_err(|e| Error::Decode(format!("invalid login url: {e}")))?;
 
     let mut queries = vec![];
     if let Some(warehouse) = &config.warehouse {

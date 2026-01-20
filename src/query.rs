@@ -5,7 +5,7 @@ use http::{
     header::{ACCEPT, AUTHORIZATION},
     HeaderMap,
 };
-use reqwest::Client;
+use reqwest::{Client, Url};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
@@ -28,15 +28,19 @@ pub struct QueryExecutor {
     row_set: Mutex<Option<Vec<Vec<Option<String>>>>>,
 }
 
-fn get_base_url(sess: &SnowflakeSession) -> String {
+fn get_base_url(sess: &SnowflakeSession) -> Result<Url> {
     let host = sess
         .host
         .clone()
         .unwrap_or_else(|| format!("{}.snowflakecomputing.com", sess.account));
-    let port = sess.port.map(|p| format!(":{p}")).unwrap_or_default();
     let protocol = sess.protocol.clone().unwrap_or_else(|| "https".to_string());
-
-    format!("{protocol}://{host}{port}")
+    let mut url = Url::parse(&format!("{protocol}://{host}"))
+        .map_err(|e| Error::Decode(format!("invalid base url: {e}")))?;
+    if let Some(port) = sess.port {
+        url.set_port(Some(port))
+            .map_err(|_| Error::Decode("invalid base url port".to_string()))?;
+    }
+    Ok(url)
 }
 
 impl QueryExecutor {
@@ -53,8 +57,11 @@ impl QueryExecutor {
         let timeout = timeout.unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS));
 
         let request_id = uuid::Uuid::new_v4();
-        let base_url = get_base_url(sess);
-        let url = format!(r"{base_url}/queries/v1/query-request?requestId={request_id}");
+        let base_url = get_base_url(sess)?;
+        let mut url = base_url
+            .join("queries/v1/query-request")
+            .map_err(|e| Error::Decode(format!("invalid query url: {e}")))?;
+        url.set_query(Some(&format!("requestId={request_id}")));
 
         let request: QueryRequest = request.into();
         let response = http
@@ -94,8 +101,14 @@ impl QueryExecutor {
             match response.data.get_result_url {
                 Some(result_url) => {
                     response =
-                        poll_for_async_results(http, &result_url, session_token, timeout, base_url)
-                            .await?
+                        poll_for_async_results(
+                            http,
+                            &result_url,
+                            session_token,
+                            timeout,
+                            base_url.clone(),
+                        )
+                        .await?
                 }
                 None => {
                     return Err(Error::NoPollingUrlAsyncQuery);
@@ -227,12 +240,18 @@ async fn poll_for_async_results(
     result_url: &str,
     session_token: &str,
     timeout: Duration,
-    base_url: String,
+    base_url: Url,
 ) -> Result<SnowflakeResponse> {
     let start = Instant::now();
     while start.elapsed() < timeout {
         sleep(Duration::from_secs(10)).await;
-        let url = format!("{base_url}{result_url}");
+        let url = if let Ok(url) = Url::parse(result_url) {
+            url
+        } else {
+            base_url
+                .join(result_url)
+                .map_err(|e| Error::Decode(format!("invalid result url: {e}")))?
+        };
 
         let resp = http
             .get(url)
