@@ -1,12 +1,13 @@
 use std::time::{Duration, Instant};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, mem, sync::Arc};
 
 use http::{
     HeaderMap,
     header::{ACCEPT, AUTHORIZATION},
 };
-use reqwest::Client;
-use tokio::sync::Mutex;
+use reqwest::{Client, Url};
+use serde::de::Error as _;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::sleep;
 
 use crate::SnowflakeSession;
@@ -28,6 +29,20 @@ pub struct QueryExecutor {
     row_set: Mutex<Option<Vec<Vec<Option<String>>>>>,
 }
 
+fn get_base_url(sess: &SnowflakeSession) -> Result<Url> {
+    let host = sess
+        .host
+        .clone()
+        .unwrap_or_else(|| format!("{}.snowflakecomputing.com", sess.account));
+    let protocol = sess.protocol.clone().unwrap_or_else(|| "https".to_string());
+    let mut url = Url::parse(&format!("{protocol}://{host}"))?;
+    if let Some(port) = sess.port {
+        url.set_port(Some(port))
+            .map_err(|_| Error::Url("invalid base url port".to_string()))?;
+    }
+    Ok(url)
+}
+
 impl QueryExecutor {
     pub(super) async fn create<Q: Into<QueryRequest>>(
         sess: &SnowflakeSession,
@@ -35,16 +50,17 @@ impl QueryExecutor {
     ) -> Result<Self> {
         let SnowflakeSession {
             http,
-            account,
             session_token,
             timeout,
+            ..
         } = sess;
         let timeout = timeout.unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS));
 
         let request_id = uuid::Uuid::new_v4();
-        let url = format!(
-            r"https://{account}.snowflakecomputing.com/queries/v1/query-request?requestId={request_id}"
-        );
+        let base_url = get_base_url(sess)?;
+        let mut url = base_url.join("queries/v1/query-request")?;
+        url.query_pairs_mut()
+            .append_pair("requestId", &request_id.to_string());
 
         let request: QueryRequest = request.into();
         let response = http
@@ -71,11 +87,22 @@ impl QueryExecutor {
         if response_code == Some(QUERY_IN_PROGRESS_ASYNC_CODE)
             || response_code == Some(QUERY_IN_PROGRESS_CODE)
         {
-            match response.data.get_result_url {
+            let Some(data) = response.data else {
+                return Err(Error::Json(
+                    serde_json::Error::custom("missing data field in async query response"),
+                    "".to_string(),
+                ));
+            };
+            match data.get_result_url {
                 Some(result_url) => {
-                    response =
-                        poll_for_async_results(http, account, &result_url, session_token, timeout)
-                            .await?
+                    response = poll_for_async_results(
+                        http,
+                        &result_url,
+                        session_token,
+                        timeout,
+                        base_url.clone(),
+                    )
+                    .await?
                 }
                 None => {
                     return Err(Error::NoPollingUrlAsyncQuery);
@@ -91,20 +118,27 @@ impl QueryExecutor {
             return Err(Error::Communication(response.message.unwrap_or_default()));
         }
 
-        if let Some(format) = response.data.query_result_format {
+        let Some(response_data) = response.data else {
+            return Err(Error::Json(
+                serde_json::Error::custom("missing data field in query response"),
+                "".to_string(),
+            ));
+        };
+
+        if let Some(format) = response_data.query_result_format {
             if format != "json" {
                 return Err(Error::UnsupportedFormat(format.clone()));
             }
         }
 
         let http = http.clone();
-        let qrmk = response.data.qrmk.unwrap_or_default();
-        let chunks = response.data.chunks.unwrap_or_default();
+        let qrmk = response_data.qrmk.unwrap_or_default();
+        let chunks = response_data.chunks.unwrap_or_default();
         let chunks = Mutex::new(chunks);
-        let row_types = response.data.row_types.ok_or_else(|| {
+        let row_types = response_data.row_types.ok_or_else(|| {
             Error::UnsupportedFormat("the response doesn't contain 'rowtype'".to_string())
         })?;
-        let row_set = response.data.row_set.ok_or_else(|| {
+        let row_set = response_data.row_set.ok_or_else(|| {
             Error::UnsupportedFormat("the response doesn't contain 'rowset'".to_string())
         })?;
         let row_set = Mutex::new(Some(row_set));
@@ -128,7 +162,7 @@ impl QueryExecutor {
             .collect::<Vec<_>>();
         let column_types = Arc::new(column_types);
 
-        let chunk_headers = response.data.chunk_headers.unwrap_or_default();
+        let chunk_headers = response_data.chunk_headers.unwrap_or_default();
         let chunk_headers: HeaderMap = HeaderMap::try_from(&chunk_headers)?;
 
         Ok(Self {
@@ -173,22 +207,47 @@ impl QueryExecutor {
 
     /// Fetch all the remaining chunks at once
     pub async fn fetch_all(&self) -> Result<Vec<SnowflakeRow>> {
+        self.fetch_all_with_concurrency_limit(usize::MAX).await
+    }
+
+    /// Fetch all remaining chunks while capping concurrent downloads.
+    ///
+    /// `max_concurrency` values below `1` are treated as `1` to ensure progress.
+    pub async fn fetch_all_with_concurrency_limit(
+        &self,
+        max_concurrency: usize,
+    ) -> Result<Vec<SnowflakeRow>> {
         let mut rows = Vec::new();
-        let row_set = &mut *self.row_set.lock().await;
-        let chunks = &mut *self.chunks.lock().await;
-        if let Some(row_set) = row_set.take() {
-            rows.extend(row_set.into_iter().map(|r| self.convert_row(r)));
-        } else if chunks.is_empty() {
-            // Nothing to fetch
-            return Ok(vec![]);
+        {
+            let row_set = &mut *self.row_set.lock().await;
+            if let Some(row_set) = row_set.take() {
+                rows.extend(row_set.into_iter().map(|r| self.convert_row(r)));
+            }
         }
+
+        let mut chunks = {
+            let chunks = &mut *self.chunks.lock().await;
+            if chunks.is_empty() {
+                return Ok(rows);
+            }
+
+            mem::take(chunks)
+        };
+
+        let max_concurrency = max_concurrency.max(1);
+        let concurrency = chunks.len().clamp(1, max_concurrency);
+
+        // The semaphore ensures that no more than `concurrency` downloads are in flight.
+        let semaphore = Arc::new(Semaphore::new(concurrency));
 
         let mut handles = Vec::with_capacity(chunks.len());
         while let Some(chunk) = chunks.pop() {
             let http = self.http.clone();
             let chunk_headers = self.chunk_headers.clone();
             let qrmk = self.qrmk.clone();
+            let semaphore = semaphore.clone();
             handles.push(tokio::spawn(async move {
+                let _permit = semaphore.acquire_owned().await?;
                 download_chunk(http, chunk.url, chunk_headers, qrmk).await
             }));
         }
@@ -212,15 +271,19 @@ impl QueryExecutor {
 
 async fn poll_for_async_results(
     http: &Client,
-    account: &str,
     result_url: &str,
     session_token: &str,
     timeout: Duration,
+    base_url: Url,
 ) -> Result<SnowflakeResponse> {
     let start = Instant::now();
     while start.elapsed() < timeout {
         sleep(Duration::from_secs(10)).await;
-        let url = format!("https://{account}.snowflakecomputing.com{}", result_url);
+        let url = if let Ok(url) = Url::parse(result_url) {
+            url
+        } else {
+            base_url.join(result_url)?
+        };
 
         let resp = http
             .get(url)
@@ -253,6 +316,7 @@ async fn poll_for_async_results(
 #[derive(Debug, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
+    /// SQL statement to execute against Snowflake.
     pub sql_text: String,
 }
 
@@ -356,8 +420,27 @@ struct RawQueryResponseChunk {
 
 #[derive(serde::Deserialize, Debug)]
 struct SnowflakeResponse {
-    data: RawQueryResponse,
+    /// Response data payload. May be null when session has expired (e.g., code 390112).
+    data: Option<RawQueryResponse>,
     message: Option<String>,
     success: bool,
     code: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_session_expired() {
+        let json = serde_json::json!({
+            "data": null,
+            "code": "390112",
+            "message": "Your session has expired. Please login again.",
+            "success": false,
+            "headers": null
+        });
+        let resp: SnowflakeResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(resp.code.as_deref(), Some("390112"));
+    }
 }

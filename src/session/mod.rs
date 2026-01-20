@@ -7,12 +7,16 @@ use crate::{
 
 pub struct SnowflakeSession {
     pub(super) http: reqwest::Client,
+    pub(super) host: Option<String>,
+    pub(super) port: Option<u16>,
+    pub(super) protocol: Option<String>,
     pub(super) account: String,
     pub(super) session_token: String,
     pub(super) timeout: Option<Duration>,
 }
 
 impl SnowflakeSession {
+    /// Run a query and fetch all results.
     pub async fn query<Q: Into<QueryRequest>>(&self, request: Q) -> Result<Vec<SnowflakeRow>> {
         let executor = QueryExecutor::create(self, request).await?;
         executor.fetch_all().await
