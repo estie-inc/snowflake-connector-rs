@@ -21,7 +21,7 @@ fn get_base_url(
         let mut url = Url::parse(&format!("{protocol}://{host}"))?;
         if let Some(port) = connection_config.port {
             url.set_port(Some(port))
-                .map_err(|_| Error::Decode("invalid base url port".to_string()))?;
+                .map_err(|_| Error::Url("invalid base url port".to_string()))?;
         }
         Ok(url)
     } else {

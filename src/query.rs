@@ -38,7 +38,7 @@ fn get_base_url(sess: &SnowflakeSession) -> Result<Url> {
     let mut url = Url::parse(&format!("{protocol}://{host}"))?;
     if let Some(port) = sess.port {
         url.set_port(Some(port))
-            .map_err(|_| Error::Decode("invalid base url port".to_string()))?;
+            .map_err(|_| Error::Url("invalid base url port".to_string()))?;
     }
     Ok(url)
 }
