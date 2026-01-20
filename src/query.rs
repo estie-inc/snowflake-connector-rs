@@ -248,9 +248,7 @@ impl QueryExecutor {
             let semaphore = semaphore.clone();
             handles.push(tokio::spawn(async move {
                 let _permit = semaphore.acquire_owned().await?;
-                let result = download_chunk(http, chunk.url, chunk_headers, qrmk).await;
-
-                result
+                download_chunk(http, chunk.url, chunk_headers, qrmk).await
             }));
         }
 
