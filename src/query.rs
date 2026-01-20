@@ -58,7 +58,8 @@ impl QueryExecutor {
         let request_id = uuid::Uuid::new_v4();
         let base_url = get_base_url(sess)?;
         let mut url = base_url.join("queries/v1/query-request")?;
-        url.set_query(Some(&format!("requestId={request_id}")));
+        url.query_pairs_mut()
+            .append_pair("requestId", &request_id.to_string());
 
         let request: QueryRequest = request.into();
         let response = http
