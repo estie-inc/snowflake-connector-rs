@@ -121,7 +121,7 @@ struct LoginResponse {
     token: String,
 }
 
-#[derive(serde:: Deserialize)]
+#[derive(serde::Deserialize)]
 struct Response {
     data: LoginResponse,
     message: Option<String>,

@@ -1,0 +1,12 @@
+[toolchain]
+channel = "1.85"
+components = [
+    "cargo",
+    "clippy",
+    "rust-src",
+    "rustc",
+    "rustfmt",
+]
+profile = "default"
+targets = [
+]

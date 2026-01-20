@@ -9,8 +9,7 @@ async fn test_download_chunked_results() -> Result<()> {
 
     // Act
     let session = client.create_session().await?;
-    let query =
-        "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS RAND FROM TABLE(GENERATOR(ROWCOUNT=>10000))";
+    let query = "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS RAND FROM TABLE(GENERATOR(ROWCOUNT=>10000))";
     let rows = session.query(query).await?;
 
     // Assert
@@ -50,8 +49,7 @@ async fn test_query_executor() -> Result<()> {
 
     // Act
     let session = client.create_session().await?;
-    let query =
-        "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS RAND FROM TABLE(GENERATOR(ROWCOUNT=>10000))";
+    let query = "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS RAND FROM TABLE(GENERATOR(ROWCOUNT=>10000))";
 
     let executor = session.execute(query).await?;
     let mut rows = Vec::with_capacity(10000);

@@ -11,7 +11,8 @@ async fn test_decode() -> Result<()> {
     // Create a temporary table
     // DATETIME aliases TIMESTAMP_NTZ
     let query = "CREATE TEMPORARY TABLE example (
-        n NUMBER, s STRING, b BOOLEAN, d DATE, tm TIME,
+        n NUMBER, s STRING, b BOOLEAN, d DATE,
+        tm TIME, tm3 TIME(3), tm9 TIME(9),
         ltz TIMESTAMP_LTZ, ntz TIMESTAMP_NTZ, tz TIMESTAMP_TZ
     )";
     let rows = session.query(query).await?;
@@ -22,8 +23,9 @@ async fn test_decode() -> Result<()> {
     );
 
     // Insert some data
-    let query = "INSERT INTO example (n, s, b, d, tm, ltz, ntz, tz) VALUES (
-        42, 'hello', 0, '2024-01-01', '01:23:45',
+    let query = "INSERT INTO example (n, s, b, d, tm, tm3, tm9, ltz, ntz, tz) VALUES (
+        42, 'hello', 0, '2024-01-01',
+        '01:23:45', '01:23:45.123', '01:23:45.123456789',
         '2024-01-01 00:00:00', '2024-01-01 00:00:00', '2024-01-01 00:00:00')";
     let rows = session.query(query).await?;
     assert_eq!(rows.len(), 1);
@@ -43,6 +45,14 @@ async fn test_decode() -> Result<()> {
     assert_eq!(
         rows[0].get::<chrono::NaiveTime>("tm")?,
         chrono::NaiveTime::from_hms_opt(1, 23, 45).unwrap()
+    );
+    assert_eq!(
+        rows[0].get::<chrono::NaiveTime>("tm3")?,
+        chrono::NaiveTime::from_hms_milli_opt(1, 23, 45, 123).unwrap()
+    );
+    assert_eq!(
+        rows[0].get::<chrono::NaiveTime>("tm9")?,
+        chrono::NaiveTime::from_hms_nano_opt(1, 23, 45, 123_456_789).unwrap()
     );
     assert_eq!(
         rows[0].get::<chrono::NaiveDateTime>("ltz")?,

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use crate::{
-    query::{QueryExecutor, QueryRequest},
     Result, SnowflakeRow,
+    query::{QueryExecutor, QueryRequest},
 };
 
 pub struct SnowflakeSession {
