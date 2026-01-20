@@ -38,6 +38,7 @@ assert_eq!(rows[0].get::<String>("VALUE")?, "hello");
 ## Features
 
 This crate supports optional features to decrypt legacy keys that use DES or 3DES encryption.
+These algorithms are considered insecure and should only be used for legacy compatibility.
 
 - **`pkcs8-des`**: Enables DES decryption support
 - **`pkcs8-3des`**: Enables 3DES decryption support
