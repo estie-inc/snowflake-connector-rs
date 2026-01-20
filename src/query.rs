@@ -430,17 +430,12 @@ async fn poll_for_async_results(
 pub struct QueryRequest {
     /// SQL statement to execute against Snowflake.
     pub sql_text: String,
-    /// Optional cap on parallel chunk downloads when fetching results client-side. Not forwarded
-    /// to Snowflake.
-    #[serde(skip_serializing)]
-    pub max_concurrency: Option<usize>,
 }
 
 impl From<&str> for QueryRequest {
     fn from(sql_text: &str) -> Self {
         Self {
             sql_text: sql_text.to_string(),
-            max_concurrency: None,
         }
     }
 }
@@ -452,10 +447,7 @@ impl From<&QueryRequest> for QueryRequest {
 
 impl From<String> for QueryRequest {
     fn from(sql_text: String) -> Self {
-        Self {
-            sql_text,
-            max_concurrency: None,
-        }
+        Self { sql_text }
     }
 }
 
