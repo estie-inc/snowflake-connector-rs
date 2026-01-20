@@ -31,8 +31,8 @@ jsonwebtoken = "9.1"
 url = "2.5"
 
 [features]
-pkcs8-des-insecure = ["pkcs8/des-insecure"]
-decrypt-3des = ["pkcs8/3des"]
+pkcs8-des = ["pkcs8/des-insecure"]
+pkcs8-3des = ["pkcs8/3des"]
 
 [package.metadata.docs.rs]
 all-features = true
