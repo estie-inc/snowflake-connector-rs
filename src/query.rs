@@ -207,13 +207,16 @@ impl QueryExecutor {
 
     /// Fetch all the remaining chunks at once
     pub async fn fetch_all(&self) -> Result<Vec<SnowflakeRow>> {
-        self.fetch_all_with_limit(usize::MAX).await
+        self.fetch_all_with_concurrency_limit(usize::MAX).await
     }
 
     /// Fetch all remaining chunks while capping concurrent downloads.
     ///
     /// `max_concurrency` values below `1` are treated as `1` to ensure progress.
-    pub async fn fetch_all_with_limit(&self, max_concurrency: usize) -> Result<Vec<SnowflakeRow>> {
+    pub async fn fetch_all_with_concurrency_limit(
+        &self,
+        max_concurrency: usize,
+    ) -> Result<Vec<SnowflakeRow>> {
         let mut rows = Vec::new();
         {
             let row_set = &mut *self.row_set.lock().await;
