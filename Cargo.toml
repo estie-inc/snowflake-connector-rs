@@ -21,7 +21,7 @@ serde_json = "1.0"
 thiserror = "2.0"
 uuid = { version = "1.11", features = ["v4"] }
 flate2 = "1.0"
-tokio = { version = "1.41", features = ["net", "rt", "sync", "time"] }
+tokio = { version = "1.41", features = ["rt"] }
 chrono = "0.4"
 pkcs8 = { version = "0.10", features = ["pem", "pkcs5", "encryption"] }
 rsa = "0.9"
@@ -46,11 +46,14 @@ external-browser-sso = [
     "dep:indexmap",
     "dep:shell-words",
     "dep:socket2",
+    "tokio/net",
+    "tokio/sync",
+    "tokio/time",
 ]
 
 [package.metadata.docs.rs]
 all-features = true
 
 [dev-dependencies]
-tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "test-util"] }
 anyhow = "1"
+tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "test-util"] }
