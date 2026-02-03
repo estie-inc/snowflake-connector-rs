@@ -1,7 +1,7 @@
 use snowflake_connector_rs::{SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let username = std::env::var("SNOWFLAKE_USERNAME")?;
     let account = std::env::var("SNOWFLAKE_ACCOUNT")?;
     let role = std::env::var("SNOWFLAKE_ROLE").ok();
