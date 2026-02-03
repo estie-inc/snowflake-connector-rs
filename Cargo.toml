@@ -1,6 +1,6 @@
 [package]
 name = "snowflake-connector-rs"
-version = "0.7.6"
+version = "0.8.0"
 edition = "2024"
 authors = ["kenkoooo <kenkou.n@gmail.com>"]
 description = "A Rust client for Snowflake"
