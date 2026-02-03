@@ -21,7 +21,7 @@ serde_json = "1.0"
 thiserror = "2.0"
 uuid = { version = "1.11", features = ["v4"] }
 flate2 = "1.0"
-tokio = { version = "1.41", features = ["rt"] }
+tokio = { version = "1.41", features = ["net", "rt", "sync", "time"] }
 chrono = "0.4"
 pkcs8 = { version = "0.10", features = ["pem", "pkcs5", "encryption"] }
 rsa = "0.9"
@@ -29,13 +29,28 @@ sha2 = "0.10"
 base64 = "0.22"
 jsonwebtoken = "9.1"
 url = "2.5"
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", features = ["http1", "server"], optional = true }
+hyper-util = { version = "0.1", features = ["http1", "server", "tokio"], optional = true }
+indexmap = { version = "2.13", optional = true }
+shell-words = { version = "1.1", optional = true }
+socket2 = { version = "0.6", optional = true }
 
 [features]
 pkcs8-des = ["pkcs8/des-insecure"]
 pkcs8-3des = ["pkcs8/3des"]
+external-browser-sso = [
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:indexmap",
+    "dep:shell-words",
+    "dep:socket2",
+]
 
 [package.metadata.docs.rs]
 all-features = true
 
 [dev-dependencies]
-tokio = { version = "1.41", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "test-util"] }
+anyhow = "1"
