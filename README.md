@@ -42,3 +42,14 @@ These algorithms are considered insecure and should only be used for legacy comp
 
 - **`pkcs8-des`**: Enables DES decryption support
 - **`pkcs8-3des`**: Enables 3DES decryption support
+- **`external-browser-sso`**: Enables external browser SSO authentication support
+
+> [!NOTE]
+> The `external-browser-sso` feature is experimental. 
+> The implementation and API may change in future releases, and stability or backward compatibility is not guaranteed.
+> Use this feature with caution in production environments.
+> Please open an issue for bugs or feature requests.
+
+## External browser SSO environment variables
+- `SF_AUTH_SOCKET_ADDR`: Listener bind host (default `localhost`).
+- `SF_AUTH_SOCKET_PORT`: Listener port (default `0` to auto-pick).

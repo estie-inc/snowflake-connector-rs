@@ -37,6 +37,10 @@
 mod auth;
 mod chunk;
 mod error;
+#[cfg(feature = "external-browser-sso")]
+mod external_browser_launcher;
+#[cfg(feature = "external-browser-sso")]
+mod external_browser_listener;
 mod query;
 mod row;
 mod session;
@@ -74,10 +78,10 @@ pub struct SnowflakeClientConfig {
 }
 
 #[derive(Default, Clone)]
-struct SnowflakeConnectionConfig {
-    host: String,
-    port: Option<u16>,
-    protocol: Option<String>,
+pub(crate) struct SnowflakeConnectionConfig {
+    pub(crate) host: String,
+    pub(crate) port: Option<u16>,
+    pub(crate) protocol: Option<String>,
 }
 
 #[derive(Clone)]
@@ -90,6 +94,8 @@ pub enum SnowflakeAuthMethod {
     Oauth {
         token: String,
     },
+    #[cfg(feature = "external-browser-sso")]
+    ExternalBrowser,
 }
 
 impl SnowflakeClient {
