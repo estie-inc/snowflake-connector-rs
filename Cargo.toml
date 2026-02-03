@@ -57,3 +57,7 @@ all-features = true
 [dev-dependencies]
 anyhow = "1"
 tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "test-util"] }
+
+[[example]]
+name = "external_browser_sso"
+required-features = ["external-browser-sso"]
