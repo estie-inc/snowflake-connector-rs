@@ -1,0 +1,5 @@
+[tools]
+rust = { version = "1.88.0", components = "rust-analyzer,rust-src" }
+
+[env]
+_.file = '.env'
