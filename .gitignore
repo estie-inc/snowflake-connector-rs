@@ -16,4 +16,6 @@ Cargo.lock
 
 .vscode
 
+mise.toml
+
 .env
