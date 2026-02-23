@@ -91,6 +91,9 @@ pub enum SnowflakeAuthMethod {
         encrypted_pem: String,
         password: Vec<u8>,
     },
+    KeyPairUnencrypted {
+        pem: String,
+    },
     Oauth {
         token: String,
     },
