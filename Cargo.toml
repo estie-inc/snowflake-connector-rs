@@ -46,6 +46,7 @@ external-browser-sso = [
     "dep:indexmap",
     "dep:shell-words",
     "dep:socket2",
+    "tokio/macros",
     "tokio/net",
     "tokio/sync",
     "tokio/time",
