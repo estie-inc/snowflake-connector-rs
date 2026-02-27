@@ -1,5 +1,6 @@
 use std::env;
 use std::io::{self, Write};
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use reqwest::Client;
@@ -161,13 +162,12 @@ fn listener_config_from_env() -> Result<ListenerConfig> {
     // This avoids issues where `localhost` resolves to `::1` (IPv6) first,
     // causing the listener to bind to IPv6 while the browser redirects to IPv4.
     let host = if host.eq_ignore_ascii_case("localhost") {
-        "127.0.0.1".to_string()
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
     } else {
-        host
+        host.parse().map_err(|_| {
+            Error::Communication("SF_AUTH_SOCKET_ADDR must be a valid IP address".to_string())
+        })?
     };
-    let host = host.parse().map_err(|_| {
-        Error::Communication("SF_AUTH_SOCKET_ADDR must be a valid IP address".to_string())
-    })?;
     let port = match env::var("SF_AUTH_SOCKET_PORT") {
         Ok(val) => val.parse().map_err(|_| {
             Error::Communication("SF_AUTH_SOCKET_PORT must be a valid u16".to_string())
