@@ -201,7 +201,7 @@ impl SnowflakeRow {
         let idx = self
             .column_indices
             .get(&column_name.to_ascii_uppercase())
-            .ok_or_else(|| Error::Decode(format!("column not found: {}", column_name)))?;
+            .ok_or_else(|| Error::Decode(format!("column not found: {column_name}")))?;
         let ty = &self.column_types[*idx];
         (&self.row[*idx], ty).try_get()
     }
@@ -328,45 +328,44 @@ fn parse_timestamp_tz(s: &str, scale: i64) -> Result<NaiveDateTime> {
         let secs = frac_secs.trunc() as i64 / scale_factor as i64;
         let nsec = (frac_secs.fract() * 10_f64.powi(9 - scale as i32)) as u32;
         let dt = DateTime::from_timestamp(secs, nsec)
-            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {}", s)))?;
+            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {s}")))?;
         let dt = dt.naive_utc();
         return dt
             .checked_add_signed(TimeDelta::minutes(min_addend))
-            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {}", s)));
+            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {s}")));
     }
     // Assume the value is encoded as the other format (i.e. result version > 0)
     // once we cannot parse the string as a single float.
     let pair: Vec<_> = s.split_whitespace().collect();
     let v = pair
         .first()
-        .ok_or_else(|| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
+        .ok_or_else(|| Error::Decode(format!("invalid timestamp_tz: {s}")))?;
     let mut v = v
         .parse::<f64>()
-        .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
+        .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {s}")))?;
     let scale_factor = 10i32.pow(scale as u32);
     v *= scale_factor as f64;
     let secs = v.trunc() as i64 / scale_factor as i64;
     let nsec = (v.fract() * 10_f64.powi(9 - scale as i32)) as u32;
     let dt = DateTime::from_timestamp(secs, nsec)
-        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {}", s)))?;
+        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {s}")))?;
     let dt = dt.naive_utc();
 
     let tz = pair
         .get(1)
-        .ok_or_else(|| Error::Decode(format!("invalid timezone for timestamp_tz: {}", s)))?;
+        .ok_or_else(|| Error::Decode(format!("invalid timezone for timestamp_tz: {s}")))?;
     let tz = tz
         .parse::<i64>()
-        .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
+        .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {s}")))?;
     if !(0..=2880).contains(&tz) {
         return Err(Error::Decode(format!(
-            "invalid timezone for timestamp_tz: {}",
-            s
+            "invalid timezone for timestamp_tz: {s}"
         )));
     }
     // subtract 24 hours from the timezone to map [0, 48] to [-24, 24]
     let min_addend = 1440 - tz;
     dt.checked_add_signed(TimeDelta::minutes(min_addend))
-        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {}", s)))
+        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {s}")))
 }
 
 fn parse_timestamp_ntz_ltz(s: &str, scale: i64) -> Result<NaiveDateTime> {
@@ -376,16 +375,16 @@ fn parse_timestamp_ntz_ltz(s: &str, scale: i64) -> Result<NaiveDateTime> {
         let secs = v.trunc() as i64 / scale_factor as i64;
         let nsec = (v.fract() * 10_f64.powi(9 - scale as i32)) as u32;
         let dt = DateTime::from_timestamp(secs, nsec)
-            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {}", s)))?;
+            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {s}")))?;
         return Ok(dt.naive_utc());
     }
-    Err(Error::Decode(format!("Could not decode timestamp: {}", s)))
+    Err(Error::Decode(format!("Could not decode timestamp: {s}")))
 }
 
 fn parse_time_seconds_and_nanos(value: &str, scale: usize) -> Result<(u32, u32)> {
     // Snowflake TIME scale is documented as 0..=9 (nanoseconds).
     if scale > 9 {
-        return Err(Error::Decode(format!("invalid time scale: {}", scale)));
+        return Err(Error::Decode(format!("invalid time scale: {scale}")));
     }
 
     let value = value.trim();
@@ -402,7 +401,7 @@ fn parse_time_seconds_and_nanos(value: &str, scale: usize) -> Result<(u32, u32)>
     }
 
     if !frac_str.as_bytes().iter().all(|b| b.is_ascii_digit()) {
-        return Err(Error::Decode(format!("invalid time: {}", value)));
+        return Err(Error::Decode(format!("invalid time: {value}")));
     }
     let mut frac_digits: Vec<u8> = frac_str.as_bytes().to_vec();
 
@@ -413,18 +412,18 @@ fn parse_time_seconds_and_nanos(value: &str, scale: usize) -> Result<(u32, u32)>
     }
 
     if frac_digits.len() < scale {
-        frac_digits.extend(std::iter::repeat(b'0').take(scale - frac_digits.len()));
+        frac_digits.extend(std::iter::repeat_n(b'0', scale - frac_digits.len()));
     }
 
     let frac_scaled: u32 = {
         let s = std::str::from_utf8(&frac_digits)
-            .map_err(|_| Error::Decode(format!("invalid time: {}", value)))?;
+            .map_err(|_| Error::Decode(format!("invalid time: {value}")))?;
         s.parse::<u32>()
-            .map_err(|_| Error::Decode(format!("invalid time: {}", value)))?
+            .map_err(|_| Error::Decode(format!("invalid time: {value}")))?
     };
     let nsec = frac_scaled
         .checked_mul(10u32.pow((9 - scale) as u32))
-        .ok_or_else(|| Error::Decode(format!("invalid time: {}", value)))?;
+        .ok_or_else(|| Error::Decode(format!("invalid time: {value}")))?;
 
     Ok((secs, nsec))
 }
@@ -435,11 +434,11 @@ impl SnowflakeDecode for NaiveTime {
         let scale = match ty.scale {
             None => 0usize,
             Some(s) if (0..=9).contains(&s) => s as usize,
-            Some(s) => return Err(Error::Decode(format!("invalid time scale: {}", s))),
+            Some(s) => return Err(Error::Decode(format!("invalid time scale: {s}"))),
         };
         let (secs, nsec) = parse_time_seconds_and_nanos(value, scale)?;
         NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
-            .ok_or_else(|| Error::Decode(format!("invalid time: {}", value)))
+            .ok_or_else(|| Error::Decode(format!("invalid time: {value}")))
     }
 }
 

@@ -115,8 +115,8 @@ impl SnowflakeClient {
     }
 
     pub fn with_proxy(self, host: &str, port: u16, username: &str, password: &str) -> Result<Self> {
-        let proxy = Proxy::all(format!("http://{}:{}", host, port).as_str())?
-            .basic_auth(username, password);
+        let proxy =
+            Proxy::all(format!("http://{host}:{port}").as_str())?.basic_auth(username, password);
 
         let client = ClientBuilder::new()
             .gzip(true)

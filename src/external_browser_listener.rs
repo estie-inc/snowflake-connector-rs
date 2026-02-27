@@ -318,7 +318,7 @@ fn forbidden() -> Response<Full<Bytes>> {
 
 fn extract_payload_from_query(query: Option<&str>) -> Option<CallbackPayload> {
     let q = query?;
-    let parsed = Url::parse(&format!("http://dummy?{}", q)).ok()?;
+    let parsed = Url::parse(&format!("http://dummy?{q}")).ok()?;
 
     let mut token: Option<String> = None;
     let mut consent: Option<bool> = None;
@@ -510,11 +510,11 @@ mod tests {
     async fn post_origin_ok() {
         with_listener(|base| async move {
             // Simulate browser preflight so the listener returns JSON.
-            let port = base.split(':').last().unwrap();
-            let origin = format!("http://localhost:{}", port);
+            let port = base.split(':').next_back().unwrap();
+            let origin = format!("http://localhost:{port}");
 
             let preflight = reqwest::Client::new()
-                .request(reqwest::Method::OPTIONS, format!("{}/callback", base))
+                .request(reqwest::Method::OPTIONS, format!("{base}/callback"))
                 .header("Origin", &origin)
                 .header("Access-Control-Request-Method", "POST")
                 .header("Access-Control-Request-Headers", "Content-Type")
@@ -525,7 +525,7 @@ mod tests {
 
             let client = reqwest::Client::new();
             let resp = client
-                .post(format!("{}/callback", base))
+                .post(format!("{base}/callback"))
                 .header("Origin", &origin)
                 .json(&serde_json::json!({"token": "example"}))
                 .send()
@@ -562,7 +562,7 @@ mod tests {
     #[tokio::test]
     async fn get_origin_ok() {
         with_listener(|base| async move {
-            let url = format!("{}/callback?token=example", base);
+            let url = format!("{base}/callback?token=example");
             let resp = reqwest::Client::new().get(url).send().await.unwrap();
             assert_eq!(resp.status(), ReqwestStatusCode::OK);
             assert_eq!(
@@ -587,7 +587,7 @@ mod tests {
     async fn origin_missing_is_allowed() {
         with_listener(|base| async move {
             let resp = reqwest::Client::new()
-                .post(format!("{}/callback", base))
+                .post(format!("{base}/callback"))
                 .json(&serde_json::json!({"token": "example"}))
                 .send()
                 .await
@@ -605,7 +605,7 @@ mod tests {
     async fn origin_mismatch_is_allowed_for_get_post() {
         with_listener(|base| async move {
             let resp = reqwest::Client::new()
-                .get(format!("{}/callback?token=example", base))
+                .get(format!("{base}/callback?token=example"))
                 .header("Origin", "http://127.0.0.1:1")
                 .send()
                 .await
@@ -618,10 +618,10 @@ mod tests {
     #[tokio::test]
     async fn localhost_origin_is_allowed_for_get_post() {
         with_listener(|base| async move {
-            let port = base.split(':').last().unwrap();
-            let origin = format!("http://localhost:{}", port);
+            let port = base.split(':').next_back().unwrap();
+            let origin = format!("http://localhost:{port}");
             let resp = reqwest::Client::new()
-                .get(format!("{}/callback?token=example", base))
+                .get(format!("{base}/callback?token=example"))
                 .header("Origin", origin)
                 .send()
                 .await
@@ -638,10 +638,10 @@ mod tests {
     #[tokio::test]
     async fn options_echoes_requested_headers() {
         with_listener(|base| async move {
-            let port = base.split(':').last().unwrap();
-            let origin = format!("http://localhost:{}", port);
+            let port = base.split(':').next_back().unwrap();
+            let origin = format!("http://localhost:{port}");
             let resp = reqwest::Client::new()
-                .request(reqwest::Method::OPTIONS, format!("{}/callback", base))
+                .request(reqwest::Method::OPTIONS, format!("{base}/callback"))
                 .header("Origin", origin)
                 .header("Access-Control-Request-Method", "POST")
                 .header("Access-Control-Request-Headers", "Content-Type, X-Custom")
@@ -682,7 +682,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(format!("{}/callback", base))
+            .post(format!("{base}/callback"))
             .json(&serde_json::json!({"token": "example", "consent": false}))
             .send()
             .await
@@ -706,7 +706,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(format!("{}/callback", base))
+            .post(format!("{base}/callback"))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body("token=example&consent=true")
             .send()
@@ -731,7 +731,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let resp = client
-            .get(format!("{}/callback?token=example&consent=false", base))
+            .get(format!("{base}/callback?token=example&consent=false"))
             .send()
             .await
             .unwrap();

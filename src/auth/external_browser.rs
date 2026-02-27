@@ -251,6 +251,6 @@ mod tests {
     fn payload_from_redirect_input_fails_without_token() {
         let url = "https://example.test/callback?missing=true";
         let err = payload_from_redirect_input(url).unwrap_err();
-        assert!(format!("{}", err).contains("Unable to extract token"));
+        assert!(format!("{err}").contains("Unable to extract token"));
     }
 }
