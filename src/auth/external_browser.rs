@@ -1,5 +1,6 @@
 use std::env;
 use std::io::{self, Write};
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 use reqwest::Client;
@@ -13,6 +14,12 @@ use crate::external_browser_listener::{CallbackPayload, ListenerConfig, spawn_li
 
 use super::login::get_base_url;
 use crate::{Error, Result, SnowflakeClientConfig, SnowflakeConnectionConfig};
+
+#[cfg(unix)]
+use std::io::{IsTerminal, Read};
+
+#[cfg(unix)]
+use nix::sys::termios::{self, LocalFlags, SetArg, SpecialCharacterIndices, Termios};
 
 pub struct ExternalBrowserResult {
     pub token: String,
@@ -46,7 +53,7 @@ pub async fn run_external_browser_flow(
     let timeout = config.timeout.unwrap_or_else(|| Duration::from_secs(60));
     let payload_result: Result<CallbackPayload> = match launcher.open(&auth.sso_url) {
         Ok(LaunchOutcome::Opened) => wait_for_token(listener.payloads, timeout).await,
-        Ok(LaunchOutcome::ManualOpen { url }) => manual_token_flow(&url),
+        Ok(LaunchOutcome::ManualOpen { url }) => manual_token_flow(&url).await,
         Err(err) => Err(Error::Communication(format!(
             "failed to open browser: {err}"
         ))),
@@ -177,23 +184,164 @@ fn listener_config_from_env() -> Result<ListenerConfig> {
     })
 }
 
-fn manual_token_flow(sso_url: &str) -> Result<CallbackPayload> {
+async fn manual_token_flow(sso_url: &str) -> Result<CallbackPayload> {
     eprintln!(
         "{}",
         BrowserLauncher::<SystemCommandRunner>::manual_open_message(sso_url)
     );
+    tokio::task::spawn_blocking(manual_token_flow_blocking)
+        .await
+        .map_err(|e| Error::Communication(format!("manual input task failed: {e}")))?
+}
+
+fn manual_token_flow_blocking() -> Result<CallbackPayload> {
     eprintln!(
         "After completing authentication, paste the URL you were redirected to (not logged)."
     );
 
-    let mut input = String::new();
     eprint!("Redirected URL: ");
     let _ = io::stderr().flush();
+    let input = read_redirected_url_line()?;
+
+    eprintln!("Received redirected URL input. Continuing authentication...");
+
+    payload_from_redirect_input(input.trim())
+}
+
+fn read_redirected_url_line() -> Result<String> {
+    #[cfg(unix)]
+    if let Some(result) = try_read_redirected_url_line_noncanonical() {
+        return result;
+    }
+
+    // TODO(windows): investigate whether long redirected URLs can be truncated in
+    // canonical console input mode and add a Windows-specific raw/non-canonical fallback.
+
+    let mut input = String::new();
     io::stdin()
         .read_line(&mut input)
         .map_err(|e| Error::Communication(format!("failed to read input: {e}")))?;
 
-    payload_from_redirect_input(input.trim())
+    validate_redirected_url_input(input)
+}
+
+fn validate_redirected_url_input(input: String) -> Result<String> {
+    if input.trim().is_empty() {
+        return Err(Error::Communication(
+            "No redirected URL was provided".to_string(),
+        ));
+    }
+    Ok(input)
+}
+
+#[cfg(unix)]
+fn try_read_redirected_url_line_noncanonical() -> Option<Result<String>> {
+    let stdin = io::stdin();
+
+    // We intentionally use nix termios wrappers (instead of raw libc calls) so this crate
+    // can avoid `unsafe` while still controlling TTY mode.
+    // On macOS, canonical mode has a small line-length limit (MAX_CANON), so long redirected
+    // URLs can trigger terminal bell/input rejection. Non-canonical mode avoids that limit.
+    // Only switch modes for interactive TTY. If stdin is redirected/piped, keep default read_line.
+    if !stdin.is_terminal() {
+        return None;
+    }
+
+    let _guard = match NonCanonicalModeGuard::new() {
+        Ok(guard) => guard,
+        Err(_) => return None,
+    };
+
+    Some(read_line_noncanonical().and_then(validate_redirected_url_input))
+}
+
+#[cfg(unix)]
+fn read_line_noncanonical() -> Result<String> {
+    let mut bytes = Vec::new();
+    let mut buf = [0u8; 512];
+    let stdin = io::stdin();
+    let mut handle = stdin.lock();
+
+    loop {
+        let n = handle
+            .read(&mut buf)
+            .map_err(|e| Error::Communication(format!("failed to read input: {e}")))?;
+        if n == 0 {
+            break;
+        }
+
+        match apply_chunk_to_line(bytes, &buf[..n]) {
+            LineChunkState::Continue(next_bytes) => bytes = next_bytes,
+            LineChunkState::Complete(done_bytes) => return bytes_to_utf8(done_bytes),
+        }
+    }
+
+    bytes_to_utf8(bytes)
+}
+
+enum LineChunkState {
+    Continue(Vec<u8>),
+    Complete(Vec<u8>),
+}
+
+fn apply_chunk_to_line(initial: Vec<u8>, chunk: &[u8]) -> LineChunkState {
+    match chunk
+        .iter()
+        .copied()
+        .try_fold(initial, |mut acc, byte| match byte {
+            b'\n' | b'\r' => ControlFlow::Break(acc),
+            0x08 | 0x7f => {
+                // Known limitation: terminal echo behavior may differ by emulator/IME.
+                // We only normalize the input buffer and keep terminal-driven rendering.
+                let _ = acc.pop();
+                ControlFlow::Continue(acc)
+            }
+            _ => {
+                acc.push(byte);
+                ControlFlow::Continue(acc)
+            }
+        }) {
+        ControlFlow::Continue(bytes) => LineChunkState::Continue(bytes),
+        ControlFlow::Break(done_bytes) => LineChunkState::Complete(done_bytes),
+    }
+}
+
+fn bytes_to_utf8(bytes: Vec<u8>) -> Result<String> {
+    String::from_utf8(bytes)
+        .map_err(|e| Error::Communication(format!("redirected URL is not valid UTF-8: {e}")))
+}
+
+#[cfg(unix)]
+struct NonCanonicalModeGuard {
+    stdin: io::Stdin,
+    original: Termios,
+}
+
+#[cfg(unix)]
+impl NonCanonicalModeGuard {
+    fn new() -> io::Result<Self> {
+        let stdin = io::stdin();
+        let original = termios::tcgetattr(&stdin).map_err(nix_error_to_io)?;
+        let mut modified = original.clone();
+        modified.local_flags.remove(LocalFlags::ICANON);
+        modified.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
+        modified.control_chars[SpecialCharacterIndices::VTIME as usize] = 0;
+        termios::tcsetattr(&stdin, SetArg::TCSANOW, &modified).map_err(nix_error_to_io)?;
+
+        Ok(Self { stdin, original })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for NonCanonicalModeGuard {
+    fn drop(&mut self) {
+        let _ = termios::tcsetattr(&self.stdin, SetArg::TCSANOW, &self.original);
+    }
+}
+
+#[cfg(unix)]
+fn nix_error_to_io(err: nix::errno::Errno) -> io::Error {
+    io::Error::from_raw_os_error(err as i32)
 }
 
 fn extract_payload_from_url(url: &str) -> Option<CallbackPayload> {

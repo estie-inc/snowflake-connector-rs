@@ -35,6 +35,7 @@ hyper-util = { version = "0.1", features = ["http1", "server", "tokio"], optiona
 indexmap = { version = "2.13", optional = true }
 shell-words = { version = "1.1", optional = true }
 socket2 = { version = "0.6", optional = true }
+nix = { version = "0.31", optional = true, features = ["term"] }
 
 [features]
 pkcs8-des = ["pkcs8/des-insecure"]
@@ -46,6 +47,7 @@ external-browser-sso = [
     "dep:indexmap",
     "dep:shell-words",
     "dep:socket2",
+    "dep:nix",
     "tokio/macros",
     "tokio/net",
     "tokio/sync",
