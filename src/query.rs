@@ -68,7 +68,7 @@ impl QueryExecutor {
             .header(ACCEPT, "application/snowflake")
             .header(
                 AUTHORIZATION,
-                format!(r#"Snowflake Token="{}""#, session_token),
+                format!(r#"Snowflake Token="{session_token}""#),
             )
             .json(&request)
             .send()
@@ -290,7 +290,7 @@ async fn poll_for_async_results(
             .header(ACCEPT, "application/snowflake")
             .header(
                 AUTHORIZATION,
-                format!(r#"Snowflake Token="{}""#, session_token),
+                format!(r#"Snowflake Token="{session_token}""#),
             )
             .send()
             .await?;
