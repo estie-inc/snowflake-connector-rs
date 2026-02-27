@@ -5,6 +5,10 @@
 
 A Rust client for Snowflake, which enables you to connect to Snowflake and run queries.
 
+## MSRV
+
+The minimum supported Rust version (MSRV) is 1.88.
+
 ## Usage
 
 ```rust
