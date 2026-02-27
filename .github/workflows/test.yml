@@ -33,5 +33,7 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features
+      - run: cargo check
+      - run: cargo check --features external-browser-sso
       - run: cargo test
       - run: cargo test --features external-browser-sso
