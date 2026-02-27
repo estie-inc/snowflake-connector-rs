@@ -1,6 +1,5 @@
 use std::env;
 use std::io::{self, Write};
-use std::ops::ControlFlow;
 use std::time::Duration;
 
 use reqwest::Client;
@@ -17,6 +16,9 @@ use crate::{Error, Result, SnowflakeClientConfig, SnowflakeConnectionConfig};
 
 #[cfg(unix)]
 use std::io::{IsTerminal, Read};
+
+#[cfg(unix)]
+use std::ops::ControlFlow;
 
 #[cfg(unix)]
 use nix::sys::termios::{self, LocalFlags, SetArg, SpecialCharacterIndices, Termios};
@@ -279,11 +281,13 @@ fn read_line_noncanonical() -> Result<String> {
     bytes_to_utf8(bytes)
 }
 
+#[cfg(unix)]
 enum LineChunkState {
     Continue(Vec<u8>),
     Complete(Vec<u8>),
 }
 
+#[cfg(unix)]
 fn apply_chunk_to_line(initial: Vec<u8>, chunk: &[u8]) -> LineChunkState {
     match chunk
         .iter()
@@ -306,6 +310,7 @@ fn apply_chunk_to_line(initial: Vec<u8>, chunk: &[u8]) -> LineChunkState {
     }
 }
 
+#[cfg(unix)]
 fn bytes_to_utf8(bytes: Vec<u8>) -> Result<String> {
     String::from_utf8(bytes)
         .map_err(|e| Error::Communication(format!("redirected URL is not valid UTF-8: {e}")))
