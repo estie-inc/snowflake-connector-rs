@@ -165,6 +165,9 @@ fn listener_config_from_env() -> Result<ListenerConfig> {
     } else {
         host
     };
+    let host = host.parse().map_err(|_| {
+        Error::Communication("SF_AUTH_SOCKET_ADDR must be a valid IP address".to_string())
+    })?;
     let port = match env::var("SF_AUTH_SOCKET_PORT") {
         Ok(val) => val.parse().map_err(|_| {
             Error::Communication("SF_AUTH_SOCKET_PORT must be a valid u16".to_string())
