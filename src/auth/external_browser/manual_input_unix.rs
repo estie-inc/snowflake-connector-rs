@@ -13,8 +13,8 @@ pub(super) fn try_read_redirected_url_line_noncanonical() -> Option<Result<Strin
     // can avoid `unsafe` while still controlling TTY mode.
     // On macOS, canonical mode has a small line-length limit (MAX_CANON), so long redirected
     // URLs can trigger terminal bell/input rejection. Non-canonical mode avoids that limit.
-    // Only switch modes for interactive TTY. If stdin is redirected/piped, keep default read_line.
     if !stdin.is_terminal() {
+        // Only switch modes for interactive TTY. If stdin is redirected/piped, keep default read_line.
         return None;
     }
 
