@@ -9,11 +9,12 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::time;
 
-use crate::external_browser_launcher::{BrowserLauncher, LaunchOutcome, SystemCommandRunner};
-use crate::external_browser_listener::{CallbackPayload, ListenerConfig, spawn_listener};
-use crate::external_browser_payload::parse_token_and_consent_from_pairs;
-
 use super::login::get_base_url;
+use crate::external_browser_launcher::{BrowserLauncher, LaunchOutcome, SystemCommandRunner};
+use crate::external_browser_listener::{
+    CallbackPayload, ListenerConfig, RunningListener, spawn_listener,
+};
+use crate::external_browser_payload::parse_token_and_consent_from_pairs;
 use crate::{Error, Result, SnowflakeClientConfig, SnowflakeConnectionConfig};
 
 #[cfg(unix)]
@@ -41,26 +42,31 @@ pub async fn run_external_browser_flow(
     {
         Ok(data) => data,
         Err(err) => {
-            let _ = listener.shutdown.send(());
-            let _ = listener.handle.await;
+            shutdown_listener(listener).await;
             return Err(err);
         }
     };
 
-    let launcher = BrowserLauncher::new();
     let timeout = config.timeout.unwrap_or_else(|| Duration::from_secs(60));
-    let payload_result: Result<CallbackPayload> = match launcher.open(&auth.sso_url) {
-        Ok(LaunchOutcome::Opened) => wait_for_token(listener.payloads, timeout).await,
-        Ok(LaunchOutcome::ManualOpen { url }) => manual_token_flow(&url).await,
-        Err(err) => Err(Error::Communication(format!(
-            "failed to open browser: {err}"
-        ))),
+    let payload = match open_auth_page(&auth.sso_url) {
+        Ok(()) => {
+            let callback_result = wait_for_token(listener.payloads.clone(), timeout).await;
+            shutdown_listener(listener).await;
+
+            match decide_callback_payload(callback_result) {
+                CallbackDecision::UseCallback(payload) => payload,
+                CallbackDecision::PromptManual(message) => {
+                    eprintln!("{message}");
+                    manual_token_flow().await?
+                }
+            }
+        }
+        Err(err) => {
+            shutdown_listener(listener).await;
+            return Err(err);
+        }
     };
 
-    let _ = listener.shutdown.send(());
-    let _ = listener.handle.await;
-
-    let payload = payload_result?;
     Ok(ExternalBrowserResult {
         token: payload.token,
         proof_key: auth.proof_key,
@@ -96,34 +102,6 @@ async fn request_authenticator(
         .data
         .ok_or_else(|| Error::Communication("missing authenticator-response data".to_string()))?;
     Ok(data)
-}
-
-async fn wait_for_token(
-    rx: tokio::sync::watch::Receiver<Option<CallbackPayload>>,
-    timeout: Duration,
-) -> Result<CallbackPayload> {
-    let mut rx = rx.clone();
-    if let Some(payload) = rx.borrow().clone() {
-        return Ok(payload);
-    }
-
-    let fut = async move {
-        loop {
-            if rx.changed().await.is_err() {
-                return Err(Error::Communication(
-                    "listener stopped before receiving token".into(),
-                ));
-            }
-            if let Some(payload) = rx.borrow().clone() {
-                return Ok(payload);
-            }
-        }
-    };
-
-    match time::timeout(timeout, fut).await {
-        Ok(res) => res,
-        Err(_) => Err(Error::TimedOut),
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,11 +162,82 @@ fn listener_config_from_env() -> Result<ListenerConfig> {
     })
 }
 
-async fn manual_token_flow(sso_url: &str) -> Result<CallbackPayload> {
-    eprintln!(
-        "{}",
-        BrowserLauncher::<SystemCommandRunner>::manual_open_message(sso_url)
-    );
+fn open_auth_page(sso_url: &str) -> Result<()> {
+    let launcher = BrowserLauncher::new();
+    match launcher.open(sso_url) {
+        Ok(LaunchOutcome::Opened) => Ok(()),
+        Ok(LaunchOutcome::ManualOpen { url }) => {
+            eprintln!(
+                "{}",
+                BrowserLauncher::<SystemCommandRunner>::manual_open_message(&url)
+            );
+            Ok(())
+        }
+        Err(err) => Err(Error::Communication(format!(
+            "failed to open browser: {err}"
+        ))),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallbackWaitError {
+    TimedOut,
+    ListenerStopped,
+}
+
+enum CallbackDecision {
+    UseCallback(CallbackPayload),
+    PromptManual(&'static str),
+}
+
+fn decide_callback_payload(
+    callback_result: std::result::Result<CallbackPayload, CallbackWaitError>,
+) -> CallbackDecision {
+    match callback_result {
+        Ok(payload) => CallbackDecision::UseCallback(payload),
+        Err(CallbackWaitError::TimedOut) => CallbackDecision::PromptManual(
+            "Callback was not received in time. Falling back to manual URL input.",
+        ),
+        Err(CallbackWaitError::ListenerStopped) => CallbackDecision::PromptManual(
+            "Local callback listener stopped before receiving token. Continue with manual URL input.",
+        ),
+    }
+}
+
+async fn wait_for_token(
+    rx: tokio::sync::watch::Receiver<Option<CallbackPayload>>,
+    timeout: Duration,
+) -> std::result::Result<CallbackPayload, CallbackWaitError> {
+    match time::timeout(timeout, wait_for_token_inner(rx)).await {
+        Ok(res) => res,
+        Err(_) => Err(CallbackWaitError::TimedOut),
+    }
+}
+
+async fn wait_for_token_inner(
+    rx: tokio::sync::watch::Receiver<Option<CallbackPayload>>,
+) -> std::result::Result<CallbackPayload, CallbackWaitError> {
+    let mut rx = rx.clone();
+    if let Some(payload) = rx.borrow().clone() {
+        return Ok(payload);
+    }
+
+    loop {
+        if rx.changed().await.is_err() {
+            return Err(CallbackWaitError::ListenerStopped);
+        }
+        if let Some(payload) = rx.borrow().clone() {
+            return Ok(payload);
+        }
+    }
+}
+
+async fn shutdown_listener(listener: RunningListener) {
+    let _ = listener.shutdown.send(());
+    let _ = listener.handle.await;
+}
+
+async fn manual_token_flow() -> Result<CallbackPayload> {
     tokio::task::spawn_blocking(manual_token_flow_blocking)
         .await
         .map_err(|e| Error::Communication(format!("manual input task failed: {e}")))?
