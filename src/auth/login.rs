@@ -81,6 +81,7 @@ pub(crate) async fn login(
     let login_data = match auth {
         SnowflakeAuthMethod::Password(_)
         | SnowflakeAuthMethod::KeyPair { .. }
+        | SnowflakeAuthMethod::KeyPairUnencrypted { .. }
         | SnowflakeAuthMethod::Oauth { .. } => login_request_data(username, auth, config)?,
         #[cfg(feature = "external-browser-sso")]
         SnowflakeAuthMethod::ExternalBrowser => {
@@ -158,7 +159,22 @@ fn login_request_data(
         } => {
             let jwt = generate_jwt_from_key_pair(
                 encrypted_pem,
-                password,
+                Some(password),
+                username,
+                &config.account,
+                Utc::now().timestamp(),
+            )?;
+            let mut data = base_login_request_data(username, config);
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert("TOKEN".to_string(), json!(jwt));
+                obj.insert("AUTHENTICATOR".to_string(), json!("SNOWFLAKE_JWT"));
+            }
+            Ok(data)
+        }
+        SnowflakeAuthMethod::KeyPairUnencrypted { pem } => {
+            let jwt = generate_jwt_from_key_pair(
+                pem,
+                Option::<Vec<u8>>::None,
                 username,
                 &config.account,
                 Utc::now().timestamp(),

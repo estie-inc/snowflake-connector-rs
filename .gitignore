@@ -15,3 +15,7 @@ Cargo.lock
 .DS_Store
 
 .vscode
+
+mise.toml
+
+.env
