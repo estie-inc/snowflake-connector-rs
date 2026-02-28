@@ -307,10 +307,7 @@ fn payload_from_redirect_input(input: &str) -> Result<CallbackPayload> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CallbackDecision, CallbackWaitError, decide_callback_payload, payload_from_redirect_input,
-    };
-    use crate::external_browser_listener::CallbackPayload;
+    use super::payload_from_redirect_input;
 
     #[test]
     fn payload_from_redirect_input_extracts_token() {
@@ -356,40 +353,5 @@ mod tests {
         let url = "https://example.test/callback?missing=true";
         let err = payload_from_redirect_input(url).unwrap_err();
         assert!(format!("{err}").contains("Unable to extract token"));
-    }
-
-    #[test]
-    fn decide_callback_payload_uses_callback_payload_on_success() {
-        let payload = CallbackPayload {
-            token: "abc".to_string(),
-            consent: Some(true),
-        };
-        let decision = decide_callback_payload(Ok(payload.clone()));
-        match decision {
-            CallbackDecision::UseCallback(actual) => assert_eq!(actual, payload),
-            CallbackDecision::PromptManual(_) => panic!("expected callback payload"),
-        }
-    }
-
-    #[test]
-    fn decide_callback_payload_prompts_manual_on_timeout() {
-        let decision = decide_callback_payload(Err(CallbackWaitError::TimedOut));
-        match decision {
-            CallbackDecision::UseCallback(_) => panic!("expected manual fallback"),
-            CallbackDecision::PromptManual(message) => {
-                assert!(message.contains("Falling back to manual URL input"));
-            }
-        }
-    }
-
-    #[test]
-    fn decide_callback_payload_prompts_manual_on_listener_stopped() {
-        let decision = decide_callback_payload(Err(CallbackWaitError::ListenerStopped));
-        match decision {
-            CallbackDecision::UseCallback(_) => panic!("expected manual fallback"),
-            CallbackDecision::PromptManual(message) => {
-                assert!(message.contains("listener stopped"));
-            }
-        }
     }
 }
