@@ -112,7 +112,10 @@ async fn run_external_browser_flow_without_listener(
     let launch_mode = config_without_listener.browser_launch_mode();
     open_auth_page(&auth.sso_url, launch_mode)?;
 
-    let payload = resolve_payload_without_listener(redirect_port).await?;
+    eprintln!(
+        "The browser may display a connection error page for localhost:{redirect_port}; this is expected in this mode."
+    );
+    let payload = manual_token_flow().await?;
     Ok(ExternalBrowserResult {
         token: payload.token,
         proof_key: auth.proof_key,
@@ -232,13 +235,6 @@ async fn resolve_payload_with_listener(
             manual_token_flow().await
         }
     }
-}
-
-async fn resolve_payload_without_listener(redirect_port: u16) -> Result<CallbackPayload> {
-    eprintln!(
-        "The browser may display a connection error page for localhost:{redirect_port}; this is expected in this mode."
-    );
-    manual_token_flow().await
 }
 
 async fn wait_for_token(
