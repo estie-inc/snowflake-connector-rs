@@ -1,7 +1,6 @@
 use std::convert::Infallible;
 use std::error::Error;
-use std::io;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use http_body_util::{BodyExt, Full};
@@ -41,7 +40,7 @@ pub struct ListenerConfig {
     ///
     /// This corresponds to Python connector's `AuthByWebBrowser._application`.
     pub application: Option<String>,
-    pub host: String,
+    pub host: IpAddr,
     pub port: u16,
     pub protocol: String,
 }
@@ -50,7 +49,7 @@ impl Default for ListenerConfig {
     fn default() -> Self {
         Self {
             application: None,
-            host: "localhost".to_string(),
+            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 0,
             protocol: "http".to_string(),
         }
@@ -68,7 +67,7 @@ pub async fn spawn_listener(
     cfg: ListenerConfig,
 ) -> Result<RunningListener, Box<dyn Error + Send + Sync>> {
     let (listener, local_addr) = bind_listener(&cfg)?;
-    let expected_origin = build_origin(&cfg.protocol, &cfg.host, local_addr.port());
+    let expected_origin = build_origin(&cfg.protocol, cfg.host, local_addr.port());
     let application = cfg.application.clone();
     let (tx, rx) = oneshot::channel();
     let (payload_tx, payload_rx) = watch::channel(None);
@@ -343,28 +342,14 @@ fn extract_payload_from_query(query: Option<&str>) -> Option<CallbackPayload> {
     })
 }
 
-fn build_origin(protocol: &str, host: &str, port: u16) -> String {
-    if host.contains(':') {
-        format!("{protocol}://[{host}]:{port}")
-    } else {
-        format!("{protocol}://{host}:{port}")
-    }
+fn build_origin(protocol: &str, host: IpAddr, port: u16) -> String {
+    format!("{protocol}://{}", SocketAddr::new(host, port))
 }
 
 fn bind_listener(
     cfg: &ListenerConfig,
 ) -> Result<(TcpListener, SocketAddr), Box<dyn Error + Send + Sync>> {
-    // Normalize "localhost" to "127.0.0.1" to ensure IPv4 binding.
-    // This avoids issues where `localhost` resolves to `::1` (IPv6) first,
-    // causing the listener to bind to IPv6 while the browser redirects to IPv4.
-    let host = if cfg.host.eq_ignore_ascii_case("localhost") {
-        "127.0.0.1"
-    } else {
-        cfg.host.as_str()
-    };
-    let target_addr = (host, cfg.port).to_socket_addrs()?.next().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::AddrNotAvailable, "no socket address found")
-    })?;
+    let target_addr = SocketAddr::new(cfg.host, cfg.port);
 
     let domain = match target_addr {
         SocketAddr::V4(_) => Domain::IPV4,
@@ -510,8 +495,7 @@ mod tests {
     async fn post_origin_ok() {
         with_listener(|base| async move {
             // Simulate browser preflight so the listener returns JSON.
-            let port = base.split(':').next_back().unwrap();
-            let origin = format!("http://localhost:{port}");
+            let origin = base.clone();
 
             let preflight = reqwest::Client::new()
                 .request(reqwest::Method::OPTIONS, format!("{base}/callback"))
@@ -638,8 +622,7 @@ mod tests {
     #[tokio::test]
     async fn options_echoes_requested_headers() {
         with_listener(|base| async move {
-            let port = base.split(':').next_back().unwrap();
-            let origin = format!("http://localhost:{port}");
+            let origin = base.clone();
             let resp = reqwest::Client::new()
                 .request(reqwest::Method::OPTIONS, format!("{base}/callback"))
                 .header("Origin", origin)
