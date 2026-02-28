@@ -41,6 +41,8 @@ mod error;
 mod external_browser_launcher;
 #[cfg(feature = "external-browser-sso")]
 mod external_browser_listener;
+#[cfg(feature = "external-browser-sso")]
+mod external_browser_payload;
 mod query;
 mod row;
 mod session;
