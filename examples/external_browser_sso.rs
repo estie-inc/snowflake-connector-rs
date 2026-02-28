@@ -1,4 +1,6 @@
-use snowflake_connector_rs::{SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
+use snowflake_connector_rs::{
+    ExternalBrowserConfig, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -11,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = SnowflakeClient::new(
         &username,
-        SnowflakeAuthMethod::ExternalBrowser,
+        SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default()),
         SnowflakeClientConfig {
             account,
             warehouse,

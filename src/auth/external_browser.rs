@@ -1,6 +1,4 @@
-use std::env;
 use std::io::{self, Write};
-use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use reqwest::Client;
@@ -15,7 +13,10 @@ use crate::external_browser_listener::{
     CallbackPayload, ListenerConfig, RunningListener, spawn_listener,
 };
 use crate::external_browser_payload::parse_token_and_consent_from_pairs;
-use crate::{Error, Result, SnowflakeClientConfig, SnowflakeConnectionConfig};
+use crate::{
+    BrowserLaunchMode, Error, ExternalBrowserConfig, Result, SnowflakeClientConfig,
+    SnowflakeConnectionConfig, WithCallbackListenerConfig, WithoutCallbackListenerConfig,
+};
 
 #[cfg(unix)]
 mod manual_input_unix;
@@ -30,8 +31,45 @@ pub async fn run_external_browser_flow(
     username: &str,
     config: &SnowflakeClientConfig,
     connection_config: &Option<SnowflakeConnectionConfig>,
+    external_browser_config: &ExternalBrowserConfig,
 ) -> Result<ExternalBrowserResult> {
-    let listener_config = listener_config_from_env()?;
+    match external_browser_config {
+        ExternalBrowserConfig::WithCallbackListener(config_with_listener) => {
+            run_external_browser_flow_with_listener(
+                http,
+                username,
+                config,
+                connection_config,
+                config_with_listener,
+            )
+            .await
+        }
+        ExternalBrowserConfig::WithoutCallbackListener(config_without_listener) => {
+            run_external_browser_flow_without_listener(
+                http,
+                username,
+                config,
+                connection_config,
+                config_without_listener,
+            )
+            .await
+        }
+    }
+}
+
+async fn run_external_browser_flow_with_listener(
+    http: &Client,
+    username: &str,
+    config: &SnowflakeClientConfig,
+    connection_config: &Option<SnowflakeConnectionConfig>,
+    config_with_listener: &WithCallbackListenerConfig,
+) -> Result<ExternalBrowserResult> {
+    let listener_config = ListenerConfig {
+        application: Some(super::client::client_app_id().to_string()),
+        host: config_with_listener.callback_socket_addr(),
+        port: config_with_listener.callback_socket_port(),
+        protocol: "http".to_string(),
+    };
     let listener = spawn_listener(listener_config)
         .await
         .map_err(|e| Error::Communication(e.to_string()))?;
@@ -47,26 +85,37 @@ pub async fn run_external_browser_flow(
         }
     };
 
+    let launch_mode = config_with_listener.browser_launch_mode();
+    if let Err(err) = open_auth_page(&auth.sso_url, launch_mode) {
+        shutdown_listener(listener).await;
+        return Err(err);
+    }
+
     let timeout = config.timeout.unwrap_or_else(|| Duration::from_secs(60));
-    let payload = match open_auth_page(&auth.sso_url) {
-        Ok(()) => {
-            let callback_result = wait_for_token(listener.payloads.clone(), timeout).await;
-            shutdown_listener(listener).await;
+    let payload = resolve_payload_with_listener(listener, timeout).await?;
+    Ok(ExternalBrowserResult {
+        token: payload.token,
+        proof_key: auth.proof_key,
+    })
+}
 
-            match decide_callback_payload(callback_result) {
-                CallbackDecision::UseCallback(payload) => payload,
-                CallbackDecision::PromptManual(message) => {
-                    eprintln!("{message}");
-                    manual_token_flow().await?
-                }
-            }
-        }
-        Err(err) => {
-            shutdown_listener(listener).await;
-            return Err(err);
-        }
-    };
+async fn run_external_browser_flow_without_listener(
+    http: &Client,
+    username: &str,
+    config: &SnowflakeClientConfig,
+    connection_config: &Option<SnowflakeConnectionConfig>,
+    config_without_listener: &WithoutCallbackListenerConfig,
+) -> Result<ExternalBrowserResult> {
+    let redirect_port = config_without_listener.redirect_port().get();
+    let auth =
+        request_authenticator(http, username, config, connection_config, redirect_port).await?;
+    let launch_mode = config_without_listener.browser_launch_mode();
+    open_auth_page(&auth.sso_url, launch_mode)?;
 
+    eprintln!(
+        "The browser may display a connection error page for localhost:{redirect_port}; this is expected in this mode."
+    );
+    let payload = manual_token_flow().await?;
     Ok(ExternalBrowserResult {
         token: payload.token,
         proof_key: auth.proof_key,
@@ -135,47 +184,28 @@ fn authenticator_request_body(
     })
 }
 
-fn listener_config_from_env() -> Result<ListenerConfig> {
-    let host = env::var("SF_AUTH_SOCKET_ADDR").unwrap_or_else(|_| "localhost".to_string());
-    // Normalize "localhost" to "127.0.0.1" to ensure IPv4 binding.
-    // This avoids issues where `localhost` resolves to `::1` (IPv6) first,
-    // causing the listener to bind to IPv6 while the browser redirects to IPv4.
-    let host = if host.eq_ignore_ascii_case("localhost") {
-        IpAddr::V4(Ipv4Addr::LOCALHOST)
-    } else {
-        host.parse().map_err(|_| {
-            Error::Communication("SF_AUTH_SOCKET_ADDR must be a valid IP address".to_string())
-        })?
-    };
-    let port = match env::var("SF_AUTH_SOCKET_PORT") {
-        Ok(val) => val.parse().map_err(|_| {
-            Error::Communication("SF_AUTH_SOCKET_PORT must be a valid u16".to_string())
-        })?,
-        Err(_) => 0,
-    };
-
-    Ok(ListenerConfig {
-        application: Some(super::client::client_app_id().to_string()),
-        host,
-        port,
-        protocol: "http".to_string(),
-    })
-}
-
-fn open_auth_page(sso_url: &str) -> Result<()> {
-    let launcher = BrowserLauncher::new();
-    match launcher.open(sso_url) {
-        Ok(LaunchOutcome::Opened) => Ok(()),
-        Ok(LaunchOutcome::ManualOpen { url }) => {
+fn open_auth_page(sso_url: &str, mode: BrowserLaunchMode) -> Result<()> {
+    match mode {
+        BrowserLaunchMode::Manual => {
             eprintln!(
                 "{}",
-                BrowserLauncher::<SystemCommandRunner>::manual_open_message(&url)
+                BrowserLauncher::<SystemCommandRunner>::manual_open_message(sso_url)
             );
             Ok(())
         }
-        Err(err) => Err(Error::Communication(format!(
-            "failed to open browser: {err}"
-        ))),
+        BrowserLaunchMode::Auto => {
+            let outcome = BrowserLauncher::new()
+                .open(sso_url)
+                .map_err(|err| Error::Communication(format!("failed to open browser: {err}")))?;
+
+            if let LaunchOutcome::ManualOpen { url } = outcome {
+                eprintln!(
+                    "{}",
+                    BrowserLauncher::<SystemCommandRunner>::manual_open_message(&url)
+                );
+            }
+            Ok(())
+        }
     }
 }
 
@@ -185,22 +215,25 @@ enum CallbackWaitError {
     ListenerStopped,
 }
 
-enum CallbackDecision {
-    UseCallback(CallbackPayload),
-    PromptManual(&'static str),
-}
+async fn resolve_payload_with_listener(
+    listener: RunningListener,
+    timeout: Duration,
+) -> Result<CallbackPayload> {
+    let callback_result = wait_for_token(listener.payloads.clone(), timeout).await;
+    shutdown_listener(listener).await;
 
-fn decide_callback_payload(
-    callback_result: std::result::Result<CallbackPayload, CallbackWaitError>,
-) -> CallbackDecision {
     match callback_result {
-        Ok(payload) => CallbackDecision::UseCallback(payload),
-        Err(CallbackWaitError::TimedOut) => CallbackDecision::PromptManual(
-            "Callback was not received in time. Falling back to manual URL input.",
-        ),
-        Err(CallbackWaitError::ListenerStopped) => CallbackDecision::PromptManual(
-            "Local callback listener stopped before receiving token. Continue with manual URL input.",
-        ),
+        Ok(payload) => Ok(payload),
+        Err(CallbackWaitError::TimedOut) => {
+            eprintln!("Callback was not received in time. Falling back to manual URL input.");
+            manual_token_flow().await
+        }
+        Err(CallbackWaitError::ListenerStopped) => {
+            eprintln!(
+                "Local callback listener stopped before receiving token. Continue with manual URL input."
+            );
+            manual_token_flow().await
+        }
     }
 }
 
@@ -301,7 +334,10 @@ fn extract_payload_from_url(url: &str) -> Option<CallbackPayload> {
 
 fn payload_from_redirect_input(input: &str) -> Result<CallbackPayload> {
     extract_payload_from_url(input).ok_or_else(|| {
-        Error::Communication("Unable to extract token from redirected URL".to_string())
+        Error::Communication(
+            "Unable to extract token from redirected URL (expected query or fragment token=...)"
+                .to_string(),
+        )
     })
 }
 

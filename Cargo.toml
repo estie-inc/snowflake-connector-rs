@@ -63,3 +63,7 @@ tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "test-util"
 [[example]]
 name = "external_browser_sso"
 required-features = ["external-browser-sso"]
+
+[[example]]
+name = "external_browser_sso_without_callback_listener"
+required-features = ["external-browser-sso"]

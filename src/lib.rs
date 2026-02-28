@@ -38,6 +38,8 @@ mod auth;
 mod chunk;
 mod error;
 #[cfg(feature = "external-browser-sso")]
+mod external_browser_config;
+#[cfg(feature = "external-browser-sso")]
 mod external_browser_launcher;
 #[cfg(feature = "external-browser-sso")]
 mod external_browser_listener;
@@ -50,6 +52,11 @@ mod session;
 use std::time::Duration;
 
 pub use error::{Error, Result};
+#[cfg(feature = "external-browser-sso")]
+pub use external_browser_config::{
+    BrowserLaunchMode, ExternalBrowserConfig, WithCallbackListenerConfig,
+    WithoutCallbackListenerConfig,
+};
 pub use query::{QueryExecutor, QueryRequest};
 pub use row::{SnowflakeColumn, SnowflakeColumnType, SnowflakeDecode, SnowflakeRow};
 pub use session::SnowflakeSession;
@@ -97,7 +104,47 @@ pub enum SnowflakeAuthMethod {
         token: String,
     },
     #[cfg(feature = "external-browser-sso")]
-    ExternalBrowser,
+    /// External browser SSO authentication.
+    ///
+    /// This is an experimental feature.
+    /// The API and behavior may change in future releases without backward compatibility guarantees.
+    ///
+    /// ## Typical setup patterns
+    ///
+    /// ### Default (auto browser launch, localhost callback with auto-picked port)
+    ///
+    /// ```rust
+    /// use snowflake_connector_rs::{ExternalBrowserConfig, SnowflakeAuthMethod};
+    ///
+    /// let auth = SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default());
+    /// ```
+    ///
+    /// ### Docker/container mode (manual open + explicit callback bind address/port)
+    ///
+    /// ```rust
+    /// use std::net::Ipv4Addr;
+    /// use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthMethod};
+    ///
+    /// let external_browser = ExternalBrowserConfig::with_callback_listener(
+    ///     BrowserLaunchMode::Manual,
+    ///     Ipv4Addr::UNSPECIFIED.into(),
+    ///     3037,
+    /// );
+    /// let auth = SnowflakeAuthMethod::ExternalBrowser(external_browser);
+    /// ```
+    ///
+    /// ### Without callback listener mode (manual redirected-URL input)
+    ///
+    /// ```rust
+    /// use std::num::NonZeroU16;
+    /// use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthMethod};
+    ///
+    /// let redirect_port = NonZeroU16::new(3037).unwrap();
+    /// let external_browser =
+    ///     ExternalBrowserConfig::without_callback_listener(BrowserLaunchMode::Manual, redirect_port);
+    /// let auth = SnowflakeAuthMethod::ExternalBrowser(external_browser);
+    /// ```
+    ExternalBrowser(ExternalBrowserConfig),
 }
 
 impl SnowflakeClient {

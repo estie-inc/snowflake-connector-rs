@@ -66,7 +66,7 @@ pub(crate) async fn login(
         queries.push(("roleName", role));
     }
     #[cfg(feature = "external-browser-sso")]
-    let is_externalbrowser = matches!(auth, SnowflakeAuthMethod::ExternalBrowser);
+    let is_externalbrowser = matches!(auth, SnowflakeAuthMethod::ExternalBrowser(_));
     #[cfg(not(feature = "external-browser-sso"))]
     let is_externalbrowser = false;
     let request_id = if is_externalbrowser {
@@ -83,9 +83,15 @@ pub(crate) async fn login(
         | SnowflakeAuthMethod::KeyPair { .. }
         | SnowflakeAuthMethod::Oauth { .. } => login_request_data(username, auth, config)?,
         #[cfg(feature = "external-browser-sso")]
-        SnowflakeAuthMethod::ExternalBrowser => {
-            let result =
-                run_external_browser_flow(http, username, config, connection_config).await?;
+        SnowflakeAuthMethod::ExternalBrowser(external_browser_config) => {
+            let result = run_external_browser_flow(
+                http,
+                username,
+                config,
+                connection_config,
+                external_browser_config,
+            )
+            .await?;
 
             let mut data = base_login_request_data(username, config);
             if let Some(obj) = data.as_object_mut() {
@@ -175,7 +181,7 @@ fn login_request_data(
             "TOKEN": token
         })),
         #[cfg(feature = "external-browser-sso")]
-        SnowflakeAuthMethod::ExternalBrowser => Err(Error::UnsupportedFormat(
+        SnowflakeAuthMethod::ExternalBrowser(_) => Err(Error::UnsupportedFormat(
             "external browser flow should be handled upstream".into(),
         )),
     }

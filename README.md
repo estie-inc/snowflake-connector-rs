@@ -54,6 +54,45 @@ These algorithms are considered insecure and should only be used for legacy comp
 > Use this feature with caution in production environments.
 > Please open an issue for bugs or feature requests.
 
-## External browser SSO environment variables
-- `SF_AUTH_SOCKET_ADDR`: Listener bind host (default `localhost`).
-- `SF_AUTH_SOCKET_PORT`: Listener port (default `0` to auto-pick).
+### External Browser SSO Use Cases
+
+Typical configurations for the `external-browser-sso` feature:
+
+- Local default (auto browser launch, localhost callback, auto-picked port)
+   ```rust
+   use snowflake_connector_rs::{ExternalBrowserConfig, SnowflakeAuthMethod};
+   let auth = SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default());
+   ```
+- Docker/container setup (manual open with explicit callback bind address/port)
+   ```rust
+   use std::net::Ipv4Addr;
+   use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthMethod};
+   let external_browser = ExternalBrowserConfig::with_callback_listener(
+       BrowserLaunchMode::Manual,
+       Ipv4Addr::UNSPECIFIED.into(),
+       3037,
+   );
+   let auth = SnowflakeAuthMethod::ExternalBrowser(external_browser);
+   ```
+- Without callback listener mode (manual redirected URL input)
+   ```rust
+   use std::num::NonZeroU16;
+   use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthMethod};
+   let redirect_port = NonZeroU16::new(3037).unwrap();
+   let external_browser =
+       ExternalBrowserConfig::without_callback_listener(BrowserLaunchMode::Manual, redirect_port);
+   let auth = SnowflakeAuthMethod::ExternalBrowser(external_browser);
+   ```
+
+For Docker/container setup, make sure that:
+
+- your Snowflake OAuth redirect URI allows the same callback port (for example `3037`), and
+- the callback port is mapped to the host (for example `-p 3037:3037` or equivalent in Compose).
+
+`0.0.0.0` binds on all interfaces in the container. Use the minimum required network exposure for your environment.
+
+In `WithoutCallbackListener` mode:
+
+- no local server is started, so `localhost:<redirect_port>` is not actually listened on by this connector.
+- a non-zero `redirect_port` is still required because Snowflake uses `BROWSER_MODE_REDIRECT_PORT` to construct the browser redirect URL.
+- the browser may show a connection error page at `localhost:<redirect_port>` after login; copy that redirected URL and paste it into the terminal prompt so the connector can extract the token.
