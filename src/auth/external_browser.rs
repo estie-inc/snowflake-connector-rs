@@ -11,6 +11,7 @@ use tokio::time;
 
 use crate::external_browser_launcher::{BrowserLauncher, LaunchOutcome, SystemCommandRunner};
 use crate::external_browser_listener::{CallbackPayload, ListenerConfig, spawn_listener};
+use crate::external_browser_payload::parse_token_and_consent_from_pairs;
 
 use super::login::get_base_url;
 use crate::{Error, Result, SnowflakeClientConfig, SnowflakeConnectionConfig};
@@ -235,27 +236,18 @@ fn validate_redirected_url_input(input: String) -> Result<String> {
 
 fn extract_payload_from_url(url: &str) -> Option<CallbackPayload> {
     let parsed = Url::parse(url).ok()?;
-    let mut token: Option<String> = None;
-    let mut consent: Option<bool> = None;
-    for (k, v) in parsed.query_pairs() {
-        if k.eq_ignore_ascii_case("token") {
-            if !v.is_empty() {
-                token = Some(v.into_owned());
-            }
-        } else if k.eq_ignore_ascii_case("consent") {
-            let val = v.trim();
-            if val.eq_ignore_ascii_case("true") {
-                consent = Some(true);
-            } else if val.eq_ignore_ascii_case("false") {
-                consent = Some(false);
-            }
-        }
-    }
+    let query = parse_token_and_consent_from_pairs(parsed.query_pairs());
+    let fragment = parsed
+        .fragment()
+        .map(|frag| {
+            parse_token_and_consent_from_pairs(url::form_urlencoded::parse(frag.as_bytes()))
+        })
+        .unwrap_or_default();
 
-    Some(CallbackPayload {
-        token: token?,
-        consent,
-    })
+    let token = query.token.or(fragment.token)?;
+    let consent = query.consent.or(fragment.consent);
+
+    Some(CallbackPayload { token, consent })
 }
 
 fn payload_from_redirect_input(input: &str) -> Result<CallbackPayload> {
@@ -281,6 +273,29 @@ mod tests {
         let url = "https://example.test/callback?token=abc123&consent=false";
         let payload = payload_from_redirect_input(url).unwrap();
         assert_eq!(payload.token, "abc123");
+        assert_eq!(payload.consent, Some(false));
+    }
+
+    #[test]
+    fn payload_from_redirect_input_extracts_token_from_fragment() {
+        let url = "https://example.test/callback#token=abc123&consent=true";
+        let payload = payload_from_redirect_input(url).unwrap();
+        assert_eq!(payload.token, "abc123");
+        assert_eq!(payload.consent, Some(true));
+    }
+
+    #[test]
+    fn payload_from_redirect_input_prefers_query_token_over_fragment_token() {
+        let url = "https://example.test/callback?token=query_token#token=fragment_token";
+        let payload = payload_from_redirect_input(url).unwrap();
+        assert_eq!(payload.token, "query_token");
+    }
+
+    #[test]
+    fn payload_from_redirect_input_keeps_query_token_and_query_consent() {
+        let url = "https://example.test/callback?token=query_token&consent=false#consent=true";
+        let payload = payload_from_redirect_input(url).unwrap();
+        assert_eq!(payload.token, "query_token");
         assert_eq!(payload.consent, Some(false));
     }
 

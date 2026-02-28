@@ -21,7 +21,8 @@ use tokio::{
     sync::{oneshot, watch},
     task::JoinHandle,
 };
-use url::Url;
+
+use crate::external_browser_payload::{ParsedTokenAndConsent, parse_token_and_consent_from_pairs};
 
 #[derive(Debug, Deserialize)]
 struct TokenPayload {
@@ -206,38 +207,25 @@ async fn handler(
 
 fn extract_payload_from_body(body: &Bytes) -> Option<CallbackPayload> {
     // 1) JSON: {"token": "...", "consent": true}
-    if let Ok(parsed) = serde_json::from_slice::<TokenPayload>(body) {
-        if let Some(token) = parsed.token {
-            return Some(CallbackPayload {
+    serde_json::from_slice::<TokenPayload>(body)
+        .ok()
+        .and_then(|parsed| {
+            parsed.token.map(|token| CallbackPayload {
                 token,
                 consent: parsed.consent,
-            });
-        }
-    }
-
-    // 2) x-www-form-urlencoded / key=value fallback
-    let body_str = std::str::from_utf8(body).ok()?;
-    let mut token: Option<String> = None;
-    let mut consent: Option<bool> = None;
-    for (k, v) in url::form_urlencoded::parse(body_str.as_bytes()) {
-        if k.eq_ignore_ascii_case("token") {
-            if !v.is_empty() {
-                token = Some(v.into_owned());
-            }
-        } else if k.eq_ignore_ascii_case("consent") {
-            let val = v.trim();
-            if val.eq_ignore_ascii_case("true") {
-                consent = Some(true);
-            } else if val.eq_ignore_ascii_case("false") {
-                consent = Some(false);
-            }
-        }
-    }
-
-    Some(CallbackPayload {
-        token: token?,
-        consent,
-    })
+            })
+        })
+        // 2) x-www-form-urlencoded / key=value fallback
+        .or_else(|| {
+            std::str::from_utf8(body)
+                .ok()
+                .map(|body_str| {
+                    parse_token_and_consent_from_pairs(url::form_urlencoded::parse(
+                        body_str.as_bytes(),
+                    ))
+                })
+                .and_then(parsed_to_payload)
+        })
 }
 
 fn preflight_cors_response(
@@ -316,29 +304,15 @@ fn forbidden() -> Response<Full<Bytes>> {
 }
 
 fn extract_payload_from_query(query: Option<&str>) -> Option<CallbackPayload> {
-    let q = query?;
-    let parsed = Url::parse(&format!("http://dummy?{q}")).ok()?;
+    query
+        .map(|q| parse_token_and_consent_from_pairs(url::form_urlencoded::parse(q.as_bytes())))
+        .and_then(parsed_to_payload)
+}
 
-    let mut token: Option<String> = None;
-    let mut consent: Option<bool> = None;
-    for (k, v) in parsed.query_pairs() {
-        if k.eq_ignore_ascii_case("token") {
-            if !v.is_empty() {
-                token = Some(v.into_owned());
-            }
-        } else if k.eq_ignore_ascii_case("consent") {
-            let val = v.trim();
-            if val.eq_ignore_ascii_case("true") {
-                consent = Some(true);
-            } else if val.eq_ignore_ascii_case("false") {
-                consent = Some(false);
-            }
-        }
-    }
-
-    Some(CallbackPayload {
-        token: token?,
-        consent,
+fn parsed_to_payload(parsed: ParsedTokenAndConsent) -> Option<CallbackPayload> {
+    parsed.token.map(|token| CallbackPayload {
+        token,
+        consent: parsed.consent,
     })
 }
 
@@ -432,6 +406,12 @@ mod tests {
         let payload = extract_payload_from_query(Some("token=t&consent=false")).unwrap();
         assert_eq!(payload.token, "t");
         assert_eq!(payload.consent, Some(false));
+    }
+
+    #[test]
+    fn extract_payload_from_query_prefers_first_token() {
+        let payload = extract_payload_from_query(Some("token=first&token=second")).unwrap();
+        assert_eq!(payload.token, "first");
     }
 
     #[tokio::test]
