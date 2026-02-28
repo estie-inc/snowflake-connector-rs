@@ -14,6 +14,9 @@ use crate::external_browser_listener::{CallbackPayload, ListenerConfig, spawn_li
 use super::login::get_base_url;
 use crate::{Error, Result, SnowflakeClientConfig, SnowflakeConnectionConfig};
 
+#[cfg(unix)]
+mod manual_input_unix;
+
 pub struct ExternalBrowserResult {
     pub token: String,
     pub proof_key: Option<String>,
@@ -46,7 +49,7 @@ pub async fn run_external_browser_flow(
     let timeout = config.timeout.unwrap_or_else(|| Duration::from_secs(60));
     let payload_result: Result<CallbackPayload> = match launcher.open(&auth.sso_url) {
         Ok(LaunchOutcome::Opened) => wait_for_token(listener.payloads, timeout).await,
-        Ok(LaunchOutcome::ManualOpen { url }) => manual_token_flow(&url),
+        Ok(LaunchOutcome::ManualOpen { url }) => manual_token_flow(&url).await,
         Err(err) => Err(Error::Communication(format!(
             "failed to open browser: {err}"
         ))),
@@ -177,23 +180,54 @@ fn listener_config_from_env() -> Result<ListenerConfig> {
     })
 }
 
-fn manual_token_flow(sso_url: &str) -> Result<CallbackPayload> {
+async fn manual_token_flow(sso_url: &str) -> Result<CallbackPayload> {
     eprintln!(
         "{}",
         BrowserLauncher::<SystemCommandRunner>::manual_open_message(sso_url)
     );
+    tokio::task::spawn_blocking(manual_token_flow_blocking)
+        .await
+        .map_err(|e| Error::Communication(format!("manual input task failed: {e}")))?
+}
+
+fn manual_token_flow_blocking() -> Result<CallbackPayload> {
     eprintln!(
         "After completing authentication, paste the URL you were redirected to (not logged)."
     );
 
-    let mut input = String::new();
     eprint!("Redirected URL: ");
     let _ = io::stderr().flush();
+    let input = read_redirected_url_line()?;
+
+    eprintln!("Received redirected URL input. Continuing authentication...");
+
+    payload_from_redirect_input(input.trim())
+}
+
+fn read_redirected_url_line() -> Result<String> {
+    #[cfg(unix)]
+    if let Some(result) = manual_input_unix::try_read_redirected_url_line_noncanonical() {
+        return result;
+    }
+
+    // TODO(windows): investigate whether long redirected URLs can be truncated in
+    // canonical console input mode and add a Windows-specific raw/non-canonical fallback.
+
+    let mut input = String::new();
     io::stdin()
         .read_line(&mut input)
         .map_err(|e| Error::Communication(format!("failed to read input: {e}")))?;
 
-    payload_from_redirect_input(input.trim())
+    validate_redirected_url_input(input)
+}
+
+fn validate_redirected_url_input(input: String) -> Result<String> {
+    if input.trim().is_empty() {
+        return Err(Error::Communication(
+            "No redirected URL was provided".to_string(),
+        ));
+    }
+    Ok(input)
 }
 
 fn extract_payload_from_url(url: &str) -> Option<CallbackPayload> {
