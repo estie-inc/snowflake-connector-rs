@@ -2,7 +2,6 @@ use snowflake_connector_rs::{Result, SnowflakeAuthMethod, SnowflakeClient, Snowf
 
 pub fn connect() -> Result<SnowflakeClient> {
     let username = std::env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME for testing");
-    let password = std::env::var("SNOWFLAKE_PASSWORD").expect("set SNOWFLAKE_PASSWORD for testing");
     let account = std::env::var("SNOWFLAKE_ACCOUNT").expect("set SNOWFLAKE_ACCOUNT for testing");
 
     let role = std::env::var("SNOWFLAKE_ROLE").ok();
@@ -17,7 +16,7 @@ pub fn connect() -> Result<SnowflakeClient> {
 
     let client = SnowflakeClient::new(
         &username,
-        SnowflakeAuthMethod::Password(password),
+        auth_method(),
         SnowflakeClientConfig {
             account,
             warehouse,
@@ -35,4 +34,24 @@ pub fn connect() -> Result<SnowflakeClient> {
     };
 
     Ok(client)
+}
+
+#[cfg(not(feature = "external-browser-sso"))]
+fn auth_method() -> SnowflakeAuthMethod {
+    let private_key =
+        std::env::var("SNOWFLAKE_PRIVATE_KEY").expect("set SNOWFLAKE_PRIVATE_KEY for testing");
+    let private_key_password = std::env::var("SNOWFLAKE_PRIVATE_KEY_PASSWORD")
+        .expect("set SNOWFLAKE_PRIVATE_KEY_PASSWORD for testing");
+
+    SnowflakeAuthMethod::KeyPair {
+        encrypted_pem: private_key,
+        password: private_key_password.into_bytes(),
+    }
+}
+
+#[cfg(feature = "external-browser-sso")]
+fn auth_method() -> SnowflakeAuthMethod {
+    use snowflake_connector_rs::ExternalBrowserConfig;
+
+    SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default())
 }

@@ -9,12 +9,13 @@ env:
   RUSTFLAGS: -Dwarnings
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   SNOWFLAKE_USERNAME: ${{ secrets.SNOWFLAKE_USERNAME }}
-  SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
   SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
   SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
   SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
   SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
   SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
+  SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+  SNOWFLAKE_PRIVATE_KEY_PASSWORD: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSWORD }}
 
 jobs:
   test:
@@ -36,4 +37,4 @@ jobs:
       - run: cargo check
       - run: cargo check --features external-browser-sso
       - run: cargo test
-      - run: cargo test --features external-browser-sso
+      - run: cargo test --lib --features external-browser-sso
