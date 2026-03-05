@@ -313,17 +313,119 @@ async fn poll_for_async_results(
     Err(Error::TimedOut)
 }
 
+/// Snowflake bind parameter type.
+///
+/// See <https://docs.snowflake.com/en/developer-guide/sql-api/submitting-requests#using-bind-variables-in-a-statement>
+#[derive(Debug, serde::Serialize, Clone, PartialEq, Eq)]
+pub enum BindingType {
+    #[serde(rename = "FIXED")]
+    Fixed,
+    #[serde(rename = "REAL")]
+    Real,
+    #[serde(rename = "TEXT")]
+    Text,
+    #[serde(rename = "BOOLEAN")]
+    Boolean,
+    #[serde(rename = "DATE")]
+    Date,
+    #[serde(rename = "TIME")]
+    Time,
+    #[serde(rename = "TIMESTAMP_NTZ")]
+    TimestampNtz,
+    #[serde(rename = "TIMESTAMP_LTZ")]
+    TimestampLtz,
+    #[serde(rename = "TIMESTAMP_TZ")]
+    TimestampTz,
+    #[serde(rename = "BINARY")]
+    Binary,
+}
+
+/// A single bind parameter for a Snowflake query.
+#[derive(Debug, serde::Serialize, Clone)]
+pub struct Binding {
+    #[serde(rename = "type")]
+    pub binding_type: BindingType,
+    pub value: String,
+}
+
+impl Binding {
+    pub fn new(binding_type: BindingType, value: impl Into<String>) -> Self {
+        Self {
+            binding_type,
+            value: value.into(),
+        }
+    }
+
+    pub fn fixed(value: impl ToString) -> Self {
+        Self::new(BindingType::Fixed, value.to_string())
+    }
+
+    pub fn real(value: impl ToString) -> Self {
+        Self::new(BindingType::Real, value.to_string())
+    }
+
+    pub fn text(value: impl Into<String>) -> Self {
+        Self::new(BindingType::Text, value)
+    }
+
+    pub fn boolean(value: bool) -> Self {
+        Self::new(BindingType::Boolean, value.to_string())
+    }
+
+    pub fn date(value: impl ToString) -> Self {
+        Self::new(BindingType::Date, value.to_string())
+    }
+
+    pub fn time(value: impl ToString) -> Self {
+        Self::new(BindingType::Time, value.to_string())
+    }
+
+    pub fn timestamp_ntz(value: impl ToString) -> Self {
+        Self::new(BindingType::TimestampNtz, value.to_string())
+    }
+
+    pub fn timestamp_ltz(value: impl ToString) -> Self {
+        Self::new(BindingType::TimestampLtz, value.to_string())
+    }
+
+    pub fn timestamp_tz(value: impl ToString) -> Self {
+        Self::new(BindingType::TimestampTz, value.to_string())
+    }
+
+    pub fn binary(value: impl Into<String>) -> Self {
+        Self::new(BindingType::Binary, value)
+    }
+}
+
 #[derive(Debug, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
-    /// SQL statement to execute against Snowflake.
     pub sql_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bindings: Option<HashMap<String, Binding>>,
+}
+
+impl QueryRequest {
+    /// Build a query with positional bind parameters.
+    /// The `Vec` index order maps to `"1"`, `"2"`, … (1-origin keys).
+    pub fn with_bindings(sql_text: impl Into<String>, bindings: Vec<Binding>) -> Self {
+        let map: HashMap<String, Binding> = bindings
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| ((i + 1).to_string(), b))
+            .collect();
+        Self {
+            sql_text: sql_text.into(),
+            bindings: if map.is_empty() { None } else { Some(map) },
+        }
+    }
 }
 
 impl From<&str> for QueryRequest {
     fn from(sql_text: &str) -> Self {
         Self {
             sql_text: sql_text.to_string(),
+            bindings: None,
         }
     }
 }
@@ -335,7 +437,10 @@ impl From<&QueryRequest> for QueryRequest {
 
 impl From<String> for QueryRequest {
     fn from(sql_text: String) -> Self {
-        Self { sql_text }
+        Self {
+            sql_text,
+            bindings: None,
+        }
     }
 }
 
@@ -442,5 +547,93 @@ mod tests {
         });
         let resp: SnowflakeResponse = serde_json::from_value(json).unwrap();
         assert_eq!(resp.code.as_deref(), Some("390112"));
+    }
+
+    #[test]
+    fn test_query_request_with_bindings_serializes_correctly() {
+        let request = QueryRequest::with_bindings(
+            "INSERT INTO t (c1, c2) VALUES (?, ?)",
+            vec![Binding::fixed(123), Binding::text("hello")],
+        );
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["sqlText"], "INSERT INTO t (c1, c2) VALUES (?, ?)");
+        assert_eq!(json["bindings"]["1"]["type"], "FIXED");
+        assert_eq!(json["bindings"]["1"]["value"], "123");
+        assert_eq!(json["bindings"]["2"]["type"], "TEXT");
+        assert_eq!(json["bindings"]["2"]["value"], "hello");
+    }
+
+    #[test]
+    fn test_query_request_without_bindings_omits_field() {
+        let request = QueryRequest::from("SELECT 1");
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["sqlText"], "SELECT 1");
+        assert!(json.get("bindings").is_none());
+    }
+
+    #[test]
+    fn test_from_str_has_no_bindings() {
+        let request = QueryRequest::from("SELECT 1");
+        assert!(request.bindings.is_none());
+    }
+
+    #[test]
+    fn test_from_string_has_no_bindings() {
+        let request = QueryRequest::from("SELECT 1".to_string());
+        assert!(request.bindings.is_none());
+    }
+
+    #[test]
+    fn test_with_bindings_indices_are_1_origin() {
+        let request = QueryRequest::with_bindings(
+            "SELECT ?, ?, ?",
+            vec![
+                Binding::fixed(1),
+                Binding::text("two"),
+                Binding::boolean(true),
+            ],
+        );
+        let bindings = request.bindings.as_ref().unwrap();
+        assert_eq!(bindings.len(), 3);
+        assert_eq!(bindings["1"].binding_type, BindingType::Fixed);
+        assert_eq!(bindings["1"].value, "1");
+        assert_eq!(bindings["2"].binding_type, BindingType::Text);
+        assert_eq!(bindings["2"].value, "two");
+        assert_eq!(bindings["3"].binding_type, BindingType::Boolean);
+        assert_eq!(bindings["3"].value, "true");
+    }
+
+    #[test]
+    fn test_with_bindings_empty_vec_produces_none() {
+        let request = QueryRequest::with_bindings("SELECT 1", vec![]);
+        assert!(request.bindings.is_none());
+    }
+
+    #[test]
+    fn test_binding_constructors() {
+        assert_eq!(Binding::fixed(42).binding_type, BindingType::Fixed);
+        assert_eq!(Binding::real(1.5).binding_type, BindingType::Real);
+        assert_eq!(Binding::text("hi").binding_type, BindingType::Text);
+        assert_eq!(Binding::boolean(true).binding_type, BindingType::Boolean);
+        assert_eq!(Binding::boolean(true).value, "true");
+        assert_eq!(Binding::boolean(false).value, "false");
+        assert_eq!(Binding::date("19000").binding_type, BindingType::Date);
+        assert_eq!(Binding::time("123456789").binding_type, BindingType::Time);
+        assert_eq!(
+            Binding::timestamp_ntz("123456789").binding_type,
+            BindingType::TimestampNtz
+        );
+        assert_eq!(
+            Binding::timestamp_ltz("123456789").binding_type,
+            BindingType::TimestampLtz
+        );
+        assert_eq!(
+            Binding::timestamp_tz("123456789").binding_type,
+            BindingType::TimestampTz
+        );
+        assert_eq!(
+            Binding::binary("48656C6C6F").binding_type,
+            BindingType::Binary
+        );
     }
 }
