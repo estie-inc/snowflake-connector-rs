@@ -1,7 +1,7 @@
 mod common;
 
-use snowflake_connector_rs::{Binding, BindingType, QueryRequest, Result};
 use chrono::{NaiveDate, NaiveDateTime};
+use snowflake_connector_rs::{Binding, BindingType, QueryRequest, Result};
 
 #[tokio::test]
 async fn test_bind_parameters_insert_and_select() -> Result<()> {

@@ -701,19 +701,48 @@ mod tests {
             (Binding::text("hi"), "TEXT", "hi"),
             (Binding::boolean(true), "BOOLEAN", "true"),
             (Binding::boolean(false), "BOOLEAN", "false"),
-            (Binding::date(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()), "DATE", "1718409600000"),
-            (Binding::time(NaiveTime::from_hms_opt(12, 34, 56).unwrap()), "TIME", "45296000000000"),
-            (Binding::timestamp_ntz(
-                NaiveDate::from_ymd_opt(2024, 6, 15).unwrap().and_hms_opt(12, 30, 45).unwrap(),
-            ), "TIMESTAMP_NTZ", "1718454645000000000"),
-            (Binding::timestamp_ltz(
-                NaiveDate::from_ymd_opt(2024, 6, 15).unwrap().and_hms_opt(12, 30, 45).unwrap(),
-            ), "TIMESTAMP_LTZ", "1718454645000000000"),
-            (Binding::timestamp_tz(
-                NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()
-                    .and_hms_opt(12, 30, 45).unwrap()
-                    .and_utc().fixed_offset(),
-            ), "TIMESTAMP_TZ", "1718454645000000000 1440"),
+            (
+                Binding::date(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()),
+                "DATE",
+                "1718409600000",
+            ),
+            (
+                Binding::time(NaiveTime::from_hms_opt(12, 34, 56).unwrap()),
+                "TIME",
+                "45296000000000",
+            ),
+            (
+                Binding::timestamp_ntz(
+                    NaiveDate::from_ymd_opt(2024, 6, 15)
+                        .unwrap()
+                        .and_hms_opt(12, 30, 45)
+                        .unwrap(),
+                ),
+                "TIMESTAMP_NTZ",
+                "1718454645000000000",
+            ),
+            (
+                Binding::timestamp_ltz(
+                    NaiveDate::from_ymd_opt(2024, 6, 15)
+                        .unwrap()
+                        .and_hms_opt(12, 30, 45)
+                        .unwrap(),
+                ),
+                "TIMESTAMP_LTZ",
+                "1718454645000000000",
+            ),
+            (
+                Binding::timestamp_tz(
+                    NaiveDate::from_ymd_opt(2024, 6, 15)
+                        .unwrap()
+                        .and_hms_opt(12, 30, 45)
+                        .unwrap()
+                        .and_utc()
+                        .fixed_offset(),
+                ),
+                "TIMESTAMP_TZ",
+                "1718454645000000000 1440",
+            ),
             (Binding::binary("48656C6C6F"), "BINARY", "48656C6C6F"),
         ];
         for (binding, expected_type, expected_value) in cases {
