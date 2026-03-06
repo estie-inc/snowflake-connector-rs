@@ -57,7 +57,9 @@ pub use external_browser_config::{
     BrowserLaunchMode, ExternalBrowserConfig, WithCallbackListenerConfig,
     WithoutCallbackListenerConfig,
 };
-pub use query::{Binding, BindingType, QueryExecutor, QueryRequest};
+pub use query::{
+    Binding, BindingType, QueryExecutor, QueryRequest, SnowflakeFixedType, SnowflakeRealType,
+};
 pub use row::{SnowflakeColumn, SnowflakeColumnType, SnowflakeDecode, SnowflakeRow};
 pub use session::SnowflakeSession;
 

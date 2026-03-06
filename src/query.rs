@@ -340,6 +340,32 @@ pub enum BindingType {
     Binary,
 }
 
+mod sealed {
+    pub trait Sealed: ToString {}
+}
+
+/// Types accepted by [`Binding::fixed`] (Snowflake `FIXED` / exact numeric).
+pub trait SnowflakeFixedType: sealed::Sealed {}
+
+macro_rules! impl_fixed {
+    ($($t:ty),*) => { $(
+        impl sealed::Sealed for $t {}
+        impl SnowflakeFixedType for $t {}
+    )* };
+}
+impl_fixed!(i8, i16, i32, i64, u8, u16, u32, u64);
+
+/// Types accepted by [`Binding::real`] (Snowflake `REAL` / floating-point).
+pub trait SnowflakeRealType: sealed::Sealed {}
+
+macro_rules! impl_real {
+    ($($t:ty),*) => { $(
+        impl sealed::Sealed for $t {}
+        impl SnowflakeRealType for $t {}
+    )* };
+}
+impl_real!(f32, f64);
+
 /// A single bind parameter for a Snowflake query.
 ///
 /// `value` is `None` for SQL NULL.
@@ -366,11 +392,11 @@ impl Binding {
         }
     }
 
-    pub fn fixed(value: impl ToString) -> Self {
+    pub fn fixed(value: impl SnowflakeFixedType) -> Self {
         Self::new(BindingType::Fixed, value.to_string())
     }
 
-    pub fn real(value: impl ToString) -> Self {
+    pub fn real(value: impl SnowflakeRealType) -> Self {
         Self::new(BindingType::Real, value.to_string())
     }
 
