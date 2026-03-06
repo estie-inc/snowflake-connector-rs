@@ -189,7 +189,7 @@ impl SnowflakeColumnType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SnowflakeRow {
     pub(crate) row: Vec<Option<String>>,
     pub(crate) column_types: Arc<Vec<SnowflakeColumnType>>,
