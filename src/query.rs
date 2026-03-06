@@ -341,35 +341,28 @@ pub enum BindingType {
 }
 
 mod sealed {
-    pub trait Sealed: ToString {}
+    pub trait Sealed {}
 }
 
 /// Types accepted by [`Binding::fixed`] (Snowflake `FIXED` / exact numeric).
-pub trait SnowflakeFixedType: sealed::Sealed {}
-
-macro_rules! impl_fixed {
-    ($($t:ty),*) => { $(
-        impl sealed::Sealed for $t {}
-        impl SnowflakeFixedType for $t {}
-    )* };
-}
-impl_fixed!(i8, i16, i32, i64, u8, u16, u32, u64);
+pub trait SnowflakeFixedType: sealed::Sealed + ToString {}
 
 /// Types accepted by [`Binding::real`] (Snowflake `REAL` / floating-point).
-pub trait SnowflakeRealType: sealed::Sealed {}
+pub trait SnowflakeRealType: sealed::Sealed + ToString {}
 
-macro_rules! impl_real {
-    ($($t:ty),*) => { $(
+macro_rules! impl_sealed_binding {
+    ($trait:ident => $($t:ty),*) => { $(
         impl sealed::Sealed for $t {}
-        impl SnowflakeRealType for $t {}
+        impl $trait for $t {}
     )* };
 }
-impl_real!(f32, f64);
+impl_sealed_binding!(SnowflakeFixedType => i8, i16, i32, i64, i128, u8, u16, u32, u64, u128);
+impl_sealed_binding!(SnowflakeRealType => f32, f64);
 
 /// A single bind parameter for a Snowflake query.
 ///
-/// `value` is `None` for SQL NULL.
-#[derive(Debug, serde::Serialize, Clone)]
+/// Use [`Binding::null`] to represent SQL NULL.
+#[derive(Debug, serde::Serialize, Clone, PartialEq, Eq)]
 pub struct Binding {
     #[serde(rename = "type")]
     binding_type: BindingType,
@@ -396,8 +389,16 @@ impl Binding {
         Self::new(BindingType::Fixed, value.to_string())
     }
 
+    /// Snowflake's REST API rejects `"inf"` / `"-inf"` for REAL bind type
+    /// but accepts `"Infinity"` / `"-Infinity"`.
     pub fn real(value: impl SnowflakeRealType) -> Self {
-        Self::new(BindingType::Real, value.to_string())
+        let s = value.to_string();
+        let s = match s.as_str() {
+            "inf" => "Infinity".to_string(),
+            "-inf" => "-Infinity".to_string(),
+            _ => s,
+        };
+        Self::new(BindingType::Real, s)
     }
 
     pub fn text(value: impl Into<String>) -> Self {
@@ -408,26 +409,36 @@ impl Binding {
         Self::new(BindingType::Boolean, value.to_string())
     }
 
+    /// `value` must be the number of days since the Unix epoch (1970-01-01).
     pub fn date(value: impl ToString) -> Self {
         Self::new(BindingType::Date, value.to_string())
     }
 
+    /// `value` must be seconds since midnight, optionally with a fractional part
+    /// (e.g. `"45296.123"` for 12:34:56.123).
     pub fn time(value: impl ToString) -> Self {
         Self::new(BindingType::Time, value.to_string())
     }
 
+    /// `value` must be seconds since the Unix epoch, optionally with a fractional
+    /// part for sub-second precision (e.g. `"1718451045.000000000"`).
     pub fn timestamp_ntz(value: impl ToString) -> Self {
         Self::new(BindingType::TimestampNtz, value.to_string())
     }
 
+    /// `value` must be seconds since the Unix epoch, optionally with a fractional
+    /// part for sub-second precision.
     pub fn timestamp_ltz(value: impl ToString) -> Self {
         Self::new(BindingType::TimestampLtz, value.to_string())
     }
 
+    /// `value` must be seconds since the Unix epoch, optionally with a fractional
+    /// part for sub-second precision.
     pub fn timestamp_tz(value: impl ToString) -> Self {
         Self::new(BindingType::TimestampTz, value.to_string())
     }
 
+    /// `value` must be a hex-encoded byte string (e.g. `"48656C6C6F"` for `Hello`).
     pub fn binary(value: impl Into<String>) -> Self {
         Self::new(BindingType::Binary, value)
     }
@@ -437,14 +448,21 @@ impl Binding {
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
     pub sql_text: String,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub bindings: HashMap<String, Binding>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    bindings: HashMap<String, Binding>,
 }
 
 impl QueryRequest {
+    pub fn bindings(&self) -> &HashMap<String, Binding> {
+        &self.bindings
+    }
+
     /// Build a query with positional bind parameters.
-    /// The `Vec` index order maps to `"1"`, `"2"`, … (1-origin keys).
-    pub fn with_bindings(sql_text: impl Into<String>, bindings: Vec<Binding>) -> Self {
+    /// The iterator index order maps to `"1"`, `"2"`, … (1-origin keys).
+    pub fn with_bindings(
+        sql_text: impl Into<String>,
+        bindings: impl IntoIterator<Item = Binding>,
+    ) -> Self {
         let map: HashMap<String, Binding> = bindings
             .into_iter()
             .enumerate()
@@ -610,13 +628,13 @@ mod tests {
     #[test]
     fn test_from_str_has_no_bindings() {
         let request = QueryRequest::from("SELECT 1");
-        assert!(request.bindings.is_empty());
+        assert!(request.bindings().is_empty());
     }
 
     #[test]
     fn test_from_string_has_no_bindings() {
         let request = QueryRequest::from("SELECT 1".to_string());
-        assert!(request.bindings.is_empty());
+        assert!(request.bindings().is_empty());
     }
 
     #[test]
@@ -654,7 +672,7 @@ mod tests {
     #[test]
     fn test_with_bindings_empty_vec_produces_empty_map() {
         let request = QueryRequest::with_bindings("SELECT 1", vec![]);
-        assert!(request.bindings.is_empty());
+        assert!(request.bindings().is_empty());
     }
 
     #[test]
@@ -677,5 +695,54 @@ mod tests {
             assert_eq!(json["type"], expected_type);
             assert_eq!(json["value"], expected_value);
         }
+    }
+
+    #[test]
+    fn test_real_nan_uses_real_type() {
+        let json = serde_json::to_value(Binding::real(f64::NAN)).unwrap();
+        assert_eq!(json["type"], "REAL");
+        assert_eq!(json["value"], "NaN");
+    }
+
+    #[test]
+    fn test_real_infinity_rewrites_to_full_word() {
+        let json = serde_json::to_value(Binding::real(f64::INFINITY)).unwrap();
+        assert_eq!(json["type"], "REAL");
+        assert_eq!(json["value"], "Infinity");
+
+        let json = serde_json::to_value(Binding::real(f64::NEG_INFINITY)).unwrap();
+        assert_eq!(json["type"], "REAL");
+        assert_eq!(json["value"], "-Infinity");
+
+        let json = serde_json::to_value(Binding::real(f32::INFINITY)).unwrap();
+        assert_eq!(json["type"], "REAL");
+        assert_eq!(json["value"], "Infinity");
+
+        let json = serde_json::to_value(Binding::real(f32::NEG_INFINITY)).unwrap();
+        assert_eq!(json["type"], "REAL");
+        assert_eq!(json["value"], "-Infinity");
+    }
+
+    #[test]
+    fn test_fixed_boundary_values() {
+        let cases: Vec<(Binding, String)> = vec![
+            (Binding::fixed(-1_i64), "-1".to_string()),
+            (Binding::fixed(0_i64), "0".to_string()),
+            (Binding::fixed(i64::MAX), i64::MAX.to_string()),
+            (Binding::fixed(i64::MIN), i64::MIN.to_string()),
+            (Binding::fixed(u64::MAX), u64::MAX.to_string()),
+        ];
+        for (binding, expected_value) in cases {
+            let json = serde_json::to_value(&binding).unwrap();
+            assert_eq!(json["type"], "FIXED");
+            assert_eq!(json["value"], expected_value);
+        }
+    }
+
+    #[test]
+    fn test_real_zero() {
+        let json = serde_json::to_value(Binding::real(0.0_f64)).unwrap();
+        assert_eq!(json["type"], "REAL");
+        assert_eq!(json["value"], "0");
     }
 }

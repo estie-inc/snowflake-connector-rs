@@ -1,6 +1,7 @@
 mod common;
 
 use snowflake_connector_rs::{Binding, BindingType, QueryRequest, Result};
+use chrono::{NaiveDate, NaiveDateTime};
 
 #[tokio::test]
 async fn test_bind_parameters_insert_and_select() -> Result<()> {
@@ -96,14 +97,14 @@ async fn test_bind_parameters_real() -> Result<()> {
 
     let insert = QueryRequest::with_bindings(
         "INSERT INTO bind_real (id, val) VALUES (?, ?)",
-        vec![Binding::fixed(1), Binding::real(3.14_f64)],
+        vec![Binding::fixed(1), Binding::real(2.72_f64)],
     );
     session.query(insert).await?;
 
     let rows = session.query("SELECT * FROM bind_real").await?;
     assert_eq!(rows.len(), 1);
     let val = rows[0].get::<f64>("VAL")?;
-    assert!((val - 3.14).abs() < 1e-10);
+    assert!((val - 2.72).abs() < 1e-10);
 
     Ok(())
 }
@@ -117,20 +118,37 @@ async fn test_bind_parameters_date_and_timestamp() -> Result<()> {
         .query("CREATE TEMPORARY TABLE bind_temporal (id NUMBER, d DATE, ts TIMESTAMP_NTZ)")
         .await?;
 
+    // 2024-06-15 = 19889 days since 1970-01-01
+    let epoch_days = NaiveDate::from_ymd_opt(2024, 6, 15)
+        .unwrap()
+        .signed_duration_since(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
+        .num_days();
+    // 2024-06-15 12:30:45 UTC as epoch seconds
+    let epoch_secs = 1718451045_i64;
+
     let insert = QueryRequest::with_bindings(
         "INSERT INTO bind_temporal (id, d, ts) VALUES (?, ?, ?)",
         vec![
             Binding::fixed(1),
-            Binding::text("2024-06-15"),
-            Binding::text("2024-06-15 12:30:45"),
+            Binding::date(epoch_days),
+            Binding::timestamp_ntz(epoch_secs),
         ],
     );
     session.query(insert).await?;
 
     let rows = session.query("SELECT * FROM bind_temporal").await?;
     assert_eq!(rows.len(), 1);
-    let d = rows[0].get::<String>("D")?;
-    assert!(d.contains("2024-06-15"), "unexpected date: {d}");
+    let d = rows[0].get::<NaiveDate>("D")?;
+    assert_eq!(d, NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+
+    let ts = rows[0].get::<NaiveDateTime>("TS")?;
+    assert_eq!(
+        ts,
+        NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(12, 30, 45)
+            .unwrap()
+    );
 
     Ok(())
 }
@@ -219,6 +237,7 @@ async fn test_bind_parameters_binary() -> Result<()> {
         .query("CREATE TEMPORARY TABLE bind_bin (id NUMBER, val BINARY)")
         .await?;
 
+    // "48656C6C6F" is hex for "Hello"
     let insert = QueryRequest::with_bindings(
         "INSERT INTO bind_bin (id, val) VALUES (?, ?)",
         vec![Binding::fixed(1), Binding::binary("48656C6C6F")],
@@ -227,6 +246,8 @@ async fn test_bind_parameters_binary() -> Result<()> {
 
     let rows = session.query("SELECT * FROM bind_bin").await?;
     assert_eq!(rows.len(), 1);
+    let val = rows[0].get::<String>("VAL")?;
+    assert_eq!(val, "48656C6C6F");
 
     Ok(())
 }
