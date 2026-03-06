@@ -392,7 +392,7 @@ impl Binding {
     }
 
     /// Snowflake's REST API rejects `"inf"` / `"-inf"` for REAL bind type
-    /// but accepts `"Infinity"` / `"-Infinity"`.
+    /// but accepts `"Infinity"` / `"-Infinity"`. `"NaN"` is accepted as-is.
     pub fn real(value: impl SnowflakeRealType) -> Self {
         let s = value.to_string();
         let s = match s.as_str() {
