@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, mem, sync::Arc};
 
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
 use http::{
     HeaderMap,
@@ -411,32 +411,41 @@ impl Binding {
         Self::new(BindingType::Boolean, value.to_string())
     }
 
+    /// Snowflake REST API expects milliseconds since the Unix epoch for DATE.
     pub fn date(value: NaiveDate) -> Self {
         let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap_or_default();
         let days = value.signed_duration_since(epoch).num_days();
-        Self::new(BindingType::Date, days.to_string())
+        let ms = days * 86_400_000;
+        Self::new(BindingType::Date, ms.to_string())
     }
 
+    /// Snowflake REST API expects nanoseconds since midnight for TIME.
     pub fn time(value: NaiveTime) -> Self {
-        let secs = value.num_seconds_from_midnight();
-        let nanos = value.nanosecond() % 1_000_000_000;
-        if nanos == 0 {
-            Self::new(BindingType::Time, secs.to_string())
-        } else {
-            Self::new(BindingType::Time, format!("{secs}.{nanos:09}"))
-        }
+        let secs = value.num_seconds_from_midnight() as i64;
+        let sub_nanos = (value.nanosecond() % 1_000_000_000) as i64;
+        let total_nanos = secs * 1_000_000_000 + sub_nanos;
+        Self::new(BindingType::Time, total_nanos.to_string())
     }
 
+    /// Snowflake REST API expects nanoseconds since the Unix epoch for TIMESTAMP_NTZ.
     pub fn timestamp_ntz(value: NaiveDateTime) -> Self {
-        Self::new(BindingType::TimestampNtz, format_epoch(value))
+        Self::new(BindingType::TimestampNtz, format_epoch_nanos(value))
     }
 
+    /// Snowflake REST API expects nanoseconds since the Unix epoch for TIMESTAMP_LTZ.
     pub fn timestamp_ltz(value: NaiveDateTime) -> Self {
-        Self::new(BindingType::TimestampLtz, format_epoch(value))
+        Self::new(BindingType::TimestampLtz, format_epoch_nanos(value))
     }
 
-    pub fn timestamp_tz(value: NaiveDateTime) -> Self {
-        Self::new(BindingType::TimestampTz, format_epoch(value))
+    /// Snowflake REST API expects nanoseconds since the Unix epoch followed by
+    /// a space and the timezone offset encoded as `1440 - offset_minutes`.
+    pub fn timestamp_tz(value: DateTime<FixedOffset>) -> Self {
+        let secs = value.timestamp();
+        let sub_nanos = value.timestamp_subsec_nanos() as i64;
+        let total_nanos = secs * 1_000_000_000 + sub_nanos;
+        let offset_minutes = value.offset().local_minus_utc() / 60;
+        let sf_tz = 1440 - offset_minutes;
+        Self::new(BindingType::TimestampTz, format!("{total_nanos} {sf_tz}"))
     }
 
     /// `value` must be a hex-encoded byte string (e.g. `"48656C6C6F"` for `Hello`).
@@ -445,15 +454,12 @@ impl Binding {
     }
 }
 
-fn format_epoch(value: NaiveDateTime) -> String {
+fn format_epoch_nanos(value: NaiveDateTime) -> String {
     let ts = value.and_utc();
     let secs = ts.timestamp();
-    let nanos = ts.timestamp_subsec_nanos();
-    if nanos == 0 {
-        secs.to_string()
-    } else {
-        format!("{secs}.{nanos:09}")
-    }
+    let sub_nanos = ts.timestamp_subsec_nanos() as i64;
+    let total_nanos = secs * 1_000_000_000 + sub_nanos;
+    total_nanos.to_string()
 }
 
 #[derive(Debug, serde::Serialize, Clone)]
@@ -695,17 +701,19 @@ mod tests {
             (Binding::text("hi"), "TEXT", "hi"),
             (Binding::boolean(true), "BOOLEAN", "true"),
             (Binding::boolean(false), "BOOLEAN", "false"),
-            (Binding::date(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()), "DATE", "19889"),
-            (Binding::time(NaiveTime::from_hms_opt(12, 34, 56).unwrap()), "TIME", "45296"),
+            (Binding::date(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()), "DATE", "1718409600000"),
+            (Binding::time(NaiveTime::from_hms_opt(12, 34, 56).unwrap()), "TIME", "45296000000000"),
             (Binding::timestamp_ntz(
                 NaiveDate::from_ymd_opt(2024, 6, 15).unwrap().and_hms_opt(12, 30, 45).unwrap(),
-            ), "TIMESTAMP_NTZ", "1718454645"),
+            ), "TIMESTAMP_NTZ", "1718454645000000000"),
             (Binding::timestamp_ltz(
                 NaiveDate::from_ymd_opt(2024, 6, 15).unwrap().and_hms_opt(12, 30, 45).unwrap(),
-            ), "TIMESTAMP_LTZ", "1718454645"),
+            ), "TIMESTAMP_LTZ", "1718454645000000000"),
             (Binding::timestamp_tz(
-                NaiveDate::from_ymd_opt(2024, 6, 15).unwrap().and_hms_opt(12, 30, 45).unwrap(),
-            ), "TIMESTAMP_TZ", "1718454645"),
+                NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()
+                    .and_hms_opt(12, 30, 45).unwrap()
+                    .and_utc().fixed_offset(),
+            ), "TIMESTAMP_TZ", "1718454645000000000 1440"),
             (Binding::binary("48656C6C6F"), "BINARY", "48656C6C6F"),
         ];
         for (binding, expected_type, expected_value) in cases {
