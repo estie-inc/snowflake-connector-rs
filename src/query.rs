@@ -413,17 +413,18 @@ impl Binding {
 
     /// Snowflake REST API expects milliseconds since the Unix epoch for DATE.
     pub fn date(value: NaiveDate) -> Self {
-        let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap_or_default();
-        let days = value.signed_duration_since(epoch).num_days();
-        let ms = days * 86_400_000;
+        let ms = value
+            .and_hms_opt(0, 0, 0)
+            .unwrap_or_default()
+            .and_utc()
+            .timestamp_millis();
         Self::new(BindingType::Date, ms.to_string())
     }
 
     /// Snowflake REST API expects nanoseconds since midnight for TIME.
     pub fn time(value: NaiveTime) -> Self {
-        let secs = value.num_seconds_from_midnight() as i64;
-        let sub_nanos = (value.nanosecond() % 1_000_000_000) as i64;
-        let total_nanos = secs * 1_000_000_000 + sub_nanos;
+        let total_nanos = u64::from(value.num_seconds_from_midnight()) * 1_000_000_000
+            + u64::from(value.nanosecond() % 1_000_000_000);
         Self::new(BindingType::Time, total_nanos.to_string())
     }
 
@@ -440,12 +441,10 @@ impl Binding {
     /// Snowflake REST API expects nanoseconds since the Unix epoch followed by
     /// a space and the timezone offset encoded as `1440 - offset_minutes`.
     pub fn timestamp_tz(value: DateTime<FixedOffset>) -> Self {
-        let secs = value.timestamp();
-        let sub_nanos = value.timestamp_subsec_nanos() as i64;
-        let total_nanos = secs * 1_000_000_000 + sub_nanos;
+        let nanos = format_epoch_nanos(value.naive_utc());
         let offset_minutes = value.offset().local_minus_utc() / 60;
         let sf_tz = 1440 - offset_minutes;
-        Self::new(BindingType::TimestampTz, format!("{total_nanos} {sf_tz}"))
+        Self::new(BindingType::TimestampTz, format!("{nanos} {sf_tz}"))
     }
 
     /// `value` must be a hex-encoded byte string (e.g. `"48656C6C6F"` for `Hello`).
@@ -454,12 +453,19 @@ impl Binding {
     }
 }
 
+/// Falls back to manual calculation when `timestamp_nanos_opt()` returns None
+/// (dates outside ~1678–2262 overflow i64 nanoseconds).
 fn format_epoch_nanos(value: NaiveDateTime) -> String {
     let ts = value.and_utc();
-    let secs = ts.timestamp();
-    let sub_nanos = ts.timestamp_subsec_nanos() as i64;
-    let total_nanos = secs * 1_000_000_000 + sub_nanos;
-    total_nanos.to_string()
+    match ts.timestamp_nanos_opt() {
+        Some(nanos) => nanos.to_string(),
+        None => {
+            let secs = ts.timestamp();
+            let total_nanos =
+                i128::from(secs) * 1_000_000_000 + i128::from(ts.timestamp_subsec_nanos());
+            total_nanos.to_string()
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, Clone)]
