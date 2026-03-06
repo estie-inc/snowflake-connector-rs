@@ -437,8 +437,8 @@ impl Binding {
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
     pub sql_text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bindings: Option<HashMap<String, Binding>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub bindings: HashMap<String, Binding>,
 }
 
 impl QueryRequest {
@@ -452,7 +452,7 @@ impl QueryRequest {
             .collect();
         Self {
             sql_text: sql_text.into(),
-            bindings: if map.is_empty() { None } else { Some(map) },
+            bindings: map,
         }
     }
 }
@@ -461,7 +461,7 @@ impl From<&str> for QueryRequest {
     fn from(sql_text: &str) -> Self {
         Self {
             sql_text: sql_text.to_string(),
-            bindings: None,
+            bindings: HashMap::new(),
         }
     }
 }
@@ -475,7 +475,7 @@ impl From<String> for QueryRequest {
     fn from(sql_text: String) -> Self {
         Self {
             sql_text,
-            bindings: None,
+            bindings: HashMap::new(),
         }
     }
 }
@@ -610,13 +610,13 @@ mod tests {
     #[test]
     fn test_from_str_has_no_bindings() {
         let request = QueryRequest::from("SELECT 1");
-        assert!(request.bindings.is_none());
+        assert!(request.bindings.is_empty());
     }
 
     #[test]
     fn test_from_string_has_no_bindings() {
         let request = QueryRequest::from("SELECT 1".to_string());
-        assert!(request.bindings.is_none());
+        assert!(request.bindings.is_empty());
     }
 
     #[test]
@@ -652,9 +652,9 @@ mod tests {
     }
 
     #[test]
-    fn test_with_bindings_empty_vec_produces_none() {
+    fn test_with_bindings_empty_vec_produces_empty_map() {
         let request = QueryRequest::with_bindings("SELECT 1", vec![]);
-        assert!(request.bindings.is_none());
+        assert!(request.bindings.is_empty());
     }
 
     #[test]
