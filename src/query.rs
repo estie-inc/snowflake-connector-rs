@@ -346,12 +346,12 @@ pub enum BindingType {
 #[derive(Debug, serde::Serialize, Clone)]
 pub struct Binding {
     #[serde(rename = "type")]
-    pub binding_type: BindingType,
-    pub value: Option<String>,
+    binding_type: BindingType,
+    value: Option<String>,
 }
 
 impl Binding {
-    pub fn new(binding_type: BindingType, value: impl Into<String>) -> Self {
+    pub(crate) fn new(binding_type: BindingType, value: impl Into<String>) -> Self {
         Self {
             binding_type,
             value: Some(value.into()),
@@ -603,14 +603,15 @@ mod tests {
                 Binding::boolean(true),
             ],
         );
-        let bindings = request.bindings.as_ref().unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        let bindings = json["bindings"].as_object().unwrap();
         assert_eq!(bindings.len(), 3);
-        assert_eq!(bindings["1"].binding_type, BindingType::Fixed);
-        assert_eq!(bindings["1"].value.as_deref(), Some("1"));
-        assert_eq!(bindings["2"].binding_type, BindingType::Text);
-        assert_eq!(bindings["2"].value.as_deref(), Some("two"));
-        assert_eq!(bindings["3"].binding_type, BindingType::Boolean);
-        assert_eq!(bindings["3"].value.as_deref(), Some("true"));
+        assert_eq!(json["bindings"]["1"]["type"], "FIXED");
+        assert_eq!(json["bindings"]["1"]["value"], "1");
+        assert_eq!(json["bindings"]["2"]["type"], "TEXT");
+        assert_eq!(json["bindings"]["2"]["value"], "two");
+        assert_eq!(json["bindings"]["3"]["type"], "BOOLEAN");
+        assert_eq!(json["bindings"]["3"]["value"], "true");
     }
 
     #[test]
@@ -632,29 +633,23 @@ mod tests {
 
     #[test]
     fn test_binding_constructors() {
-        assert_eq!(Binding::fixed(42).binding_type, BindingType::Fixed);
-        assert_eq!(Binding::real(1.5).binding_type, BindingType::Real);
-        assert_eq!(Binding::text("hi").binding_type, BindingType::Text);
-        assert_eq!(Binding::boolean(true).binding_type, BindingType::Boolean);
-        assert_eq!(Binding::boolean(true).value.as_deref(), Some("true"));
-        assert_eq!(Binding::boolean(false).value.as_deref(), Some("false"));
-        assert_eq!(Binding::date("19000").binding_type, BindingType::Date);
-        assert_eq!(Binding::time("123456789").binding_type, BindingType::Time);
-        assert_eq!(
-            Binding::timestamp_ntz("123456789").binding_type,
-            BindingType::TimestampNtz
-        );
-        assert_eq!(
-            Binding::timestamp_ltz("123456789").binding_type,
-            BindingType::TimestampLtz
-        );
-        assert_eq!(
-            Binding::timestamp_tz("123456789").binding_type,
-            BindingType::TimestampTz
-        );
-        assert_eq!(
-            Binding::binary("48656C6C6F").binding_type,
-            BindingType::Binary
-        );
+        let cases: Vec<(Binding, &str, &str)> = vec![
+            (Binding::fixed(42), "FIXED", "42"),
+            (Binding::real(1.5), "REAL", "1.5"),
+            (Binding::text("hi"), "TEXT", "hi"),
+            (Binding::boolean(true), "BOOLEAN", "true"),
+            (Binding::boolean(false), "BOOLEAN", "false"),
+            (Binding::date("19000"), "DATE", "19000"),
+            (Binding::time("123456789"), "TIME", "123456789"),
+            (Binding::timestamp_ntz("123456789"), "TIMESTAMP_NTZ", "123456789"),
+            (Binding::timestamp_ltz("123456789"), "TIMESTAMP_LTZ", "123456789"),
+            (Binding::timestamp_tz("123456789"), "TIMESTAMP_TZ", "123456789"),
+            (Binding::binary("48656C6C6F"), "BINARY", "48656C6C6F"),
+        ];
+        for (binding, expected_type, expected_value) in cases {
+            let json = serde_json::to_value(&binding).unwrap();
+            assert_eq!(json["type"], expected_type);
+            assert_eq!(json["value"], expected_value);
+        }
     }
 }
