@@ -118,20 +118,15 @@ async fn test_bind_parameters_date_and_timestamp() -> Result<()> {
         .query("CREATE TEMPORARY TABLE bind_temporal (id NUMBER, d DATE, ts TIMESTAMP_NTZ)")
         .await?;
 
-    // 2024-06-15 = 19889 days since 1970-01-01
-    let epoch_days = NaiveDate::from_ymd_opt(2024, 6, 15)
-        .unwrap()
-        .signed_duration_since(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
-        .num_days();
-    // 2024-06-15 12:30:45 UTC as epoch seconds
-    let epoch_secs = 1718451045_i64;
+    let date = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+    let ts = date.and_hms_opt(12, 30, 45).unwrap();
 
     let insert = QueryRequest::with_bindings(
         "INSERT INTO bind_temporal (id, d, ts) VALUES (?, ?, ?)",
         vec![
             Binding::fixed(1),
-            Binding::date(epoch_days),
-            Binding::timestamp_ntz(epoch_secs),
+            Binding::date(date),
+            Binding::timestamp_ntz(ts),
         ],
     );
     session.query(insert).await?;

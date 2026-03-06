@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, mem, sync::Arc};
 
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+
 use http::{
     HeaderMap,
     header::{ACCEPT, AUTHORIZATION},
@@ -409,38 +411,48 @@ impl Binding {
         Self::new(BindingType::Boolean, value.to_string())
     }
 
-    /// `value` must be the number of days since the Unix epoch (1970-01-01).
-    pub fn date(value: impl ToString) -> Self {
-        Self::new(BindingType::Date, value.to_string())
+    pub fn date(value: NaiveDate) -> Self {
+        let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap_or_default();
+        let days = value.signed_duration_since(epoch).num_days();
+        Self::new(BindingType::Date, days.to_string())
     }
 
-    /// `value` must be seconds since midnight, optionally with a fractional part
-    /// (e.g. `"45296.123"` for 12:34:56.123).
-    pub fn time(value: impl ToString) -> Self {
-        Self::new(BindingType::Time, value.to_string())
+    pub fn time(value: NaiveTime) -> Self {
+        let secs = value.num_seconds_from_midnight();
+        let nanos = value.nanosecond() % 1_000_000_000;
+        if nanos == 0 {
+            Self::new(BindingType::Time, secs.to_string())
+        } else {
+            Self::new(BindingType::Time, format!("{secs}.{nanos:09}"))
+        }
     }
 
-    /// `value` must be seconds since the Unix epoch, optionally with a fractional
-    /// part for sub-second precision (e.g. `"1718451045.000000000"`).
-    pub fn timestamp_ntz(value: impl ToString) -> Self {
-        Self::new(BindingType::TimestampNtz, value.to_string())
+    pub fn timestamp_ntz(value: NaiveDateTime) -> Self {
+        Self::new(BindingType::TimestampNtz, format_epoch(value))
     }
 
-    /// `value` must be seconds since the Unix epoch, optionally with a fractional
-    /// part for sub-second precision.
-    pub fn timestamp_ltz(value: impl ToString) -> Self {
-        Self::new(BindingType::TimestampLtz, value.to_string())
+    pub fn timestamp_ltz(value: NaiveDateTime) -> Self {
+        Self::new(BindingType::TimestampLtz, format_epoch(value))
     }
 
-    /// `value` must be seconds since the Unix epoch, optionally with a fractional
-    /// part for sub-second precision.
-    pub fn timestamp_tz(value: impl ToString) -> Self {
-        Self::new(BindingType::TimestampTz, value.to_string())
+    pub fn timestamp_tz(value: NaiveDateTime) -> Self {
+        Self::new(BindingType::TimestampTz, format_epoch(value))
     }
 
     /// `value` must be a hex-encoded byte string (e.g. `"48656C6C6F"` for `Hello`).
     pub fn binary(value: impl Into<String>) -> Self {
         Self::new(BindingType::Binary, value)
+    }
+}
+
+fn format_epoch(value: NaiveDateTime) -> String {
+    let ts = value.and_utc();
+    let secs = ts.timestamp();
+    let nanos = ts.timestamp_subsec_nanos();
+    if nanos == 0 {
+        secs.to_string()
+    } else {
+        format!("{secs}.{nanos:09}")
     }
 }
 
@@ -683,11 +695,17 @@ mod tests {
             (Binding::text("hi"), "TEXT", "hi"),
             (Binding::boolean(true), "BOOLEAN", "true"),
             (Binding::boolean(false), "BOOLEAN", "false"),
-            (Binding::date("19000"), "DATE", "19000"),
-            (Binding::time("123456789"), "TIME", "123456789"),
-            (Binding::timestamp_ntz("123456789"), "TIMESTAMP_NTZ", "123456789"),
-            (Binding::timestamp_ltz("123456789"), "TIMESTAMP_LTZ", "123456789"),
-            (Binding::timestamp_tz("123456789"), "TIMESTAMP_TZ", "123456789"),
+            (Binding::date(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()), "DATE", "19889"),
+            (Binding::time(NaiveTime::from_hms_opt(12, 34, 56).unwrap()), "TIME", "45296"),
+            (Binding::timestamp_ntz(
+                NaiveDate::from_ymd_opt(2024, 6, 15).unwrap().and_hms_opt(12, 30, 45).unwrap(),
+            ), "TIMESTAMP_NTZ", "1718454645"),
+            (Binding::timestamp_ltz(
+                NaiveDate::from_ymd_opt(2024, 6, 15).unwrap().and_hms_opt(12, 30, 45).unwrap(),
+            ), "TIMESTAMP_LTZ", "1718454645"),
+            (Binding::timestamp_tz(
+                NaiveDate::from_ymd_opt(2024, 6, 15).unwrap().and_hms_opt(12, 30, 45).unwrap(),
+            ), "TIMESTAMP_TZ", "1718454645"),
             (Binding::binary("48656C6C6F"), "BINARY", "48656C6C6F"),
         ];
         for (binding, expected_type, expected_value) in cases {
