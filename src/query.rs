@@ -341,18 +341,28 @@ pub enum BindingType {
 }
 
 /// A single bind parameter for a Snowflake query.
+///
+/// `value` is `None` for SQL NULL.
 #[derive(Debug, serde::Serialize, Clone)]
 pub struct Binding {
     #[serde(rename = "type")]
     pub binding_type: BindingType,
-    pub value: String,
+    pub value: Option<String>,
 }
 
 impl Binding {
     pub fn new(binding_type: BindingType, value: impl Into<String>) -> Self {
         Self {
             binding_type,
-            value: value.into(),
+            value: Some(value.into()),
+        }
+    }
+
+    /// NULL bind parameter with the given type.
+    pub fn null(binding_type: BindingType) -> Self {
+        Self {
+            binding_type,
+            value: None,
         }
     }
 
@@ -596,11 +606,22 @@ mod tests {
         let bindings = request.bindings.as_ref().unwrap();
         assert_eq!(bindings.len(), 3);
         assert_eq!(bindings["1"].binding_type, BindingType::Fixed);
-        assert_eq!(bindings["1"].value, "1");
+        assert_eq!(bindings["1"].value.as_deref(), Some("1"));
         assert_eq!(bindings["2"].binding_type, BindingType::Text);
-        assert_eq!(bindings["2"].value, "two");
+        assert_eq!(bindings["2"].value.as_deref(), Some("two"));
         assert_eq!(bindings["3"].binding_type, BindingType::Boolean);
-        assert_eq!(bindings["3"].value, "true");
+        assert_eq!(bindings["3"].value.as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn test_null_binding_serializes_correctly() {
+        let request = QueryRequest::with_bindings(
+            "INSERT INTO t (c1) VALUES (?)",
+            vec![Binding::null(BindingType::Text)],
+        );
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["bindings"]["1"]["type"], "TEXT");
+        assert!(json["bindings"]["1"]["value"].is_null());
     }
 
     #[test]
@@ -615,8 +636,8 @@ mod tests {
         assert_eq!(Binding::real(1.5).binding_type, BindingType::Real);
         assert_eq!(Binding::text("hi").binding_type, BindingType::Text);
         assert_eq!(Binding::boolean(true).binding_type, BindingType::Boolean);
-        assert_eq!(Binding::boolean(true).value, "true");
-        assert_eq!(Binding::boolean(false).value, "false");
+        assert_eq!(Binding::boolean(true).value.as_deref(), Some("true"));
+        assert_eq!(Binding::boolean(false).value.as_deref(), Some("false"));
         assert_eq!(Binding::date("19000").binding_type, BindingType::Date);
         assert_eq!(Binding::time("123456789").binding_type, BindingType::Time);
         assert_eq!(
