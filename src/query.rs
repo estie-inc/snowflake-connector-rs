@@ -415,7 +415,7 @@ impl Binding {
     pub fn date(value: NaiveDate) -> Self {
         let ms = value
             .and_hms_opt(0, 0, 0)
-            .unwrap_or_default()
+            .expect("and_hms_opt(0, 0, 0) is always valid")
             .and_utc()
             .timestamp_millis();
         Self::new(BindingType::Date, ms.to_string())
@@ -439,17 +439,23 @@ impl Binding {
     }
 
     /// Snowflake REST API expects nanoseconds since the Unix epoch followed by
-    /// a space and the timezone offset encoded as `1440 - offset_minutes`.
+    /// a space and the timezone offset encoded as `1440 + offset_minutes`.
     pub fn timestamp_tz(value: DateTime<FixedOffset>) -> Self {
         let nanos = format_epoch_nanos(value.naive_utc());
         let offset_minutes = value.offset().local_minus_utc() / 60;
-        let sf_tz = 1440 - offset_minutes;
+        let sf_tz = 1440 + offset_minutes;
         Self::new(BindingType::TimestampTz, format!("{nanos} {sf_tz}"))
     }
 
-    /// `value` must be a hex-encoded byte string (e.g. `"48656C6C6F"` for `Hello`).
-    pub fn binary(value: impl Into<String>) -> Self {
-        Self::new(BindingType::Binary, value)
+    pub fn binary(value: &[u8]) -> Self {
+        let hex = value
+            .iter()
+            .fold(String::with_capacity(value.len() * 2), |mut s, b| {
+                use std::fmt::Write;
+                let _ = write!(s, "{b:02X}");
+                s
+            });
+        Self::new(BindingType::Binary, hex)
     }
 }
 
@@ -749,13 +755,42 @@ mod tests {
                 "TIMESTAMP_TZ",
                 "1718454645000000000 1440",
             ),
-            (Binding::binary("48656C6C6F"), "BINARY", "48656C6C6F"),
+            (Binding::binary(b"Hello"), "BINARY", "48656C6C6F"),
         ];
         for (binding, expected_type, expected_value) in cases {
             let json = serde_json::to_value(&binding).unwrap();
             assert_eq!(json["type"], expected_type);
             assert_eq!(json["value"], expected_value);
         }
+    }
+
+    #[test]
+    fn test_timestamp_tz_non_utc_offsets() {
+        // UTC+9 (e.g. JST): 2024-06-15 21:30:45+09:00 = 2024-06-15 12:30:45 UTC
+        let offset_east = FixedOffset::east_opt(9 * 3600).unwrap();
+        let dt_east = NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(21, 30, 45)
+            .unwrap()
+            .and_local_timezone(offset_east)
+            .unwrap();
+        let json = serde_json::to_value(Binding::timestamp_tz(dt_east)).unwrap();
+        assert_eq!(json["type"], "TIMESTAMP_TZ");
+        // UTC nanos for 2024-06-15 12:30:45 UTC, offset = 1440 + 540 = 1980
+        assert_eq!(json["value"], "1718454645000000000 1980");
+
+        // UTC-5 (e.g. EST): 2024-06-15 07:30:45-05:00 = 2024-06-15 12:30:45 UTC
+        let offset_west = FixedOffset::west_opt(5 * 3600).unwrap();
+        let dt_west = NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(7, 30, 45)
+            .unwrap()
+            .and_local_timezone(offset_west)
+            .unwrap();
+        let json = serde_json::to_value(Binding::timestamp_tz(dt_west)).unwrap();
+        assert_eq!(json["type"], "TIMESTAMP_TZ");
+        // offset = 1440 + (-300) = 1140
+        assert_eq!(json["value"], "1718454645000000000 1140");
     }
 
     #[test]
