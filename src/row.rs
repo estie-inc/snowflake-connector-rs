@@ -397,6 +397,7 @@ fn parse_timestamp_tz_as_utc(s: &str, scale: i64) -> Result<DateTime<Utc>> {
 
 fn parse_timestamp_epoch(s: &str, scale: i64) -> Result<DateTime<Utc>> {
     let s = s.trim();
+    let is_negative = s.starts_with('-');
     let (secs_str, frac_str) = s.split_once('.').unwrap_or((s, ""));
 
     let mut secs = secs_str
@@ -426,7 +427,9 @@ fn parse_timestamp_epoch(s: &str, scale: i64) -> Result<DateTime<Utc>> {
         // For negative timestamps with a fractional part (pre-1970),
         // "-1.5" means -1.5 seconds, not -1 + 0.5 seconds.
         // Adjust: secs = floor(-1.5) = -2, nsec = 500_000_000.
-        if secs < 0 && nsec > 0 {
+        // Use `is_negative` instead of `secs < 0` because "-0" parses to 0
+        // and i64 has no negative zero.
+        if is_negative && nsec > 0 {
             secs -= 1;
         }
 
@@ -878,6 +881,44 @@ mod tests {
         let value = Some("-10.000000000".to_string());
         let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
         assert_eq!(dt.timestamp(), -10);
+        assert_eq!(dt.timestamp_subsec_nanos(), 0);
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_negative_zero_subsecond() {
+        // "-0.500000000" = -0.5 seconds from epoch = 1969-12-31T23:59:59.500Z
+        // i64 has no negative zero, so "-0" parses to 0. The sign must be
+        // detected from the raw string.
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(9));
+        let value = Some("-0.500000000".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(
+            dt,
+            chrono::NaiveDate::from_ymd_opt(1969, 12, 31)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 59, 500_000_000)
+                .unwrap()
+                .and_utc()
+        );
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_positive_subsecond() {
+        // "0.500000000" = +0.5 seconds — must NOT be adjusted.
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(9));
+        let value = Some("0.500000000".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(dt.timestamp(), 0);
+        assert_eq!(dt.timestamp_subsec_nanos(), 500_000_000);
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_negative_zero_whole() {
+        // "-0.000000000" = exactly epoch, no adjustment needed.
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(9));
+        let value = Some("-0.000000000".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(dt.timestamp(), 0);
         assert_eq!(dt.timestamp_subsec_nanos(), 0);
     }
 }
