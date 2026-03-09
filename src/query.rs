@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, mem, sync::Arc};
 
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 
 use http::{
     HeaderMap,
@@ -434,8 +434,11 @@ impl Binding {
     }
 
     /// Snowflake REST API expects nanoseconds since the Unix epoch for TIMESTAMP_LTZ.
-    pub fn timestamp_ltz(value: NaiveDateTime) -> Self {
-        Self::new(BindingType::TimestampLtz, format_epoch_nanos(value))
+    pub fn timestamp_ltz(value: DateTime<Utc>) -> Self {
+        Self::new(
+            BindingType::TimestampLtz,
+            format_epoch_nanos(value.naive_utc()),
+        )
     }
 
     /// Snowflake REST API expects nanoseconds since the Unix epoch followed by
@@ -477,6 +480,7 @@ fn format_epoch_nanos(value: NaiveDateTime) -> String {
 #[derive(Debug, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
+    /// SQL statement to execute against Snowflake.
     pub sql_text: String,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     bindings: HashMap<String, Binding>,
@@ -738,7 +742,8 @@ mod tests {
                     NaiveDate::from_ymd_opt(2024, 6, 15)
                         .unwrap()
                         .and_hms_opt(12, 30, 45)
-                        .unwrap(),
+                        .unwrap()
+                        .and_utc(),
                 ),
                 "TIMESTAMP_LTZ",
                 "1718454645000000000",

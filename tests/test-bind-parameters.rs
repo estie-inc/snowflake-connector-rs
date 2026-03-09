@@ -1,6 +1,6 @@
 mod common;
 
-use chrono::{FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use snowflake_connector_rs::{Binding, BindingType, QueryRequest, Result};
 
 #[tokio::test]
@@ -282,7 +282,8 @@ async fn test_bind_parameters_timestamp_ltz() -> Result<()> {
     let dt = NaiveDate::from_ymd_opt(2024, 6, 15)
         .unwrap()
         .and_hms_opt(12, 30, 45)
-        .unwrap();
+        .unwrap()
+        .and_utc();
     let insert = QueryRequest::with_bindings(
         "INSERT INTO bind_ts_ltz (id, ts) VALUES (?, ?)",
         vec![Binding::fixed(1), Binding::timestamp_ltz(dt)],
@@ -291,7 +292,7 @@ async fn test_bind_parameters_timestamp_ltz() -> Result<()> {
 
     let rows = session.query("SELECT * FROM bind_ts_ltz").await?;
     assert_eq!(rows.len(), 1);
-    let ts = rows[0].get::<NaiveDateTime>("TS")?;
+    let ts = rows[0].get::<chrono::DateTime<Utc>>("TS")?;
     assert_eq!(ts, dt);
 
     Ok(())
