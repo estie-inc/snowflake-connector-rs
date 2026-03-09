@@ -1,4 +1,3 @@
-use std::env;
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -8,11 +7,19 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::time;
 
-use crate::external_browser_launcher::{BrowserLauncher, LaunchOutcome, SystemCommandRunner};
-use crate::external_browser_listener::{CallbackPayload, ListenerConfig, spawn_listener};
-
 use super::login::get_base_url;
-use crate::{Error, Result, SnowflakeClientConfig, SnowflakeConnectionConfig};
+use crate::external_browser_launcher::{BrowserLauncher, LaunchOutcome, SystemCommandRunner};
+use crate::external_browser_listener::{
+    CallbackPayload, ListenerConfig, RunningListener, spawn_listener,
+};
+use crate::external_browser_payload::parse_token_and_consent_from_pairs;
+use crate::{
+    BrowserLaunchMode, Error, ExternalBrowserConfig, Result, SnowflakeClientConfig,
+    SnowflakeConnectionConfig, WithCallbackListenerConfig, WithoutCallbackListenerConfig,
+};
+
+#[cfg(unix)]
+mod manual_input_unix;
 
 pub struct ExternalBrowserResult {
     pub token: String,
@@ -24,8 +31,45 @@ pub async fn run_external_browser_flow(
     username: &str,
     config: &SnowflakeClientConfig,
     connection_config: &Option<SnowflakeConnectionConfig>,
+    external_browser_config: &ExternalBrowserConfig,
 ) -> Result<ExternalBrowserResult> {
-    let listener_config = listener_config_from_env()?;
+    match external_browser_config {
+        ExternalBrowserConfig::WithCallbackListener(config_with_listener) => {
+            run_external_browser_flow_with_listener(
+                http,
+                username,
+                config,
+                connection_config,
+                config_with_listener,
+            )
+            .await
+        }
+        ExternalBrowserConfig::WithoutCallbackListener(config_without_listener) => {
+            run_external_browser_flow_without_listener(
+                http,
+                username,
+                config,
+                connection_config,
+                config_without_listener,
+            )
+            .await
+        }
+    }
+}
+
+async fn run_external_browser_flow_with_listener(
+    http: &Client,
+    username: &str,
+    config: &SnowflakeClientConfig,
+    connection_config: &Option<SnowflakeConnectionConfig>,
+    config_with_listener: &WithCallbackListenerConfig,
+) -> Result<ExternalBrowserResult> {
+    let listener_config = ListenerConfig {
+        application: Some(super::client::client_app_id().to_string()),
+        host: config_with_listener.callback_socket_addr(),
+        port: config_with_listener.callback_socket_port(),
+        protocol: "http".to_string(),
+    };
     let listener = spawn_listener(listener_config)
         .await
         .map_err(|e| Error::Communication(e.to_string()))?;
@@ -36,26 +80,42 @@ pub async fn run_external_browser_flow(
     {
         Ok(data) => data,
         Err(err) => {
-            let _ = listener.shutdown.send(());
-            let _ = listener.handle.await;
+            shutdown_listener(listener).await;
             return Err(err);
         }
     };
 
-    let launcher = BrowserLauncher::new();
+    let launch_mode = config_with_listener.browser_launch_mode();
+    if let Err(err) = open_auth_page(&auth.sso_url, launch_mode) {
+        shutdown_listener(listener).await;
+        return Err(err);
+    }
+
     let timeout = config.timeout.unwrap_or_else(|| Duration::from_secs(60));
-    let payload_result: Result<CallbackPayload> = match launcher.open(&auth.sso_url) {
-        Ok(LaunchOutcome::Opened) => wait_for_token(listener.payloads, timeout).await,
-        Ok(LaunchOutcome::ManualOpen { url }) => manual_token_flow(&url),
-        Err(err) => Err(Error::Communication(format!(
-            "failed to open browser: {err}"
-        ))),
-    };
+    let payload = resolve_payload_with_listener(listener, timeout).await?;
+    Ok(ExternalBrowserResult {
+        token: payload.token,
+        proof_key: auth.proof_key,
+    })
+}
 
-    let _ = listener.shutdown.send(());
-    let _ = listener.handle.await;
+async fn run_external_browser_flow_without_listener(
+    http: &Client,
+    username: &str,
+    config: &SnowflakeClientConfig,
+    connection_config: &Option<SnowflakeConnectionConfig>,
+    config_without_listener: &WithoutCallbackListenerConfig,
+) -> Result<ExternalBrowserResult> {
+    let redirect_port = config_without_listener.redirect_port().get();
+    let auth =
+        request_authenticator(http, username, config, connection_config, redirect_port).await?;
+    let launch_mode = config_without_listener.browser_launch_mode();
+    open_auth_page(&auth.sso_url, launch_mode)?;
 
-    let payload = payload_result?;
+    eprintln!(
+        "The browser may display a connection error page for localhost:{redirect_port}; this is expected in this mode."
+    );
+    let payload = manual_token_flow().await?;
     Ok(ExternalBrowserResult {
         token: payload.token,
         proof_key: auth.proof_key,
@@ -93,34 +153,6 @@ async fn request_authenticator(
     Ok(data)
 }
 
-async fn wait_for_token(
-    rx: tokio::sync::watch::Receiver<Option<CallbackPayload>>,
-    timeout: Duration,
-) -> Result<CallbackPayload> {
-    let mut rx = rx.clone();
-    if let Some(payload) = rx.borrow().clone() {
-        return Ok(payload);
-    }
-
-    let fut = async move {
-        loop {
-            if rx.changed().await.is_err() {
-                return Err(Error::Communication(
-                    "listener stopped before receiving token".into(),
-                ));
-            }
-            if let Some(payload) = rx.borrow().clone() {
-                return Ok(payload);
-            }
-        }
-    };
-
-    match time::timeout(timeout, fut).await {
-        Ok(res) => res,
-        Err(_) => Err(Error::TimedOut),
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct AuthenticatorData {
     #[serde(rename = "ssoUrl")]
@@ -152,78 +184,160 @@ fn authenticator_request_body(
     })
 }
 
-fn listener_config_from_env() -> Result<ListenerConfig> {
-    let host = env::var("SF_AUTH_SOCKET_ADDR").unwrap_or_else(|_| "localhost".to_string());
-    // Normalize "localhost" to "127.0.0.1" to ensure IPv4 binding.
-    // This avoids issues where `localhost` resolves to `::1` (IPv6) first,
-    // causing the listener to bind to IPv6 while the browser redirects to IPv4.
-    let host = if host.eq_ignore_ascii_case("localhost") {
-        "127.0.0.1".to_string()
-    } else {
-        host
-    };
-    let port = match env::var("SF_AUTH_SOCKET_PORT") {
-        Ok(val) => val.parse().map_err(|_| {
-            Error::Communication("SF_AUTH_SOCKET_PORT must be a valid u16".to_string())
-        })?,
-        Err(_) => 0,
-    };
+fn open_auth_page(sso_url: &str, mode: BrowserLaunchMode) -> Result<()> {
+    match mode {
+        BrowserLaunchMode::Manual => {
+            eprintln!(
+                "{}",
+                BrowserLauncher::<SystemCommandRunner>::manual_open_message(sso_url)
+            );
+            Ok(())
+        }
+        BrowserLaunchMode::Auto => {
+            let outcome = BrowserLauncher::new()
+                .open(sso_url)
+                .map_err(|err| Error::Communication(format!("failed to open browser: {err}")))?;
 
-    Ok(ListenerConfig {
-        application: Some(super::client::client_app_id().to_string()),
-        host,
-        port,
-        protocol: "http".to_string(),
-    })
+            if let LaunchOutcome::ManualOpen { url } = outcome {
+                eprintln!(
+                    "{}",
+                    BrowserLauncher::<SystemCommandRunner>::manual_open_message(&url)
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
-fn manual_token_flow(sso_url: &str) -> Result<CallbackPayload> {
-    eprintln!(
-        "{}",
-        BrowserLauncher::<SystemCommandRunner>::manual_open_message(sso_url)
-    );
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallbackWaitError {
+    TimedOut,
+    ListenerStopped,
+}
+
+async fn resolve_payload_with_listener(
+    listener: RunningListener,
+    timeout: Duration,
+) -> Result<CallbackPayload> {
+    let callback_result = wait_for_token(listener.payloads.clone(), timeout).await;
+    shutdown_listener(listener).await;
+
+    match callback_result {
+        Ok(payload) => Ok(payload),
+        Err(CallbackWaitError::TimedOut) => {
+            eprintln!("Callback was not received in time. Falling back to manual URL input.");
+            manual_token_flow().await
+        }
+        Err(CallbackWaitError::ListenerStopped) => {
+            eprintln!(
+                "Local callback listener stopped before receiving token. Continue with manual URL input."
+            );
+            manual_token_flow().await
+        }
+    }
+}
+
+async fn wait_for_token(
+    rx: tokio::sync::watch::Receiver<Option<CallbackPayload>>,
+    timeout: Duration,
+) -> std::result::Result<CallbackPayload, CallbackWaitError> {
+    match time::timeout(timeout, wait_for_token_inner(rx)).await {
+        Ok(res) => res,
+        Err(_) => Err(CallbackWaitError::TimedOut),
+    }
+}
+
+async fn wait_for_token_inner(
+    rx: tokio::sync::watch::Receiver<Option<CallbackPayload>>,
+) -> std::result::Result<CallbackPayload, CallbackWaitError> {
+    let mut rx = rx.clone();
+    if let Some(payload) = rx.borrow().clone() {
+        return Ok(payload);
+    }
+
+    loop {
+        if rx.changed().await.is_err() {
+            return Err(CallbackWaitError::ListenerStopped);
+        }
+        if let Some(payload) = rx.borrow().clone() {
+            return Ok(payload);
+        }
+    }
+}
+
+async fn shutdown_listener(listener: RunningListener) {
+    let _ = listener.shutdown.send(());
+    let _ = listener.handle.await;
+}
+
+async fn manual_token_flow() -> Result<CallbackPayload> {
+    tokio::task::spawn_blocking(manual_token_flow_blocking)
+        .await
+        .map_err(|e| Error::Communication(format!("manual input task failed: {e}")))?
+}
+
+fn manual_token_flow_blocking() -> Result<CallbackPayload> {
     eprintln!(
         "After completing authentication, paste the URL you were redirected to (not logged)."
     );
 
-    let mut input = String::new();
     eprint!("Redirected URL: ");
     let _ = io::stderr().flush();
-    io::stdin()
-        .read_line(&mut input)
-        .map_err(|e| Error::Communication(format!("failed to read input: {e}")))?;
+    let input = read_redirected_url_line()?;
+
+    eprintln!("Received redirected URL input. Continuing authentication...");
 
     payload_from_redirect_input(input.trim())
 }
 
-fn extract_payload_from_url(url: &str) -> Option<CallbackPayload> {
-    let parsed = Url::parse(url).ok()?;
-    let mut token: Option<String> = None;
-    let mut consent: Option<bool> = None;
-    for (k, v) in parsed.query_pairs() {
-        if k.eq_ignore_ascii_case("token") {
-            if !v.is_empty() {
-                token = Some(v.into_owned());
-            }
-        } else if k.eq_ignore_ascii_case("consent") {
-            let val = v.trim();
-            if val.eq_ignore_ascii_case("true") {
-                consent = Some(true);
-            } else if val.eq_ignore_ascii_case("false") {
-                consent = Some(false);
-            }
-        }
+fn read_redirected_url_line() -> Result<String> {
+    #[cfg(unix)]
+    if let Some(result) = manual_input_unix::try_read_redirected_url_line_noncanonical() {
+        return result;
     }
 
-    Some(CallbackPayload {
-        token: token?,
-        consent,
-    })
+    // TODO(windows): investigate whether long redirected URLs can be truncated in
+    // canonical console input mode and add a Windows-specific raw/non-canonical fallback.
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| Error::Communication(format!("failed to read input: {e}")))?;
+
+    validate_redirected_url_input(input)
+}
+
+fn validate_redirected_url_input(input: String) -> Result<String> {
+    if input.trim().is_empty() {
+        return Err(Error::Communication(
+            "No redirected URL was provided".to_string(),
+        ));
+    }
+    Ok(input)
+}
+
+fn extract_payload_from_url(url: &str) -> Option<CallbackPayload> {
+    let parsed = Url::parse(url).ok()?;
+    let query = parse_token_and_consent_from_pairs(parsed.query_pairs());
+    let fragment = parsed
+        .fragment()
+        .map(|frag| {
+            parse_token_and_consent_from_pairs(url::form_urlencoded::parse(frag.as_bytes()))
+        })
+        .unwrap_or_default();
+
+    let token = query.token.or(fragment.token)?;
+    let consent = query.consent.or(fragment.consent);
+
+    Some(CallbackPayload { token, consent })
 }
 
 fn payload_from_redirect_input(input: &str) -> Result<CallbackPayload> {
     extract_payload_from_url(input).ok_or_else(|| {
-        Error::Communication("Unable to extract token from redirected URL".to_string())
+        Error::Communication(
+            "Unable to extract token from redirected URL (expected query or fragment token=...)"
+                .to_string(),
+        )
     })
 }
 
@@ -248,9 +362,32 @@ mod tests {
     }
 
     #[test]
+    fn payload_from_redirect_input_extracts_token_from_fragment() {
+        let url = "https://example.test/callback#token=abc123&consent=true";
+        let payload = payload_from_redirect_input(url).unwrap();
+        assert_eq!(payload.token, "abc123");
+        assert_eq!(payload.consent, Some(true));
+    }
+
+    #[test]
+    fn payload_from_redirect_input_prefers_query_token_over_fragment_token() {
+        let url = "https://example.test/callback?token=query_token#token=fragment_token";
+        let payload = payload_from_redirect_input(url).unwrap();
+        assert_eq!(payload.token, "query_token");
+    }
+
+    #[test]
+    fn payload_from_redirect_input_keeps_query_token_and_query_consent() {
+        let url = "https://example.test/callback?token=query_token&consent=false#consent=true";
+        let payload = payload_from_redirect_input(url).unwrap();
+        assert_eq!(payload.token, "query_token");
+        assert_eq!(payload.consent, Some(false));
+    }
+
+    #[test]
     fn payload_from_redirect_input_fails_without_token() {
         let url = "https://example.test/callback?missing=true";
         let err = payload_from_redirect_input(url).unwrap_err();
-        assert!(format!("{}", err).contains("Unable to extract token"));
+        assert!(format!("{err}").contains("Unable to extract token"));
     }
 }

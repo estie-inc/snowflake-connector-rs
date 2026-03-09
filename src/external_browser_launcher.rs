@@ -100,10 +100,7 @@ impl<R: CommandRunner> BrowserLauncher<R> {
 
     /// Message that can be shown to the user when manual opening is required.
     pub(crate) fn manual_open_message(url: &str) -> String {
-        format!(
-            "Could not open a browser automatically. Please open this URL manually:\n{}",
-            url
-        )
+        format!("Could not open a browser automatically. Please open this URL manually:\n{url}")
     }
 }
 

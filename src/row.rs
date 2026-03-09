@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta};
+use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc};
 
 use crate::{Error, Result};
 
@@ -201,7 +201,7 @@ impl SnowflakeRow {
         let idx = self
             .column_indices
             .get(&column_name.to_ascii_uppercase())
-            .ok_or_else(|| Error::Decode(format!("column not found: {}", column_name)))?;
+            .ok_or_else(|| Error::Decode(format!("column not found: {column_name}")))?;
         let ty = &self.column_types[*idx];
         (&self.row[*idx], ty).try_get()
     }
@@ -302,10 +302,27 @@ impl SnowflakeDecode for NaiveDateTime {
         let value = unwrap(value)?;
         let scale = ty.scale.unwrap_or(9);
         match ty.snowflake_type().to_ascii_uppercase().as_str() {
-            "TIMESTAMP_LTZ" | "TIMESTAMP_NTZ" => parse_timestamp_ntz_ltz(value, scale),
+            "TIMESTAMP_LTZ" | "TIMESTAMP_NTZ" => {
+                parse_timestamp_epoch(value, scale).map(|dt| dt.naive_utc())
+            }
             "TIMESTAMP_TZ" => parse_timestamp_tz(value, scale),
             _ => Err(Error::Decode(format!(
                 "Could not decode '{value}' as timestamp, found type {}",
+                ty.snowflake_type()
+            ))),
+        }
+    }
+}
+
+impl SnowflakeDecode for DateTime<Utc> {
+    fn try_decode(value: &Option<String>, ty: &SnowflakeColumnType) -> Result<Self> {
+        let value = unwrap(value)?;
+        let scale = ty.scale.unwrap_or(9);
+        match ty.snowflake_type().to_ascii_uppercase().as_str() {
+            "TIMESTAMP_LTZ" => parse_timestamp_epoch(value, scale),
+            "TIMESTAMP_TZ" => parse_timestamp_tz_as_utc(value, scale),
+            _ => Err(Error::Decode(format!(
+                "Could not decode '{value}' as DateTime<Utc>, found type {}",
                 ty.snowflake_type()
             ))),
         }
@@ -328,64 +345,105 @@ fn parse_timestamp_tz(s: &str, scale: i64) -> Result<NaiveDateTime> {
         let secs = frac_secs.trunc() as i64 / scale_factor as i64;
         let nsec = (frac_secs.fract() * 10_f64.powi(9 - scale as i32)) as u32;
         let dt = DateTime::from_timestamp(secs, nsec)
-            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {}", s)))?;
+            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {s}")))?;
         let dt = dt.naive_utc();
         return dt
             .checked_add_signed(TimeDelta::minutes(min_addend))
-            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {}", s)));
+            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {s}")));
     }
     // Assume the value is encoded as the other format (i.e. result version > 0)
     // once we cannot parse the string as a single float.
     let pair: Vec<_> = s.split_whitespace().collect();
     let v = pair
         .first()
-        .ok_or_else(|| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
+        .ok_or_else(|| Error::Decode(format!("invalid timestamp_tz: {s}")))?;
     let mut v = v
         .parse::<f64>()
-        .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
+        .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {s}")))?;
     let scale_factor = 10i32.pow(scale as u32);
     v *= scale_factor as f64;
     let secs = v.trunc() as i64 / scale_factor as i64;
     let nsec = (v.fract() * 10_f64.powi(9 - scale as i32)) as u32;
     let dt = DateTime::from_timestamp(secs, nsec)
-        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {}", s)))?;
+        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {s}")))?;
     let dt = dt.naive_utc();
 
     let tz = pair
         .get(1)
-        .ok_or_else(|| Error::Decode(format!("invalid timezone for timestamp_tz: {}", s)))?;
+        .ok_or_else(|| Error::Decode(format!("invalid timezone for timestamp_tz: {s}")))?;
     let tz = tz
         .parse::<i64>()
-        .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {}", s)))?;
+        .map_err(|_| Error::Decode(format!("invalid timestamp_tz: {s}")))?;
     if !(0..=2880).contains(&tz) {
         return Err(Error::Decode(format!(
-            "invalid timezone for timestamp_tz: {}",
-            s
+            "invalid timezone for timestamp_tz: {s}"
         )));
     }
     // subtract 24 hours from the timezone to map [0, 48] to [-24, 24]
     let min_addend = 1440 - tz;
     dt.checked_add_signed(TimeDelta::minutes(min_addend))
-        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {}", s)))
+        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp_tz: {s}")))
 }
 
-fn parse_timestamp_ntz_ltz(s: &str, scale: i64) -> Result<NaiveDateTime> {
-    let scale_factor = 10i32.pow(scale as u32);
-    if let Ok(mut v) = s.parse::<f64>() {
-        v *= scale_factor as f64;
-        let secs = v.trunc() as i64 / scale_factor as i64;
-        let nsec = (v.fract() * 10_f64.powi(9 - scale as i32)) as u32;
-        let dt = DateTime::from_timestamp(secs, nsec)
-            .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {}", s)))?;
-        return Ok(dt.naive_utc());
-    }
-    Err(Error::Decode(format!("Could not decode timestamp: {}", s)))
+/// Extracts the UTC instant from a TIMESTAMP_TZ wire value, discarding the offset.
+/// Wire format: "epoch_value tz_offset" (space-separated).
+fn parse_timestamp_tz_as_utc(s: &str, scale: i64) -> Result<DateTime<Utc>> {
+    let epoch_str = s
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| Error::Decode(format!("invalid timestamp_tz: {s}")))?;
+    parse_timestamp_epoch(epoch_str, scale)
+}
+
+fn parse_timestamp_epoch(s: &str, scale: i64) -> Result<DateTime<Utc>> {
+    let s = s.trim();
+    let is_negative = s.starts_with('-');
+    let (secs_str, frac_str) = s.split_once('.').unwrap_or((s, ""));
+
+    let mut secs = secs_str
+        .parse::<i64>()
+        .map_err(|_| Error::Decode(format!("Could not decode timestamp: {s}")))?;
+
+    let nsec = if frac_str.is_empty() || scale == 0 {
+        0u32
+    } else {
+        let scale = scale as usize;
+        // Truncate or pad fraction digits to exactly `scale` digits, then scale to nanoseconds.
+        let mut digits = frac_str.bytes().take(scale).collect::<Vec<_>>();
+        if digits.len() < scale {
+            digits.resize(scale, b'0');
+        }
+
+        let frac = std::str::from_utf8(&digits)
+            .map_err(|_| Error::Decode(format!("Could not decode timestamp: {s}")))?
+            .parse::<u64>()
+            .map_err(|_| Error::Decode(format!("Could not decode timestamp: {s}")))?;
+        let nsec = if scale <= 9 {
+            (frac * 10u64.pow((9 - scale) as u32)) as u32
+        } else {
+            (frac / 10u64.pow((scale - 9) as u32)) as u32
+        };
+
+        // For negative timestamps with a fractional part (pre-1970),
+        // "-1.5" means -1.5 seconds, not -1 + 0.5 seconds.
+        // Adjust: secs = floor(-1.5) = -2, nsec = 500_000_000.
+        // Use `is_negative` instead of `secs < 0` because "-0" parses to 0
+        // and i64 has no negative zero.
+        if is_negative && nsec > 0 {
+            secs -= 1;
+        }
+
+        nsec
+    };
+
+    DateTime::from_timestamp(secs, nsec)
+        .ok_or_else(|| Error::Decode(format!("Could not decode timestamp: {s}")))
 }
 
 fn parse_time_seconds_and_nanos(value: &str, scale: usize) -> Result<(u32, u32)> {
     // Snowflake TIME scale is documented as 0..=9 (nanoseconds).
     if scale > 9 {
-        return Err(Error::Decode(format!("invalid time scale: {}", scale)));
+        return Err(Error::Decode(format!("invalid time scale: {scale}")));
     }
 
     let value = value.trim();
@@ -402,7 +460,7 @@ fn parse_time_seconds_and_nanos(value: &str, scale: usize) -> Result<(u32, u32)>
     }
 
     if !frac_str.as_bytes().iter().all(|b| b.is_ascii_digit()) {
-        return Err(Error::Decode(format!("invalid time: {}", value)));
+        return Err(Error::Decode(format!("invalid time: {value}")));
     }
     let mut frac_digits: Vec<u8> = frac_str.as_bytes().to_vec();
 
@@ -413,18 +471,18 @@ fn parse_time_seconds_and_nanos(value: &str, scale: usize) -> Result<(u32, u32)>
     }
 
     if frac_digits.len() < scale {
-        frac_digits.extend(std::iter::repeat(b'0').take(scale - frac_digits.len()));
+        frac_digits.extend(std::iter::repeat_n(b'0', scale - frac_digits.len()));
     }
 
     let frac_scaled: u32 = {
         let s = std::str::from_utf8(&frac_digits)
-            .map_err(|_| Error::Decode(format!("invalid time: {}", value)))?;
+            .map_err(|_| Error::Decode(format!("invalid time: {value}")))?;
         s.parse::<u32>()
-            .map_err(|_| Error::Decode(format!("invalid time: {}", value)))?
+            .map_err(|_| Error::Decode(format!("invalid time: {value}")))?
     };
     let nsec = frac_scaled
         .checked_mul(10u32.pow((9 - scale) as u32))
-        .ok_or_else(|| Error::Decode(format!("invalid time: {}", value)))?;
+        .ok_or_else(|| Error::Decode(format!("invalid time: {value}")))?;
 
     Ok((secs, nsec))
 }
@@ -435,11 +493,11 @@ impl SnowflakeDecode for NaiveTime {
         let scale = match ty.scale {
             None => 0usize,
             Some(s) if (0..=9).contains(&s) => s as usize,
-            Some(s) => return Err(Error::Decode(format!("invalid time scale: {}", s))),
+            Some(s) => return Err(Error::Decode(format!("invalid time scale: {s}"))),
         };
         let (secs, nsec) = parse_time_seconds_and_nanos(value, scale)?;
         NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
-            .ok_or_else(|| Error::Decode(format!("invalid time: {}", value)))
+            .ok_or_else(|| Error::Decode(format!("invalid time: {value}")))
     }
 }
 
@@ -678,5 +736,189 @@ mod tests {
             Error::Decode(_) => {}
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_from_timestamp_ltz() {
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(9));
+        // 2024-01-01 00:00:00 UTC = 1704067200 seconds since epoch
+        let value = Some("1704067200.000000000".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(
+            dt,
+            chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+        );
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_rejects_timestamp_ntz() {
+        let ty = SnowflakeColumnType::new("TIMESTAMP_NTZ".to_string(), false, None, None, Some(9));
+        let value = Some("1704067200.000000000".to_string());
+        let err = DateTime::<Utc>::try_decode(&value, &ty).unwrap_err();
+        match err {
+            Error::Decode(msg) => assert!(msg.contains("DateTime<Utc>")),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_from_timestamp_tz_version_gt0() {
+        let ty = SnowflakeColumnType::new("TIMESTAMP_TZ".to_string(), false, None, None, Some(9));
+        // "epoch_value tz_offset" format (result version > 0)
+        // 1440 = UTC, 1980 = +09:00 (Tokyo)
+        // The UTC instant should be the same regardless of offset.
+        let value = Some("1704067200.000000000 1980".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(
+            dt,
+            chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+        );
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_from_timestamp_tz_discards_offset() {
+        let ty = SnowflakeColumnType::new("TIMESTAMP_TZ".to_string(), false, None, None, Some(9));
+        // Wire format: "epoch_value tz_offset" — offset (1500 = +01:00) should be discarded.
+        let value = Some("1704067200.000000000 1500".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(
+            dt,
+            chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+        );
+    }
+
+    #[test]
+    fn test_decode_naive_datetime_from_timestamp_ltz_still_works() {
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(9));
+        let value = Some("1704067200.000000000".to_string());
+        let dt = NaiveDateTime::try_decode(&value, &ty).unwrap();
+        assert_eq!(
+            dt,
+            chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_decode_naive_datetime_from_timestamp_ntz_still_works() {
+        let ty = SnowflakeColumnType::new("TIMESTAMP_NTZ".to_string(), false, None, None, Some(9));
+        let value = Some("1704067200.000000000".to_string());
+        let dt = NaiveDateTime::try_decode(&value, &ty).unwrap();
+        assert_eq!(
+            dt,
+            chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_with_fractional_seconds() {
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(9));
+        // 2024-01-01 00:00:00.123456789 UTC
+        let value = Some("1704067200.123456789".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(dt.timestamp(), 1704067200);
+        assert_eq!(dt.timestamp_subsec_nanos(), 123456789);
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_scale_3() {
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(3));
+        // scale=3: value is in milliseconds
+        let value = Some("1704067200.123".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(dt.timestamp(), 1704067200);
+        assert_eq!(dt.timestamp_subsec_millis(), 123);
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_scale_0() {
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(0));
+        let value = Some("1704067200".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(dt.timestamp(), 1704067200);
+        assert_eq!(dt.timestamp_subsec_nanos(), 0);
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_negative_epoch() {
+        // -1.5 seconds from epoch = 1969-12-31T23:59:58.500000000Z
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(9));
+        let value = Some("-1.500000000".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(dt.timestamp(), -2);
+        assert_eq!(dt.timestamp_subsec_nanos(), 500_000_000);
+        assert_eq!(
+            dt,
+            chrono::NaiveDate::from_ymd_opt(1969, 12, 31)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 58, 500_000_000)
+                .unwrap()
+                .and_utc()
+        );
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_negative_epoch_whole_seconds() {
+        // -10 seconds from epoch (no fractional part) — no adjustment needed
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(9));
+        let value = Some("-10.000000000".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(dt.timestamp(), -10);
+        assert_eq!(dt.timestamp_subsec_nanos(), 0);
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_negative_zero_subsecond() {
+        // "-0.500000000" = -0.5 seconds from epoch = 1969-12-31T23:59:59.500Z
+        // i64 has no negative zero, so "-0" parses to 0. The sign must be
+        // detected from the raw string.
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(9));
+        let value = Some("-0.500000000".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(
+            dt,
+            chrono::NaiveDate::from_ymd_opt(1969, 12, 31)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 59, 500_000_000)
+                .unwrap()
+                .and_utc()
+        );
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_positive_subsecond() {
+        // "0.500000000" = +0.5 seconds — must NOT be adjusted.
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(9));
+        let value = Some("0.500000000".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(dt.timestamp(), 0);
+        assert_eq!(dt.timestamp_subsec_nanos(), 500_000_000);
+    }
+
+    #[test]
+    fn test_decode_datetime_utc_negative_zero_whole() {
+        // "-0.000000000" = exactly epoch, no adjustment needed.
+        let ty = SnowflakeColumnType::new("TIMESTAMP_LTZ".to_string(), false, None, None, Some(9));
+        let value = Some("-0.000000000".to_string());
+        let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
+        assert_eq!(dt.timestamp(), 0);
+        assert_eq!(dt.timestamp_subsec_nanos(), 0);
     }
 }

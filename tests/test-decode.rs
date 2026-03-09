@@ -8,6 +8,9 @@ async fn test_decode() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
+    // Fix session timezone to UTC so TIMESTAMP_LTZ/TZ tests are deterministic.
+    session.query("ALTER SESSION SET TIMEZONE = 'UTC'").await?;
+
     // Create a temporary table
     // DATETIME aliases TIMESTAMP_NTZ
     let query = "CREATE TEMPORARY TABLE example (
@@ -58,6 +61,15 @@ async fn test_decode() -> Result<()> {
         rows[0].get::<chrono::NaiveDateTime>("ltz")?,
         chrono::NaiveDateTime::parse_from_str("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
     );
+    // TIMESTAMP_LTZ can also be decoded as DateTime<Utc>
+    assert_eq!(
+        rows[0].get::<chrono::DateTime<chrono::Utc>>("ltz")?,
+        chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+    );
     assert_eq!(
         rows[0].get::<chrono::NaiveDateTime>("ntz")?,
         chrono::NaiveDateTime::parse_from_str("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
@@ -65,6 +77,15 @@ async fn test_decode() -> Result<()> {
     assert_eq!(
         rows[0].get::<chrono::NaiveDateTime>("tz")?,
         chrono::NaiveDateTime::parse_from_str("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+    );
+    // TIMESTAMP_TZ can also be decoded as DateTime<Utc>
+    assert_eq!(
+        rows[0].get::<chrono::DateTime<chrono::Utc>>("tz")?,
+        chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
     );
 
     Ok(())

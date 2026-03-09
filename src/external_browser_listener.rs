@@ -1,7 +1,6 @@
 use std::convert::Infallible;
 use std::error::Error;
-use std::io;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use http_body_util::{BodyExt, Full};
@@ -22,7 +21,8 @@ use tokio::{
     sync::{oneshot, watch},
     task::JoinHandle,
 };
-use url::Url;
+
+use crate::external_browser_payload::{ParsedTokenAndConsent, parse_token_and_consent_from_pairs};
 
 #[derive(Debug, Deserialize)]
 struct TokenPayload {
@@ -41,7 +41,7 @@ pub struct ListenerConfig {
     ///
     /// This corresponds to Python connector's `AuthByWebBrowser._application`.
     pub application: Option<String>,
-    pub host: String,
+    pub host: IpAddr,
     pub port: u16,
     pub protocol: String,
 }
@@ -50,7 +50,7 @@ impl Default for ListenerConfig {
     fn default() -> Self {
         Self {
             application: None,
-            host: "localhost".to_string(),
+            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 0,
             protocol: "http".to_string(),
         }
@@ -68,7 +68,7 @@ pub async fn spawn_listener(
     cfg: ListenerConfig,
 ) -> Result<RunningListener, Box<dyn Error + Send + Sync>> {
     let (listener, local_addr) = bind_listener(&cfg)?;
-    let expected_origin = build_origin(&cfg.protocol, &cfg.host, local_addr.port());
+    let expected_origin = build_origin(&cfg.protocol, cfg.host, local_addr.port());
     let application = cfg.application.clone();
     let (tx, rx) = oneshot::channel();
     let (payload_tx, payload_rx) = watch::channel(None);
@@ -207,38 +207,25 @@ async fn handler(
 
 fn extract_payload_from_body(body: &Bytes) -> Option<CallbackPayload> {
     // 1) JSON: {"token": "...", "consent": true}
-    if let Ok(parsed) = serde_json::from_slice::<TokenPayload>(body) {
-        if let Some(token) = parsed.token {
-            return Some(CallbackPayload {
+    serde_json::from_slice::<TokenPayload>(body)
+        .ok()
+        .and_then(|parsed| {
+            parsed.token.map(|token| CallbackPayload {
                 token,
                 consent: parsed.consent,
-            });
-        }
-    }
-
-    // 2) x-www-form-urlencoded / key=value fallback
-    let body_str = std::str::from_utf8(body).ok()?;
-    let mut token: Option<String> = None;
-    let mut consent: Option<bool> = None;
-    for (k, v) in url::form_urlencoded::parse(body_str.as_bytes()) {
-        if k.eq_ignore_ascii_case("token") {
-            if !v.is_empty() {
-                token = Some(v.into_owned());
-            }
-        } else if k.eq_ignore_ascii_case("consent") {
-            let val = v.trim();
-            if val.eq_ignore_ascii_case("true") {
-                consent = Some(true);
-            } else if val.eq_ignore_ascii_case("false") {
-                consent = Some(false);
-            }
-        }
-    }
-
-    Some(CallbackPayload {
-        token: token?,
-        consent,
-    })
+            })
+        })
+        // 2) x-www-form-urlencoded / key=value fallback
+        .or_else(|| {
+            std::str::from_utf8(body)
+                .ok()
+                .map(|body_str| {
+                    parse_token_and_consent_from_pairs(url::form_urlencoded::parse(
+                        body_str.as_bytes(),
+                    ))
+                })
+                .and_then(parsed_to_payload)
+        })
 }
 
 fn preflight_cors_response(
@@ -317,54 +304,26 @@ fn forbidden() -> Response<Full<Bytes>> {
 }
 
 fn extract_payload_from_query(query: Option<&str>) -> Option<CallbackPayload> {
-    let q = query?;
-    let parsed = Url::parse(&format!("http://dummy?{}", q)).ok()?;
+    query
+        .map(|q| parse_token_and_consent_from_pairs(url::form_urlencoded::parse(q.as_bytes())))
+        .and_then(parsed_to_payload)
+}
 
-    let mut token: Option<String> = None;
-    let mut consent: Option<bool> = None;
-    for (k, v) in parsed.query_pairs() {
-        if k.eq_ignore_ascii_case("token") {
-            if !v.is_empty() {
-                token = Some(v.into_owned());
-            }
-        } else if k.eq_ignore_ascii_case("consent") {
-            let val = v.trim();
-            if val.eq_ignore_ascii_case("true") {
-                consent = Some(true);
-            } else if val.eq_ignore_ascii_case("false") {
-                consent = Some(false);
-            }
-        }
-    }
-
-    Some(CallbackPayload {
-        token: token?,
-        consent,
+fn parsed_to_payload(parsed: ParsedTokenAndConsent) -> Option<CallbackPayload> {
+    parsed.token.map(|token| CallbackPayload {
+        token,
+        consent: parsed.consent,
     })
 }
 
-fn build_origin(protocol: &str, host: &str, port: u16) -> String {
-    if host.contains(':') {
-        format!("{protocol}://[{host}]:{port}")
-    } else {
-        format!("{protocol}://{host}:{port}")
-    }
+fn build_origin(protocol: &str, host: IpAddr, port: u16) -> String {
+    format!("{protocol}://{}", SocketAddr::new(host, port))
 }
 
 fn bind_listener(
     cfg: &ListenerConfig,
 ) -> Result<(TcpListener, SocketAddr), Box<dyn Error + Send + Sync>> {
-    // Normalize "localhost" to "127.0.0.1" to ensure IPv4 binding.
-    // This avoids issues where `localhost` resolves to `::1` (IPv6) first,
-    // causing the listener to bind to IPv6 while the browser redirects to IPv4.
-    let host = if cfg.host.eq_ignore_ascii_case("localhost") {
-        "127.0.0.1"
-    } else {
-        cfg.host.as_str()
-    };
-    let target_addr = (host, cfg.port).to_socket_addrs()?.next().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::AddrNotAvailable, "no socket address found")
-    })?;
+    let target_addr = SocketAddr::new(cfg.host, cfg.port);
 
     let domain = match target_addr {
         SocketAddr::V4(_) => Domain::IPV4,
@@ -449,6 +408,12 @@ mod tests {
         assert_eq!(payload.consent, Some(false));
     }
 
+    #[test]
+    fn extract_payload_from_query_prefers_first_token() {
+        let payload = extract_payload_from_query(Some("token=first&token=second")).unwrap();
+        assert_eq!(payload.token, "first");
+    }
+
     #[tokio::test]
     async fn ok_callback_response_cors_mode_returns_consent_only() {
         let payload = CallbackPayload {
@@ -510,11 +475,10 @@ mod tests {
     async fn post_origin_ok() {
         with_listener(|base| async move {
             // Simulate browser preflight so the listener returns JSON.
-            let port = base.split(':').last().unwrap();
-            let origin = format!("http://localhost:{}", port);
+            let origin = base.clone();
 
             let preflight = reqwest::Client::new()
-                .request(reqwest::Method::OPTIONS, format!("{}/callback", base))
+                .request(reqwest::Method::OPTIONS, format!("{base}/callback"))
                 .header("Origin", &origin)
                 .header("Access-Control-Request-Method", "POST")
                 .header("Access-Control-Request-Headers", "Content-Type")
@@ -525,7 +489,7 @@ mod tests {
 
             let client = reqwest::Client::new();
             let resp = client
-                .post(format!("{}/callback", base))
+                .post(format!("{base}/callback"))
                 .header("Origin", &origin)
                 .json(&serde_json::json!({"token": "example"}))
                 .send()
@@ -562,7 +526,7 @@ mod tests {
     #[tokio::test]
     async fn get_origin_ok() {
         with_listener(|base| async move {
-            let url = format!("{}/callback?token=example", base);
+            let url = format!("{base}/callback?token=example");
             let resp = reqwest::Client::new().get(url).send().await.unwrap();
             assert_eq!(resp.status(), ReqwestStatusCode::OK);
             assert_eq!(
@@ -587,7 +551,7 @@ mod tests {
     async fn origin_missing_is_allowed() {
         with_listener(|base| async move {
             let resp = reqwest::Client::new()
-                .post(format!("{}/callback", base))
+                .post(format!("{base}/callback"))
                 .json(&serde_json::json!({"token": "example"}))
                 .send()
                 .await
@@ -605,7 +569,7 @@ mod tests {
     async fn origin_mismatch_is_allowed_for_get_post() {
         with_listener(|base| async move {
             let resp = reqwest::Client::new()
-                .get(format!("{}/callback?token=example", base))
+                .get(format!("{base}/callback?token=example"))
                 .header("Origin", "http://127.0.0.1:1")
                 .send()
                 .await
@@ -618,10 +582,10 @@ mod tests {
     #[tokio::test]
     async fn localhost_origin_is_allowed_for_get_post() {
         with_listener(|base| async move {
-            let port = base.split(':').last().unwrap();
-            let origin = format!("http://localhost:{}", port);
+            let port = base.split(':').next_back().unwrap();
+            let origin = format!("http://localhost:{port}");
             let resp = reqwest::Client::new()
-                .get(format!("{}/callback?token=example", base))
+                .get(format!("{base}/callback?token=example"))
                 .header("Origin", origin)
                 .send()
                 .await
@@ -638,10 +602,9 @@ mod tests {
     #[tokio::test]
     async fn options_echoes_requested_headers() {
         with_listener(|base| async move {
-            let port = base.split(':').last().unwrap();
-            let origin = format!("http://localhost:{}", port);
+            let origin = base.clone();
             let resp = reqwest::Client::new()
-                .request(reqwest::Method::OPTIONS, format!("{}/callback", base))
+                .request(reqwest::Method::OPTIONS, format!("{base}/callback"))
                 .header("Origin", origin)
                 .header("Access-Control-Request-Method", "POST")
                 .header("Access-Control-Request-Headers", "Content-Type, X-Custom")
@@ -682,7 +645,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(format!("{}/callback", base))
+            .post(format!("{base}/callback"))
             .json(&serde_json::json!({"token": "example", "consent": false}))
             .send()
             .await
@@ -706,7 +669,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(format!("{}/callback", base))
+            .post(format!("{base}/callback"))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body("token=example&consent=true")
             .send()
@@ -731,7 +694,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let resp = client
-            .get(format!("{}/callback?token=example&consent=false", base))
+            .get(format!("{base}/callback?token=example&consent=false"))
             .send()
             .await
             .unwrap();
