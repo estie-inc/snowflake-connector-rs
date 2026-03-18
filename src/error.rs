@@ -27,6 +27,9 @@ pub enum Error {
     #[error("chunk download error: {0}")]
     ChunkDownload(String),
 
+    #[error("chunk download expired (HTTP {status}): {body}")]
+    ChunkDownloadExpired { status: u16, body: String },
+
     #[error("io error: {0}")]
     IO(#[from] std::io::Error),
 

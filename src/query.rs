@@ -1,5 +1,5 @@
 use std::time::{Duration, Instant};
-use std::{collections::HashMap, mem, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 
@@ -23,8 +23,12 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 
 pub struct QueryExecutor {
     http: Client,
+    session_token: String,
+    base_url: Url,
+    query_id: String,
     qrmk: String,
     chunks: Mutex<Vec<RawQueryResponseChunk>>,
+    chunk_index: Mutex<usize>,
     chunk_headers: HeaderMap,
     column_types: Arc<Vec<SnowflakeColumnType>>,
     column_indices: Arc<HashMap<String, usize>>,
@@ -134,6 +138,8 @@ impl QueryExecutor {
         }
 
         let http = http.clone();
+        let session_token = session_token.clone();
+        let query_id = response_data.query_id;
         let qrmk = response_data.qrmk.unwrap_or_default();
         let chunks = response_data.chunks.unwrap_or_default();
         let chunks = Mutex::new(chunks);
@@ -169,8 +175,12 @@ impl QueryExecutor {
 
         Ok(Self {
             http,
+            session_token,
+            base_url,
+            query_id,
             qrmk,
             chunks,
+            chunk_index: Mutex::new(0),
             chunk_headers,
             column_types,
             column_indices,
@@ -178,33 +188,133 @@ impl QueryExecutor {
         })
     }
 
+    /// Returns the query ID assigned by Snowflake for this execution.
+    pub fn query_id(&self) -> &str {
+        &self.query_id
+    }
+
     /// Check if there are no more rows to fetch
     pub async fn eof(&self) -> bool {
         let row_set = &*self.row_set.lock().await;
         let chunks = &*self.chunks.lock().await;
-        row_set.is_none() && chunks.is_empty()
+        let idx = *self.chunk_index.lock().await;
+        row_set.is_none() && idx >= chunks.len()
     }
 
-    /// Fetch a single chunk
+    /// Fetch a single chunk.
+    ///
+    /// If the S3 pre-signed URL has expired (HTTP 403), automatically refreshes
+    /// all chunk URLs via the Snowflake result endpoint and retries the download.
     pub async fn fetch_next_chunk(&self) -> Result<Option<Vec<SnowflakeRow>>> {
-        let row_set = &mut *self.row_set.lock().await;
-        if let Some(row_set) = row_set.take() {
-            let rows = row_set.into_iter().map(|r| self.convert_row(r)).collect();
-            return Ok(Some(rows));
+        {
+            let row_set = &mut *self.row_set.lock().await;
+            if let Some(row_set) = row_set.take() {
+                let rows = row_set.into_iter().map(|r| self.convert_row(r)).collect();
+                return Ok(Some(rows));
+            }
         }
 
-        let http = self.http.clone();
-        let chunk_headers = self.chunk_headers.clone();
-        let qrmk = self.qrmk.clone();
-        let chunks = &mut *self.chunks.lock().await;
-        let Some(chunk) = chunks.pop() else {
-            // Nothing to fetch
-            return Ok(None);
+        let url = {
+            let chunks = self.chunks.lock().await;
+            let idx = *self.chunk_index.lock().await;
+            match chunks.get(idx) {
+                Some(chunk) => chunk.url.clone(),
+                None => return Ok(None),
+            }
         };
 
-        let rows = download_chunk(http, chunk.url, chunk_headers, qrmk).await?;
-        let rows = rows.into_iter().map(|r| self.convert_row(r)).collect();
-        Ok(Some(rows))
+        match download_chunk(
+            self.http.clone(),
+            url,
+            self.chunk_headers.clone(),
+            self.qrmk.clone(),
+        )
+        .await
+        {
+            Ok(rows) => {
+                *self.chunk_index.lock().await += 1;
+                let rows = rows.into_iter().map(|r| self.convert_row(r)).collect();
+                Ok(Some(rows))
+            }
+            Err(Error::ChunkDownloadExpired { .. }) => {
+                self.refresh_chunk_urls().await?;
+
+                let url = {
+                    let chunks = self.chunks.lock().await;
+                    let idx = *self.chunk_index.lock().await;
+                    chunks
+                        .get(idx)
+                        .ok_or_else(|| {
+                            Error::ChunkDownload(
+                                "chunk index out of bounds after URL refresh".into(),
+                            )
+                        })?
+                        .url
+                        .clone()
+                };
+
+                let rows = download_chunk(
+                    self.http.clone(),
+                    url,
+                    self.chunk_headers.clone(),
+                    self.qrmk.clone(),
+                )
+                .await?;
+                *self.chunk_index.lock().await += 1;
+                let rows = rows.into_iter().map(|r| self.convert_row(r)).collect();
+                Ok(Some(rows))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Re-fetch chunk URLs from Snowflake using the query ID.
+    /// The query is NOT re-executed; only fresh pre-signed S3 URLs are obtained.
+    async fn refresh_chunk_urls(&self) -> Result<()> {
+        let mut url = self.base_url.join(&format!(
+            "queries/{}/result",
+            self.query_id
+        ))?;
+        url.query_pairs_mut()
+            .append_pair("page", "0");
+
+        let response = self
+            .http
+            .get(url)
+            .header(ACCEPT, "application/snowflake")
+            .header(
+                AUTHORIZATION,
+                format!(r#"Snowflake Token="{}""#, self.session_token),
+            )
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            return Err(Error::Communication(format!(
+                "Failed to refresh chunk URLs (HTTP {status}): {body}"
+            )));
+        }
+
+        let sf_response: SnowflakeResponse =
+            serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
+
+        if !sf_response.success {
+            return Err(Error::Communication(
+                sf_response.message.unwrap_or_default(),
+            ));
+        }
+
+        let data = sf_response.data.ok_or_else(|| {
+            Error::Communication("refresh response missing data field".into())
+        })?;
+
+        let new_chunks = data.chunks.unwrap_or_default();
+        let mut chunks = self.chunks.lock().await;
+        *chunks = new_chunks;
+
+        Ok(())
     }
 
     /// Fetch all the remaining chunks at once
@@ -215,6 +325,9 @@ impl QueryExecutor {
     /// Fetch all remaining chunks while capping concurrent downloads.
     ///
     /// `max_concurrency` values below `1` are treated as `1` to ensure progress.
+    ///
+    /// Note: This method does not support automatic URL refresh on expiry.
+    /// For long-running fetches, use [`fetch_next_chunk`] in a loop instead.
     pub async fn fetch_all_with_concurrency_limit(
         &self,
         max_concurrency: usize,
@@ -227,30 +340,32 @@ impl QueryExecutor {
             }
         }
 
-        let mut chunks = {
-            let chunks = &mut *self.chunks.lock().await;
-            if chunks.is_empty() {
+        let remaining_chunks = {
+            let chunks = self.chunks.lock().await;
+            let mut idx = self.chunk_index.lock().await;
+            let start = *idx;
+            if start >= chunks.len() {
                 return Ok(rows);
             }
-
-            mem::take(chunks)
+            let remaining: Vec<_> = chunks[start..].iter().map(|c| c.url.clone()).collect();
+            *idx = chunks.len();
+            remaining
         };
 
         let max_concurrency = max_concurrency.max(1);
-        let concurrency = chunks.len().clamp(1, max_concurrency);
+        let concurrency = remaining_chunks.len().clamp(1, max_concurrency);
 
-        // The semaphore ensures that no more than `concurrency` downloads are in flight.
         let semaphore = Arc::new(Semaphore::new(concurrency));
 
-        let mut handles = Vec::with_capacity(chunks.len());
-        while let Some(chunk) = chunks.pop() {
+        let mut handles = Vec::with_capacity(remaining_chunks.len());
+        for chunk_url in remaining_chunks {
             let http = self.http.clone();
             let chunk_headers = self.chunk_headers.clone();
             let qrmk = self.qrmk.clone();
             let semaphore = semaphore.clone();
             handles.push(tokio::spawn(async move {
                 let _permit = semaphore.acquire_owned().await?;
-                download_chunk(http, chunk.url, chunk_headers, qrmk).await
+                download_chunk(http, chunk_url, chunk_headers, qrmk).await
             }));
         }
 
@@ -537,7 +652,6 @@ impl From<String> for QueryRequest {
 struct RawQueryResponse {
     #[allow(unused)]
     parameters: Option<Vec<RawQueryResponseParameter>>,
-    #[allow(unused)]
     query_id: String,
     #[allow(unused)]
     get_result_url: Option<String>,

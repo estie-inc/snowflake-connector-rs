@@ -22,7 +22,11 @@ pub(crate) async fn download_chunk(
 
     let response = client.get(chunk_url).headers(headers).send().await?;
     if !response.status().is_success() {
+        let status = response.status().as_u16();
         let body = response.text().await?;
+        if status == 403 {
+            return Err(Error::ChunkDownloadExpired { status, body });
+        }
         return Err(Error::ChunkDownload(body));
     }
 
