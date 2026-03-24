@@ -205,6 +205,7 @@ impl QueryExecutor {
     ///
     /// If the S3 pre-signed URL has expired (HTTP 403), automatically refreshes
     /// all chunk URLs via the Snowflake result endpoint and retries the download.
+    /// Transient network errors are retried with exponential backoff.
     pub async fn fetch_next_chunk(&self) -> Result<Option<Vec<SnowflakeRow>>> {
         {
             let row_set = &mut *self.row_set.lock().await;
@@ -214,57 +215,44 @@ impl QueryExecutor {
             }
         }
 
-        let url = {
-            let chunks = self.chunks.lock().await;
-            let idx = *self.chunk_index.lock().await;
-            match chunks.get(idx) {
-                Some(chunk) => chunk.url.clone(),
-                None => return Ok(None),
-            }
-        };
+        const MAX_RETRIES: u32 = 3;
+        let mut attempt: u32 = 0;
 
-        match download_chunk(
-            self.http.clone(),
-            url,
-            self.chunk_headers.clone(),
-            self.qrmk.clone(),
-        )
-        .await
-        {
-            Ok(rows) => {
-                *self.chunk_index.lock().await += 1;
-                let rows = rows.into_iter().map(|r| self.convert_row(r)).collect();
-                Ok(Some(rows))
-            }
-            Err(Error::ChunkDownloadExpired { .. }) => {
-                self.refresh_chunk_urls().await?;
+        loop {
+            let url = {
+                let chunks = self.chunks.lock().await;
+                let idx = *self.chunk_index.lock().await;
+                match chunks.get(idx) {
+                    Some(chunk) => chunk.url.clone(),
+                    None => return Ok(None),
+                }
+            };
 
-                let url = {
-                    let chunks = self.chunks.lock().await;
-                    let idx = *self.chunk_index.lock().await;
-                    chunks
-                        .get(idx)
-                        .ok_or_else(|| {
-                            Error::ChunkDownload(
-                                "chunk index out of bounds after URL refresh".into(),
-                            )
-                        })?
-                        .url
-                        .clone()
-                };
-
-                let rows = download_chunk(
-                    self.http.clone(),
-                    url,
-                    self.chunk_headers.clone(),
-                    self.qrmk.clone(),
-                )
-                .await?;
-                *self.chunk_index.lock().await += 1;
-                let rows = rows.into_iter().map(|r| self.convert_row(r)).collect();
-                Ok(Some(rows))
+            match download_chunk(
+                self.http.clone(),
+                url,
+                self.chunk_headers.clone(),
+                self.qrmk.clone(),
+            )
+            .await
+            {
+                Ok(rows) => {
+                    *self.chunk_index.lock().await += 1;
+                    let rows = rows.into_iter().map(|r| self.convert_row(r)).collect();
+                    return Ok(Some(rows));
+                }
+                Err(Error::ChunkDownloadExpired { .. }) => {
+                    self.refresh_chunk_urls().await?;
+                    // Retry with refreshed URL (does not count toward MAX_RETRIES
+                    // since the fix is deterministic, not probabilistic)
+                }
+                Err(e) if e.is_transient() && attempt < MAX_RETRIES => {
+                    attempt += 1;
+                    let backoff_secs = 1u64 << attempt.min(4);
+                    sleep(Duration::from_secs(backoff_secs)).await;
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => Err(e),
         }
     }
 

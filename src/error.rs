@@ -70,6 +70,14 @@ pub enum Error {
     TimedOut,
 }
 
+impl Error {
+    /// Returns `true` for errors that are likely transient and safe to retry
+    /// (e.g. network timeouts, connection resets).
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Error::Reqwest(_))
+    }
+}
+
 /// A `Result` alias where the `Err` case is `snowflake::Error`.
 pub type Result<T> = std::result::Result<T, Error>;
 
