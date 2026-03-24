@@ -286,6 +286,25 @@ impl SnowflakeDecode for String {
     }
 }
 
+impl SnowflakeDecode for Vec<u8> {
+    fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
+        let value = unwrap(value)?;
+        if value.len() % 2 != 0 {
+            return Err(Error::Decode(format!(
+                "invalid hex length {}: expected even number of characters",
+                value.len()
+            )));
+        }
+        (0..value.len())
+            .step_by(2)
+            .map(|i| {
+                u8::from_str_radix(&value[i..i + 2], 16)
+                    .map_err(|_| Error::Decode(format!("invalid hex byte at position {i}: '{}'", &value[i..i + 2])))
+            })
+            .collect()
+    }
+}
+
 impl SnowflakeDecode for bool {
     fn try_decode(value: &Option<String>, _: &SnowflakeColumnType) -> Result<Self> {
         let value = unwrap(value)?;
@@ -920,5 +939,63 @@ mod tests {
         let dt = DateTime::<Utc>::try_decode(&value, &ty).unwrap();
         assert_eq!(dt.timestamp(), 0);
         assert_eq!(dt.timestamp_subsec_nanos(), 0);
+    }
+
+    // --- Vec<u8> hex decode tests ---
+
+    #[test]
+    fn test_decode_vec_u8_valid_hex() {
+        let ty = SnowflakeColumnType::new("BINARY".to_string(), false, None, None, None);
+        let value = Some("48656C6C6F".to_string());
+        let result = Vec::<u8>::try_decode(&value, &ty).unwrap();
+        assert_eq!(result, b"Hello");
+    }
+
+    #[test]
+    fn test_decode_vec_u8_lowercase_hex() {
+        let ty = SnowflakeColumnType::new("BINARY".to_string(), false, None, None, None);
+        let value = Some("deadbeef".to_string());
+        let result = Vec::<u8>::try_decode(&value, &ty).unwrap();
+        assert_eq!(result, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn test_decode_vec_u8_empty() {
+        let ty = SnowflakeColumnType::new("BINARY".to_string(), false, None, None, None);
+        let value = Some(String::new());
+        let result = Vec::<u8>::try_decode(&value, &ty).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_decode_vec_u8_odd_length_error() {
+        let ty = SnowflakeColumnType::new("BINARY".to_string(), false, None, None, None);
+        let value = Some("ABC".to_string());
+        let result = Vec::<u8>::try_decode(&value, &ty);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_vec_u8_invalid_char_error() {
+        let ty = SnowflakeColumnType::new("BINARY".to_string(), false, None, None, None);
+        let value = Some("ZZZZ".to_string());
+        let result = Vec::<u8>::try_decode(&value, &ty);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_option_vec_u8_null() {
+        let ty = SnowflakeColumnType::new("BINARY".to_string(), true, None, None, None);
+        let value: Option<String> = None;
+        let result = Option::<Vec<u8>>::try_decode(&value, &ty).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_decode_option_vec_u8_some() {
+        let ty = SnowflakeColumnType::new("BINARY".to_string(), true, None, None, None);
+        let value = Some("FF00".to_string());
+        let result = Option::<Vec<u8>>::try_decode(&value, &ty).unwrap();
+        assert_eq!(result, Some(vec![0xFF, 0x00]));
     }
 }
