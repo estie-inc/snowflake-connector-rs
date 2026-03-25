@@ -27,7 +27,7 @@ pkcs8 = { version = "0.10", features = ["pem", "pkcs5", "encryption"] }
 rsa = "0.9"
 sha2 = "0.10"
 base64 = "0.22"
-jsonwebtoken = "9.1"
+jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 url = "2.5"
 http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1", features = ["http1", "server"], optional = true }
