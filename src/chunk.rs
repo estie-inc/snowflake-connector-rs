@@ -16,8 +16,7 @@ const MAX_RETRIES: usize = 7;
 const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(16);
 
-/// Private error type for classifying retry behavior within chunk downloads,
-/// without exposing transient-error details in the public `Error` enum.
+/// Internal chunk download error used for retry classification.
 enum DownloadError {
     Retryable(Error),
     Fatal(Error),
