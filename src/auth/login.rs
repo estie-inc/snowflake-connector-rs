@@ -78,7 +78,7 @@ pub(crate) async fn login(
         queries.push(("request_id", id));
     }
 
-    let login_data = match auth {
+    let mut login_data = match auth {
         SnowflakeAuthMethod::Password(_)
         | SnowflakeAuthMethod::KeyPair { .. }
         | SnowflakeAuthMethod::KeyPairUnencrypted { .. }
@@ -105,6 +105,15 @@ pub(crate) async fn login(
             data
         }
     };
+
+    if !config.session_parameters.is_empty() {
+        if let Some(obj) = login_data.as_object_mut() {
+            obj.insert(
+                "SESSION_PARAMETERS".to_string(),
+                config.session_parameters.clone().into_iter().collect(),
+            );
+        }
+    }
 
     let mut request = http.post(url).query(&queries).json(&json!({
         "data": login_data

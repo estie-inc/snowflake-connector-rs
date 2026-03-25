@@ -21,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             schema,
             role,
             timeout: Some(std::time::Duration::from_secs(90)),
+            session_parameters: Default::default(),
         },
     )?;
 
