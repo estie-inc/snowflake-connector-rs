@@ -27,6 +27,9 @@ pub enum Error {
     #[error("chunk download error: {0}")]
     ChunkDownload(String),
 
+    #[error("chunk presigned URL expired (HTTP 403)")]
+    ChunkUrlExpired,
+
     #[error("io error: {0}")]
     IO(#[from] std::io::Error),
 
