@@ -15,6 +15,7 @@
 //!         database: Some("DATABASE".to_string()),
 //!         schema: Some("SCHEMA".to_string()),
 //!         timeout: Some(std::time::Duration::from_secs(30)),
+//!         ..Default::default()
 //!     },
 //! )?;
 //! let session = client.create_session().await?;
@@ -49,6 +50,7 @@ mod query;
 mod row;
 mod session;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 pub use error::{Error, Result};
@@ -84,6 +86,7 @@ pub struct SnowflakeClientConfig {
     pub schema: Option<String>,
     pub role: Option<String>,
     pub timeout: Option<Duration>,
+    pub session_parameters: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Default, Clone)]

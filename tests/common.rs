@@ -1,6 +1,15 @@
+use std::collections::HashMap;
+
 use snowflake_connector_rs::{Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
 
+#[allow(dead_code)]
 pub fn connect() -> Result<SnowflakeClient> {
+    connect_with_session_parameters(HashMap::new())
+}
+
+pub fn connect_with_session_parameters(
+    session_parameters: HashMap<String, serde_json::Value>,
+) -> Result<SnowflakeClient> {
     let username = std::env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME for testing");
     let account = std::env::var("SNOWFLAKE_ACCOUNT").expect("set SNOWFLAKE_ACCOUNT for testing");
 
@@ -24,6 +33,7 @@ pub fn connect() -> Result<SnowflakeClient> {
             schema,
             role,
             timeout: None,
+            session_parameters,
         },
     )?;
 
