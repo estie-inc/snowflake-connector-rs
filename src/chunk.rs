@@ -1,12 +1,18 @@
+use std::collections::HashMap;
 use std::io::Read;
 use std::time::Duration;
 
+use chrono::{NaiveDateTime, Utc};
 use flate2::bufread::GzDecoder;
 use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
 use tokio::time::sleep;
+use url::Url;
 
 use crate::{Error, Result};
+
+/// Buffer before actual expiry to avoid the URL expiring mid-download.
+const EXPIRY_BUFFER_SECS: i64 = 300;
 
 const HEADER_SSE_C_ALGORITHM: &str = "x-amz-server-side-encryption-customer-algorithm";
 const HEADER_SSE_C_KEY: &str = "x-amz-server-side-encryption-customer-key";
@@ -48,6 +54,10 @@ pub(crate) async fn download_chunk(
     mut headers: HeaderMap,
     qrmk: String,
 ) -> Result<Vec<Vec<Option<String>>>> {
+    if is_presigned_url_expired(&chunk_url) {
+        return Err(Error::ChunkUrlExpired);
+    }
+
     if headers.is_empty() {
         headers.append(HEADER_SSE_C_ALGORITHM, AES256.parse()?);
         headers.append(HEADER_SSE_C_KEY, qrmk.parse()?);
@@ -119,6 +129,24 @@ async fn download_chunk_once(
     Ok(rows)
 }
 
+/// Check whether an S3 V4 presigned URL has expired or will expire within
+/// [`EXPIRY_BUFFER_SECS`] by parsing `X-Amz-Date` and `X-Amz-Expires`.
+/// Returns `false` when the URL cannot be parsed so that the download is
+/// attempted normally.
+fn is_presigned_url_expired(url: &str) -> bool {
+    let Some(parsed) = Url::parse(url).ok() else {
+        return false;
+    };
+    let pairs: HashMap<_, _> = parsed.query_pairs().collect();
+    let expiry = (|| {
+        let signed_at =
+            NaiveDateTime::parse_from_str(pairs.get("X-Amz-Date")?, "%Y%m%dT%H%M%SZ").ok()?;
+        let secs: i64 = pairs.get("X-Amz-Expires")?.parse().ok()?;
+        Some(signed_at.and_utc() + chrono::Duration::seconds(secs))
+    })();
+    expiry.is_some_and(|exp| Utc::now() + chrono::Duration::seconds(EXPIRY_BUFFER_SECS) >= exp)
+}
+
 fn is_retryable_status(status: StatusCode) -> bool {
     status.is_server_error()
         || status == StatusCode::TOO_MANY_REQUESTS
@@ -158,5 +186,41 @@ mod tests {
         assert_eq!(retry_delay(4), Duration::from_secs(16));
         assert_eq!(retry_delay(5), Duration::from_secs(16));
         assert_eq!(retry_delay(6), Duration::from_secs(16));
+    }
+
+    #[test]
+    fn presigned_url_expired_in_the_past() {
+        let url =
+            "https://bucket.s3.amazonaws.com/key?X-Amz-Date=20200101T000000Z&X-Amz-Expires=3600";
+        assert!(is_presigned_url_expired(url));
+    }
+
+    #[test]
+    fn presigned_url_far_future_not_expired() {
+        let url =
+            "https://bucket.s3.amazonaws.com/key?X-Amz-Date=20990101T000000Z&X-Amz-Expires=86400";
+        assert!(!is_presigned_url_expired(url));
+    }
+
+    #[test]
+    fn presigned_url_realistic_snowflake_format() {
+        // Mirrors the actual URL shape from Snowflake error logs.
+        // X-Amz-Date=20260326T163806Z + X-Amz-Expires=21599 (≈6h)
+        // Expired in the past relative to 2026-03-27, so this should be true.
+        let url = "https://bucket.s3.us-west-2.amazonaws.com/data?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA&X-Amz-Date=20260326T163806Z&X-Amz-Expires=21599&X-Amz-SignedHeaders=host&X-Amz-Signature=abc";
+        assert!(is_presigned_url_expired(url));
+    }
+
+    #[test]
+    fn presigned_url_no_params_returns_false() {
+        assert!(!is_presigned_url_expired(
+            "https://bucket.s3.amazonaws.com/key"
+        ));
+    }
+
+    #[test]
+    fn presigned_url_invalid_date_returns_false() {
+        let url = "https://bucket.s3.amazonaws.com/key?X-Amz-Date=invalid&X-Amz-Expires=3600";
+        assert!(!is_presigned_url_expired(url));
     }
 }
