@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, mem, sync::Arc};
 
@@ -24,7 +25,7 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 pub struct QueryExecutor {
     http: Client,
     qrmk: String,
-    chunks: Mutex<Vec<RawQueryResponseChunk>>,
+    chunks: Mutex<VecDeque<RawQueryResponseChunk>>,
     chunk_headers: HeaderMap,
     column_types: Arc<Vec<SnowflakeColumnType>>,
     column_indices: Arc<HashMap<String, usize>>,
@@ -135,8 +136,7 @@ impl QueryExecutor {
 
         let http = http.clone();
         let qrmk = response_data.qrmk.unwrap_or_default();
-        let chunks = response_data.chunks.unwrap_or_default();
-        let chunks = Mutex::new(chunks);
+        let chunks = Mutex::new(VecDeque::from(response_data.chunks.unwrap_or_default()));
         let row_types = response_data.row_types.ok_or_else(|| {
             Error::UnsupportedFormat("the response doesn't contain 'rowtype'".to_string())
         })?;
@@ -197,8 +197,7 @@ impl QueryExecutor {
         let chunk_headers = self.chunk_headers.clone();
         let qrmk = self.qrmk.clone();
         let chunks = &mut *self.chunks.lock().await;
-        let Some(chunk) = chunks.pop() else {
-            // Nothing to fetch
+        let Some(chunk) = chunks.pop_front() else {
             return Ok(None);
         };
 
@@ -243,7 +242,7 @@ impl QueryExecutor {
         let semaphore = Arc::new(Semaphore::new(concurrency));
 
         let mut handles = Vec::with_capacity(chunks.len());
-        while let Some(chunk) = chunks.pop() {
+        while let Some(chunk) = chunks.pop_front() {
             let http = self.http.clone();
             let chunk_headers = self.chunk_headers.clone();
             let qrmk = self.qrmk.clone();
