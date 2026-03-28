@@ -2,7 +2,7 @@ use std::num::NonZeroU16;
 
 use snowflake_connector_rs::{
     BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthMethod, SnowflakeClient,
-    SnowflakeClientConfig,
+    SnowflakeClientConfig, SnowflakeSessionConfig,
 };
 
 #[tokio::main]
@@ -16,17 +16,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let external_browser =
         ExternalBrowserConfig::without_callback_listener(BrowserLaunchMode::Manual, redirect_port);
 
+    let mut session_config = SnowflakeSessionConfig::default();
+    if let Some(warehouse) = warehouse {
+        session_config = session_config.with_warehouse(warehouse);
+    }
+    if let Some(role) = role {
+        session_config = session_config.with_role(role);
+    }
+
     let client = SnowflakeClient::new(
-        &username,
-        SnowflakeAuthMethod::ExternalBrowser(external_browser),
-        SnowflakeClientConfig {
-            account,
-            warehouse,
-            database: None,
-            schema: None,
-            role,
-            timeout: Some(std::time::Duration::from_secs(90)),
-        },
+        SnowflakeClientConfig::new(
+            &username,
+            &account,
+            SnowflakeAuthMethod::ExternalBrowser(external_browser),
+        )
+        .with_session(session_config),
     )?;
 
     let session = client.create_session().await?;

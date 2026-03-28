@@ -12,17 +12,23 @@ The minimum supported Rust version (MSRV) is 1.88.
 ## Usage
 
 ```rust
+let session = SnowflakeSessionConfig::default()
+    .with_role("ROLE")
+    .with_warehouse("WAREHOUSE")
+    .with_database("DATABASE")
+    .with_schema("SCHEMA");
+
+let query = SnowflakeQueryConfig::default()
+    .with_async_query_completion_timeout(std::time::Duration::from_secs(30));
+
 let client = SnowflakeClient::new(
-    "USERNAME",
-    SnowflakeAuthMethod::Password("PASSWORD".to_string()),
-    SnowflakeClientConfig {
-        account: "ACCOUNT".to_string(),
-        role: Some("ROLE".to_string()),
-        warehouse: Some("WAREHOUSE".to_string()),
-        database: Some("DATABASE".to_string()),
-        schema: Some("SCHEMA".to_string()),
-        timeout: Some(std::time::Duration::from_secs(30)),
-    },
+    SnowflakeClientConfig::new(
+        "USERNAME",
+        "ACCOUNT",
+        SnowflakeAuthMethod::Password("PASSWORD".to_string()),
+    )
+    .with_session(session)
+    .with_query(query),
 )?;
 let session = client.create_session().await?;
 
@@ -37,6 +43,41 @@ let rows = session.query(query).await?;
 assert_eq!(rows.len(), 2);
 assert_eq!(rows[0].get::<i64>("ID")?, 1);
 assert_eq!(rows[0].get::<String>("VALUE")?, "hello");
+```
+
+### Custom Endpoint
+
+To override the default Snowflake endpoint (e.g. for testing or non-default network setups):
+
+```rust
+use url::Url;
+let auth = SnowflakeAuthMethod::Password("PASSWORD".to_string());
+let endpoint = SnowflakeEndpointConfig::custom_base_url(
+    Url::parse("https://custom-host.example.com").unwrap(),
+);
+let client = SnowflakeClient::new(
+    SnowflakeClientConfig::new("USERNAME", "ACCOUNT", auth)
+        .with_endpoint(endpoint),
+)?;
+```
+
+### Proxy
+
+To route requests through an HTTP proxy:
+
+```rust
+use url::Url;
+let auth = SnowflakeAuthMethod::Password("PASSWORD".to_string());
+let proxy = SnowflakeProxyConfig::new(
+    Url::parse("http://proxy.example.com:8080").unwrap(),
+)
+.with_basic_auth("proxy_user", "proxy_pass");
+
+let transport = SnowflakeTransportConfig::default().with_proxy(proxy);
+let client = SnowflakeClient::new(
+    SnowflakeClientConfig::new("USERNAME", "ACCOUNT", auth)
+        .with_transport(transport),
+)?;
 ```
 
 ## Features

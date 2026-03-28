@@ -31,20 +31,6 @@ pub struct QueryExecutor {
     row_set: Mutex<Option<Vec<Vec<Option<String>>>>>,
 }
 
-fn get_base_url(sess: &SnowflakeSession) -> Result<Url> {
-    let host = sess
-        .host
-        .clone()
-        .unwrap_or_else(|| format!("{}.snowflakecomputing.com", sess.account));
-    let protocol = sess.protocol.clone().unwrap_or_else(|| "https".to_string());
-    let mut url = Url::parse(&format!("{protocol}://{host}"))?;
-    if let Some(port) = sess.port {
-        url.set_port(Some(port))
-            .map_err(|_| Error::Url("invalid base url port".to_string()))?;
-    }
-    Ok(url)
-}
-
 impl QueryExecutor {
     pub(super) async fn create<Q: Into<QueryRequest>>(
         sess: &SnowflakeSession,
@@ -53,13 +39,15 @@ impl QueryExecutor {
         let SnowflakeSession {
             http,
             session_token,
-            timeout,
+            query,
             ..
         } = sess;
-        let timeout = timeout.unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS));
+        let query_timeout = query
+            .async_query_completion_timeout()
+            .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS));
 
         let request_id = uuid::Uuid::new_v4();
-        let base_url = get_base_url(sess)?;
+        let base_url = sess.base_url.clone();
         let mut url = base_url.join("queries/v1/query-request")?;
         url.query_pairs_mut()
             .append_pair("requestId", &request_id.to_string());
@@ -101,7 +89,7 @@ impl QueryExecutor {
                         http,
                         &result_url,
                         session_token,
-                        timeout,
+                        query_timeout,
                         base_url.clone(),
                     )
                     .await?

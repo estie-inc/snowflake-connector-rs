@@ -3,19 +3,28 @@
 //! A Rust client for Snowflake, which enables you to connect to Snowflake and run queries.
 //!
 //! ```rust
-//! # use snowflake_connector_rs::{Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
+//! # use snowflake_connector_rs::{
+//! #     Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig,
+//! #     SnowflakeQueryConfig, SnowflakeSessionConfig,
+//! # };
 //! # async fn run() -> Result<()> {
+//! let session = SnowflakeSessionConfig::default()
+//!     .with_role("ROLE")
+//!     .with_warehouse("WAREHOUSE")
+//!     .with_database("DATABASE")
+//!     .with_schema("SCHEMA");
+//!
+//! let query = SnowflakeQueryConfig::default()
+//!     .with_async_query_completion_timeout(std::time::Duration::from_secs(30));
+//!
 //! let client = SnowflakeClient::new(
-//!     "USERNAME",
-//!     SnowflakeAuthMethod::Password("PASSWORD".to_string()),
-//!     SnowflakeClientConfig {
-//!         account: "ACCOUNT".to_string(),
-//!         role: Some("ROLE".to_string()),
-//!         warehouse: Some("WAREHOUSE".to_string()),
-//!         database: Some("DATABASE".to_string()),
-//!         schema: Some("SCHEMA".to_string()),
-//!         timeout: Some(std::time::Duration::from_secs(30)),
-//!     },
+//!     SnowflakeClientConfig::new(
+//!         "USERNAME",
+//!         "ACCOUNT",
+//!         SnowflakeAuthMethod::Password("PASSWORD".to_string()),
+//!     )
+//!     .with_session(session)
+//!     .with_query(query),
 //! )?;
 //! let session = client.create_session().await?;
 //!
@@ -36,6 +45,7 @@
 
 mod auth;
 mod chunk;
+mod config;
 mod error;
 #[cfg(feature = "external-browser-sso")]
 mod external_browser_config;
@@ -49,8 +59,10 @@ mod query;
 mod row;
 mod session;
 
-use std::time::Duration;
-
+pub use config::{
+    SnowflakeClientConfig, SnowflakeEndpointConfig, SnowflakeProxyAuth, SnowflakeProxyConfig,
+    SnowflakeQueryConfig, SnowflakeSessionConfig, SnowflakeTransportConfig,
+};
 pub use error::{Error, Result};
 #[cfg(feature = "external-browser-sso")]
 pub use external_browser_config::{
@@ -62,35 +74,13 @@ pub use row::{SnowflakeColumn, SnowflakeColumnType, SnowflakeDecode, SnowflakeRo
 pub use session::SnowflakeSession;
 
 use auth::login;
-
-use reqwest::{Client, ClientBuilder, Proxy};
+use url::Url;
 
 #[derive(Clone)]
 pub struct SnowflakeClient {
-    http: Client,
-
-    username: String,
-    auth: SnowflakeAuthMethod,
+    http: reqwest::Client,
     config: SnowflakeClientConfig,
-    connection_config: Option<SnowflakeConnectionConfig>,
-}
-
-#[derive(Default, Clone)]
-pub struct SnowflakeClientConfig {
-    pub account: String,
-
-    pub warehouse: Option<String>,
-    pub database: Option<String>,
-    pub schema: Option<String>,
-    pub role: Option<String>,
-    pub timeout: Option<Duration>,
-}
-
-#[derive(Default, Clone)]
-pub(crate) struct SnowflakeConnectionConfig {
-    pub(crate) host: String,
-    pub(crate) port: Option<u16>,
-    pub(crate) protocol: Option<String>,
+    base_url: Url,
 }
 
 #[derive(Clone)]
@@ -151,81 +141,25 @@ pub enum SnowflakeAuthMethod {
 }
 
 impl SnowflakeClient {
-    pub fn new(
-        username: &str,
-        auth: SnowflakeAuthMethod,
-        config: SnowflakeClientConfig,
-    ) -> Result<Self> {
-        let client = ClientBuilder::new().gzip(true).use_rustls_tls().build()?;
+    pub fn new(config: SnowflakeClientConfig) -> Result<Self> {
+        let base_url = config.endpoint().resolve(config.account())?;
+        let http = config.transport().build_http_client()?;
+
         Ok(Self {
-            http: client,
-            username: username.to_string(),
-            auth,
+            http,
             config,
-            connection_config: None,
+            base_url,
         })
     }
 
-    pub fn with_proxy(self, host: &str, port: u16, username: &str, password: &str) -> Result<Self> {
-        let proxy =
-            Proxy::all(format!("http://{host}:{port}").as_str())?.basic_auth(username, password);
-
-        let client = ClientBuilder::new()
-            .gzip(true)
-            .use_rustls_tls()
-            .proxy(proxy)
-            .build()?;
-        Ok(Self {
-            http: client,
-            username: self.username,
-            auth: self.auth,
-            config: self.config,
-            connection_config: self.connection_config,
-        })
-    }
-
-    pub fn with_address(
-        self,
-        host: &str,
-        port: Option<u16>,
-        protocol: Option<String>,
-    ) -> Result<Self> {
-        Ok(Self {
-            http: self.http,
-            username: self.username,
-            auth: self.auth,
-            config: self.config,
-            connection_config: Some(SnowflakeConnectionConfig {
-                host: host.to_string(),
-                port,
-                protocol,
-            }),
-        })
-    }
-
+    /// Authenticate and create a new Snowflake session.
     pub async fn create_session(&self) -> Result<SnowflakeSession> {
-        let session_token = login(
-            &self.http,
-            &self.username,
-            &self.auth,
-            &self.config,
-            &self.connection_config,
-        )
-        .await?;
+        let session_token = login(&self.http, &self.config, &self.base_url).await?;
         Ok(SnowflakeSession {
             http: self.http.clone(),
-            account: self.config.account.clone(),
+            base_url: self.base_url.clone(),
             session_token,
-            timeout: self.config.timeout,
-            host: self
-                .connection_config
-                .as_ref()
-                .map(|conf| conf.host.clone()),
-            port: self.connection_config.as_ref().and_then(|conf| conf.port),
-            protocol: self
-                .connection_config
-                .as_ref()
-                .and_then(|conf| conf.protocol.clone()),
+            query: self.config.query().clone(),
         })
     }
 }

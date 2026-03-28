@@ -4,39 +4,16 @@ use reqwest::{Client, Url};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{Error, Result, SnowflakeAuthMethod, SnowflakeClientConfig, SnowflakeConnectionConfig};
+use crate::{Error, Result, SnowflakeAuthMethod, SnowflakeClientConfig};
 
+use super::client::AUTH_REQUEST_TIMEOUT;
 #[cfg(feature = "external-browser-sso")]
 use super::external_browser::run_external_browser_flow;
 use super::key_pair::generate_jwt_from_key_pair;
 
-pub(crate) fn get_base_url(
-    config: &SnowflakeClientConfig,
-    connection_config: &Option<SnowflakeConnectionConfig>,
-) -> Result<Url> {
-    if let Some(connection_config) = connection_config {
-        let host = &connection_config.host;
-        let protocol = connection_config
-            .protocol
-            .clone()
-            .unwrap_or_else(|| "https".to_string());
-        let mut url = Url::parse(&format!("{protocol}://{host}"))?;
-        if let Some(port) = connection_config.port {
-            url.set_port(Some(port))
-                .map_err(|_| Error::Url("invalid base url port".to_string()))?;
-        }
-        Ok(url)
-    } else {
-        Ok(Url::parse(&format!(
-            "https://{}.snowflakecomputing.com",
-            config.account
-        ))?)
-    }
-}
-
-fn base_login_request_data(username: &str, config: &SnowflakeClientConfig) -> Value {
+fn base_login_request_data(username: &str, account: &str) -> Value {
     json!({
-        "ACCOUNT_NAME": config.account,
+        "ACCOUNT_NAME": account,
         "LOGIN_NAME": username,
     })
 }
@@ -44,25 +21,27 @@ fn base_login_request_data(username: &str, config: &SnowflakeClientConfig) -> Va
 /// Login to Snowflake and return a session token.
 pub(crate) async fn login(
     http: &Client,
-    username: &str,
-    auth: &SnowflakeAuthMethod,
     config: &SnowflakeClientConfig,
-    connection_config: &Option<SnowflakeConnectionConfig>,
+    base_url: &Url,
 ) -> Result<String> {
-    let base_url = get_base_url(config, connection_config)?;
+    let username = config.username();
+    let account = config.account();
+    let auth = config.auth();
+    let session = config.session();
+
     let url = base_url.join("session/v1/login-request")?;
 
     let mut queries: Vec<(&str, &str)> = vec![];
-    if let Some(warehouse) = &config.warehouse {
+    if let Some(warehouse) = session.warehouse() {
         queries.push(("warehouse", warehouse));
     }
-    if let Some(database) = &config.database {
+    if let Some(database) = session.database() {
         queries.push(("databaseName", database));
     }
-    if let Some(schema) = &config.schema {
+    if let Some(schema) = session.schema() {
         queries.push(("schemaName", schema));
     }
-    if let Some(role) = &config.role {
+    if let Some(role) = session.role() {
         queries.push(("roleName", role));
     }
     #[cfg(feature = "external-browser-sso")]
@@ -82,19 +61,19 @@ pub(crate) async fn login(
         SnowflakeAuthMethod::Password(_)
         | SnowflakeAuthMethod::KeyPair { .. }
         | SnowflakeAuthMethod::KeyPairUnencrypted { .. }
-        | SnowflakeAuthMethod::Oauth { .. } => login_request_data(username, auth, config)?,
+        | SnowflakeAuthMethod::Oauth { .. } => login_request_data(username, account, auth)?,
         #[cfg(feature = "external-browser-sso")]
         SnowflakeAuthMethod::ExternalBrowser(external_browser_config) => {
             let result = run_external_browser_flow(
                 http,
                 username,
-                config,
-                connection_config,
+                account,
+                base_url,
                 external_browser_config,
             )
             .await?;
 
-            let mut data = base_login_request_data(username, config);
+            let mut data = base_login_request_data(username, account);
             if let Some(obj) = data.as_object_mut() {
                 obj.insert("AUTHENTICATOR".to_string(), json!("EXTERNALBROWSER"));
                 obj.insert("TOKEN".to_string(), json!(result.token));
@@ -109,21 +88,16 @@ pub(crate) async fn login(
     let mut request = http.post(url).query(&queries).json(&json!({
         "data": login_data
     }));
+    request = request.timeout(AUTH_REQUEST_TIMEOUT);
     if is_externalbrowser {
-        let login_timeout = config
-            .timeout
-            .unwrap_or_else(|| std::time::Duration::from_secs(120));
-        request = request
-            .header(ACCEPT, "application/snowflake")
-            .header(
-                USER_AGENT,
-                format!(
-                    "{}/{}",
-                    crate::auth::client::client_app_id(),
-                    crate::auth::client::client_app_version()
-                ),
-            )
-            .timeout(login_timeout);
+        request = request.header(ACCEPT, "application/snowflake").header(
+            USER_AGENT,
+            format!(
+                "{}/{}",
+                crate::auth::client::client_app_id(),
+                crate::auth::client::client_app_version()
+            ),
+        );
     }
 
     let resp = request.send().await?;
@@ -146,14 +120,10 @@ pub(crate) async fn login(
     Ok(data.token)
 }
 
-fn login_request_data(
-    username: &str,
-    auth: &SnowflakeAuthMethod,
-    config: &SnowflakeClientConfig,
-) -> Result<Value> {
+fn login_request_data(username: &str, account: &str, auth: &SnowflakeAuthMethod) -> Result<Value> {
     match auth {
         SnowflakeAuthMethod::Password(password) => {
-            let mut data = base_login_request_data(username, config);
+            let mut data = base_login_request_data(username, account);
             if let Some(obj) = data.as_object_mut() {
                 obj.insert("PASSWORD".to_string(), json!(password));
             }
@@ -167,10 +137,10 @@ fn login_request_data(
                 encrypted_pem,
                 Some(password),
                 username,
-                &config.account,
+                account,
                 Utc::now().timestamp(),
             )?;
-            let mut data = base_login_request_data(username, config);
+            let mut data = base_login_request_data(username, account);
             if let Some(obj) = data.as_object_mut() {
                 obj.insert("TOKEN".to_string(), json!(jwt));
                 obj.insert("AUTHENTICATOR".to_string(), json!("SNOWFLAKE_JWT"));
@@ -182,10 +152,10 @@ fn login_request_data(
                 pem,
                 Option::<Vec<u8>>::None,
                 username,
-                &config.account,
+                account,
                 Utc::now().timestamp(),
             )?;
-            let mut data = base_login_request_data(username, config);
+            let mut data = base_login_request_data(username, account);
             if let Some(obj) = data.as_object_mut() {
                 obj.insert("TOKEN".to_string(), json!(jwt));
                 obj.insert("AUTHENTICATOR".to_string(), json!("SNOWFLAKE_JWT"));

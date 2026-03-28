@@ -1,4 +1,8 @@
-use snowflake_connector_rs::{Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig};
+use snowflake_connector_rs::{
+    Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig, SnowflakeEndpointConfig,
+    SnowflakeSessionConfig,
+};
+use url::Url;
 
 pub fn connect() -> Result<SnowflakeClient> {
     let username = std::env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME for testing");
@@ -14,26 +18,35 @@ pub fn connect() -> Result<SnowflakeClient> {
         .and_then(|var| var.parse().ok());
     let protocol = std::env::var("SNOWFLAKE_PROTOCOL").ok();
 
-    let client = SnowflakeClient::new(
-        &username,
-        auth_method(),
-        SnowflakeClientConfig {
-            account,
-            warehouse,
-            database,
-            schema,
-            role,
-            timeout: None,
-        },
-    )?;
+    let mut session_config = SnowflakeSessionConfig::default();
+    if let Some(warehouse) = warehouse {
+        session_config = session_config.with_warehouse(warehouse);
+    }
+    if let Some(database) = database {
+        session_config = session_config.with_database(database);
+    }
+    if let Some(schema) = schema {
+        session_config = session_config.with_schema(schema);
+    }
+    if let Some(role) = role {
+        session_config = session_config.with_role(role);
+    }
 
-    let client = if let Some(ref host) = host {
-        client.with_address(host, port, protocol)?
-    } else {
-        client
-    };
+    let mut client_config =
+        SnowflakeClientConfig::new(&username, &account, auth_method()).with_session(session_config);
 
-    Ok(client)
+    if let Some(host) = host {
+        let scheme = protocol.unwrap_or_else(|| "https".to_string());
+        let mut url = Url::parse(&format!("{scheme}://{host}"))
+            .map_err(|e| snowflake_connector_rs::Error::Url(e.to_string()))?;
+        if let Some(port) = port {
+            url.set_port(Some(port))
+                .map_err(|_| snowflake_connector_rs::Error::Url("invalid base url port".into()))?;
+        }
+        client_config = client_config.with_endpoint(SnowflakeEndpointConfig::custom_base_url(url));
+    }
+
+    SnowflakeClient::new(client_config)
 }
 
 #[cfg(not(feature = "external-browser-sso"))]
