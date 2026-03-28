@@ -1,5 +1,6 @@
 use snowflake_connector_rs::{
     ExternalBrowserConfig, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig,
+    SnowflakeSessionConfig,
 };
 
 #[tokio::main]
@@ -11,23 +12,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = std::env::var("SNOWFLAKE_DATABASE").ok();
     let schema = std::env::var("SNOWFLAKE_SCHEMA").ok();
 
+    let mut session_config = SnowflakeSessionConfig::default();
+    if let Some(warehouse) = warehouse {
+        session_config = session_config.with_warehouse(warehouse);
+    }
+    if let Some(database) = database {
+        session_config = session_config.with_database(database);
+    }
+    if let Some(schema) = schema {
+        session_config = session_config.with_schema(schema);
+    }
+    if let Some(role) = role {
+        session_config = session_config.with_role(role);
+    }
+
     let client = SnowflakeClient::new(
-        &username,
-        SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default()),
-        SnowflakeClientConfig {
-            account,
-            warehouse,
-            database,
-            schema,
-            role,
-            timeout: Some(std::time::Duration::from_secs(90)),
-        },
+        SnowflakeClientConfig::new(
+            &username,
+            &account,
+            SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default()),
+        )
+        .with_session(session_config),
     )?;
 
     let session = client.create_session().await?;
 
     let query = "CREATE TEMPORARY TABLE example (
-        id NUMBER, 
+        id NUMBER,
         value STRING,
         price DECIMAL(10,2),
         is_active BOOLEAN,
@@ -42,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Insert some data
-    let query = "INSERT INTO example (id, value, price, is_active, created_date, updated_at) 
+    let query = "INSERT INTO example (id, value, price, is_active, created_date, updated_at)
                  VALUES (1, 'hello', 99.99, true, '2023-01-01', '2023-01-01 12:00:00'),
                         (2, 'world', 149.99, false, '2023-01-02', '2023-01-02 15:30:00')";
     println!("Executing query:\n{query}");
