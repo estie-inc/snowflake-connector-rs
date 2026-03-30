@@ -4,6 +4,7 @@ use snowflake_connector_rs::{
 };
 use url::Url;
 
+#[allow(dead_code)]
 pub fn connect() -> Result<SnowflakeClient> {
     let username = std::env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME for testing");
     let account = std::env::var("SNOWFLAKE_ACCOUNT").expect("set SNOWFLAKE_ACCOUNT for testing");
@@ -50,7 +51,7 @@ pub fn connect() -> Result<SnowflakeClient> {
 }
 
 #[cfg(not(feature = "external-browser-sso"))]
-fn auth_method() -> SnowflakeAuthMethod {
+pub(crate) fn auth_method() -> SnowflakeAuthMethod {
     let private_key =
         std::env::var("SNOWFLAKE_PRIVATE_KEY").expect("set SNOWFLAKE_PRIVATE_KEY for testing");
     let private_key_password = std::env::var("SNOWFLAKE_PRIVATE_KEY_PASSWORD")
@@ -63,7 +64,7 @@ fn auth_method() -> SnowflakeAuthMethod {
 }
 
 #[cfg(feature = "external-browser-sso")]
-fn auth_method() -> SnowflakeAuthMethod {
+pub(crate) fn auth_method() -> SnowflakeAuthMethod {
     use snowflake_connector_rs::ExternalBrowserConfig;
 
     SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default())

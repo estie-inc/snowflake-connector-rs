@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use url::Url;
@@ -28,6 +29,7 @@ pub struct SnowflakeSessionConfig {
     database: Option<String>,
     schema: Option<String>,
     role: Option<String>,
+    session_parameters: HashMap<String, serde_json::Value>,
 }
 
 /// Client-side query execution policy.
@@ -179,6 +181,24 @@ impl SnowflakeSessionConfig {
 
     pub fn with_role(mut self, role: impl Into<String>) -> Self {
         self.role = Some(role.into());
+        self
+    }
+
+    pub(crate) fn session_parameters(&self) -> &HashMap<String, serde_json::Value> {
+        &self.session_parameters
+    }
+
+    pub fn with_session_parameters(mut self, params: HashMap<String, serde_json::Value>) -> Self {
+        self.session_parameters = params;
+        self
+    }
+
+    pub fn with_session_parameter(
+        mut self,
+        key: impl Into<String>,
+        value: serde_json::Value,
+    ) -> Self {
+        self.session_parameters.insert(key.into(), value);
         self
     }
 }
