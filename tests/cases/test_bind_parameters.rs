@@ -1,4 +1,4 @@
-mod common;
+use super::common;
 
 use chrono::{FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use snowflake_connector_rs::{Binding, BindingType, QueryRequest, Result};

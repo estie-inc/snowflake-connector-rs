@@ -4,34 +4,18 @@ use snowflake_connector_rs::{
 };
 use url::Url;
 
-#[allow(dead_code)]
 pub fn connect() -> Result<SnowflakeClient> {
+    connect_with_session(session_config())
+}
+
+pub fn connect_with_session(session_config: SnowflakeSessionConfig) -> Result<SnowflakeClient> {
     let username = std::env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME for testing");
     let account = std::env::var("SNOWFLAKE_ACCOUNT").expect("set SNOWFLAKE_ACCOUNT for testing");
-
-    let role = std::env::var("SNOWFLAKE_ROLE").ok();
-    let warehouse = std::env::var("SNOWFLAKE_WAREHOUSE").ok();
-    let database = std::env::var("SNOWFLAKE_DATABASE").ok();
-    let schema = std::env::var("SNOWFLAKE_SCHEMA").ok();
     let host = std::env::var("SNOWFLAKE_HOST").ok();
     let port = std::env::var("SNOWFLAKE_PORT")
         .ok()
         .and_then(|var| var.parse().ok());
     let protocol = std::env::var("SNOWFLAKE_PROTOCOL").ok();
-
-    let mut session_config = SnowflakeSessionConfig::default();
-    if let Some(warehouse) = warehouse {
-        session_config = session_config.with_warehouse(warehouse);
-    }
-    if let Some(database) = database {
-        session_config = session_config.with_database(database);
-    }
-    if let Some(schema) = schema {
-        session_config = session_config.with_schema(schema);
-    }
-    if let Some(role) = role {
-        session_config = session_config.with_role(role);
-    }
 
     let mut client_config =
         SnowflakeClientConfig::new(&username, &account, auth_method()).with_session(session_config);
@@ -50,8 +34,31 @@ pub fn connect() -> Result<SnowflakeClient> {
     SnowflakeClient::new(client_config)
 }
 
+pub fn session_config() -> SnowflakeSessionConfig {
+    let role = std::env::var("SNOWFLAKE_ROLE").ok();
+    let warehouse = std::env::var("SNOWFLAKE_WAREHOUSE").ok();
+    let database = std::env::var("SNOWFLAKE_DATABASE").ok();
+    let schema = std::env::var("SNOWFLAKE_SCHEMA").ok();
+
+    let mut session_config = SnowflakeSessionConfig::default();
+    if let Some(warehouse) = warehouse {
+        session_config = session_config.with_warehouse(warehouse);
+    }
+    if let Some(database) = database {
+        session_config = session_config.with_database(database);
+    }
+    if let Some(schema) = schema {
+        session_config = session_config.with_schema(schema);
+    }
+    if let Some(role) = role {
+        session_config = session_config.with_role(role);
+    }
+
+    session_config
+}
+
 #[cfg(not(feature = "external-browser-sso"))]
-pub(crate) fn auth_method() -> SnowflakeAuthMethod {
+fn auth_method() -> SnowflakeAuthMethod {
     let private_key =
         std::env::var("SNOWFLAKE_PRIVATE_KEY").expect("set SNOWFLAKE_PRIVATE_KEY for testing");
     let private_key_password = std::env::var("SNOWFLAKE_PRIVATE_KEY_PASSWORD")
@@ -64,7 +71,7 @@ pub(crate) fn auth_method() -> SnowflakeAuthMethod {
 }
 
 #[cfg(feature = "external-browser-sso")]
-pub(crate) fn auth_method() -> SnowflakeAuthMethod {
+fn auth_method() -> SnowflakeAuthMethod {
     use snowflake_connector_rs::ExternalBrowserConfig;
 
     SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default())

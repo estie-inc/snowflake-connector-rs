@@ -1,10 +1,9 @@
-mod common;
+use super::common;
 
 use snowflake_connector_rs::Result;
 
 #[tokio::test]
 async fn test_decode() -> Result<()> {
-    // Connect to Snowflake
     let client = common::connect()?;
     let session = client.create_session().await?;
 
@@ -12,7 +11,6 @@ async fn test_decode() -> Result<()> {
     session.query("ALTER SESSION SET TIMEZONE = 'UTC'").await?;
 
     // Create a temporary table
-    // DATETIME aliases TIMESTAMP_NTZ
     let query = "CREATE TEMPORARY TABLE example (
         n NUMBER, s STRING, b BOOLEAN, d DATE,
         tm TIME, tm3 TIME(3), tm9 TIME(9),

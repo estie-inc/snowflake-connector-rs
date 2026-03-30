@@ -1,4 +1,4 @@
-mod common;
+use super::common;
 
 use snowflake_connector_rs::Result;
 
@@ -24,7 +24,6 @@ async fn test_decode_naive_date() -> Result<()> {
 
 #[tokio::test]
 async fn test_basic_operations() -> Result<()> {
-    // Connect to Snowflake
     let client = common::connect()?;
     let session = client.create_session().await?;
 
