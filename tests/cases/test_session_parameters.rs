@@ -1,23 +1,11 @@
-mod common;
+use super::common;
 
-use snowflake_connector_rs::{
-    Result, SnowflakeClient, SnowflakeClientConfig, SnowflakeSessionConfig,
-};
-
-fn connect_with_session(session_config: SnowflakeSessionConfig) -> Result<SnowflakeClient> {
-    let username = std::env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME for testing");
-    let account = std::env::var("SNOWFLAKE_ACCOUNT").expect("set SNOWFLAKE_ACCOUNT for testing");
-
-    let config = SnowflakeClientConfig::new(&username, &account, common::auth_method())
-        .with_session(session_config);
-
-    SnowflakeClient::new(config)
-}
+use snowflake_connector_rs::Result;
 
 #[tokio::test]
 async fn test_session_parameter_chunk_size() -> Result<()> {
-    let client = connect_with_session(
-        SnowflakeSessionConfig::default()
+    let client = common::connect_with_session(
+        common::session_config()
             .with_session_parameter("CLIENT_RESULT_CHUNK_SIZE", serde_json::json!(48)),
     )?;
     let session = client.create_session().await?;
@@ -34,8 +22,8 @@ async fn test_session_parameter_chunk_size() -> Result<()> {
 
 #[tokio::test]
 async fn test_multiple_session_parameters() -> Result<()> {
-    let client = connect_with_session(
-        SnowflakeSessionConfig::default()
+    let client = common::connect_with_session(
+        common::session_config()
             .with_session_parameter("CLIENT_RESULT_CHUNK_SIZE", serde_json::json!(48))
             .with_session_parameter("TIMEZONE", serde_json::json!("Asia/Tokyo")),
     )?;

@@ -1,4 +1,4 @@
-mod common;
+use super::common;
 
 use snowflake_connector_rs::Result;
 
