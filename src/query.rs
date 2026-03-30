@@ -68,7 +68,7 @@ impl QueryExecutor {
         let status = response.status();
         let body = response.text().await?;
         if !status.is_success() {
-            return Err(Error::Communication(body));
+            return Err(Error::Communication(format!("HTTP {status}: {body}")));
         }
 
         let mut response: SnowflakeResponse =
@@ -287,7 +287,7 @@ async fn poll_for_async_results(
         let status = resp.status();
         let body = resp.text().await?;
         if !status.is_success() {
-            return Err(Error::Communication(body));
+            return Err(Error::Communication(format!("HTTP {status}: {body}")));
         }
 
         let response: SnowflakeResponse =

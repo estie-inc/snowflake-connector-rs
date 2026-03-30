@@ -141,7 +141,7 @@ async fn request_authenticator(
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
-        return Err(Error::Communication(text));
+        return Err(Error::Communication(format!("HTTP {status}: {text}")));
     }
 
     let parsed: AuthenticatorResponse =

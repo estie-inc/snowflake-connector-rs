@@ -118,7 +118,7 @@ pub(crate) async fn login(
     let status = resp.status();
     let body = resp.text().await?;
     if !status.is_success() {
-        return Err(Error::Communication(body));
+        return Err(Error::Communication(format!("HTTP {status}: {body}")));
     }
 
     let parsed: Response = serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
