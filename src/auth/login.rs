@@ -86,13 +86,16 @@ pub(crate) async fn login(
     };
 
     let session_parameters = session.session_parameters();
-    if !session_parameters.is_empty() {
-        if let Some(obj) = login_data.as_object_mut() {
-            obj.insert(
-                "SESSION_PARAMETERS".to_string(),
-                session_parameters.clone().into_iter().collect(),
-            );
-        }
+    if !session_parameters.is_empty()
+        && let Some(obj) = login_data.as_object_mut()
+    {
+        obj.insert(
+            "SESSION_PARAMETERS".to_string(),
+            session_parameters
+                .iter()
+                .map(|(k, v)| (k.clone(), json!(v)))
+                .collect(),
+        );
     }
 
     let mut request = http.post(url).query(&queries).json(&json!({
