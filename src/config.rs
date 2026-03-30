@@ -73,10 +73,8 @@ pub struct SnowflakeProxyConfig {
     auth: SnowflakeProxyAuth,
 }
 
-/// Authentication method for a [`SnowflakeProxyConfig`].
-#[non_exhaustive]
 #[derive(Clone)]
-pub enum SnowflakeProxyAuth {
+pub(crate) enum SnowflakeProxyAuth {
     None,
     Basic { username: String, password: String },
 }
@@ -148,19 +146,19 @@ impl SnowflakeClientConfig {
 }
 
 impl SnowflakeSessionConfig {
-    pub fn warehouse(&self) -> Option<&str> {
+    pub(crate) fn warehouse(&self) -> Option<&str> {
         self.warehouse.as_deref()
     }
 
-    pub fn database(&self) -> Option<&str> {
+    pub(crate) fn database(&self) -> Option<&str> {
         self.database.as_deref()
     }
 
-    pub fn schema(&self) -> Option<&str> {
+    pub(crate) fn schema(&self) -> Option<&str> {
         self.schema.as_deref()
     }
 
-    pub fn role(&self) -> Option<&str> {
+    pub(crate) fn role(&self) -> Option<&str> {
         self.role.as_deref()
     }
 
@@ -186,7 +184,7 @@ impl SnowflakeSessionConfig {
 }
 
 impl SnowflakeQueryConfig {
-    pub fn async_query_completion_timeout(&self) -> Option<Duration> {
+    pub(crate) fn async_query_completion_timeout(&self) -> Option<Duration> {
         self.async_query_completion_timeout
     }
 

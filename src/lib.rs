@@ -60,8 +60,8 @@ mod row;
 mod session;
 
 pub use config::{
-    SnowflakeClientConfig, SnowflakeEndpointConfig, SnowflakeProxyAuth, SnowflakeProxyConfig,
-    SnowflakeQueryConfig, SnowflakeSessionConfig, SnowflakeTransportConfig,
+    SnowflakeClientConfig, SnowflakeEndpointConfig, SnowflakeProxyConfig, SnowflakeQueryConfig,
+    SnowflakeSessionConfig, SnowflakeTransportConfig,
 };
 pub use error::{Error, Result};
 #[cfg(feature = "external-browser-sso")]
