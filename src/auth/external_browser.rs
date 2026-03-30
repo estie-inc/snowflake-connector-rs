@@ -7,19 +7,21 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::time;
 
-use super::login::get_base_url;
+use crate::auth::client::AUTH_REQUEST_TIMEOUT;
 use crate::external_browser_launcher::{BrowserLauncher, LaunchOutcome, SystemCommandRunner};
 use crate::external_browser_listener::{
     CallbackPayload, ListenerConfig, RunningListener, spawn_listener,
 };
 use crate::external_browser_payload::parse_token_and_consent_from_pairs;
 use crate::{
-    BrowserLaunchMode, Error, ExternalBrowserConfig, Result, SnowflakeClientConfig,
-    SnowflakeConnectionConfig, WithCallbackListenerConfig, WithoutCallbackListenerConfig,
+    BrowserLaunchMode, Error, ExternalBrowserConfig, Result, WithCallbackListenerConfig,
+    WithoutCallbackListenerConfig,
 };
 
 #[cfg(unix)]
 mod manual_input_unix;
+
+const EXTERNAL_BROWSER_CALLBACK_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct ExternalBrowserResult {
     pub token: String,
@@ -29,8 +31,8 @@ pub struct ExternalBrowserResult {
 pub async fn run_external_browser_flow(
     http: &Client,
     username: &str,
-    config: &SnowflakeClientConfig,
-    connection_config: &Option<SnowflakeConnectionConfig>,
+    account: &str,
+    base_url: &Url,
     external_browser_config: &ExternalBrowserConfig,
 ) -> Result<ExternalBrowserResult> {
     match external_browser_config {
@@ -38,8 +40,8 @@ pub async fn run_external_browser_flow(
             run_external_browser_flow_with_listener(
                 http,
                 username,
-                config,
-                connection_config,
+                account,
+                base_url,
                 config_with_listener,
             )
             .await
@@ -48,8 +50,8 @@ pub async fn run_external_browser_flow(
             run_external_browser_flow_without_listener(
                 http,
                 username,
-                config,
-                connection_config,
+                account,
+                base_url,
                 config_without_listener,
             )
             .await
@@ -60,8 +62,8 @@ pub async fn run_external_browser_flow(
 async fn run_external_browser_flow_with_listener(
     http: &Client,
     username: &str,
-    config: &SnowflakeClientConfig,
-    connection_config: &Option<SnowflakeConnectionConfig>,
+    account: &str,
+    base_url: &Url,
     config_with_listener: &WithCallbackListenerConfig,
 ) -> Result<ExternalBrowserResult> {
     let listener_config = ListenerConfig {
@@ -75,9 +77,7 @@ async fn run_external_browser_flow_with_listener(
         .map_err(|e| Error::Communication(e.to_string()))?;
     let redirect_port = listener.addr.port();
 
-    let auth = match request_authenticator(http, username, config, connection_config, redirect_port)
-        .await
-    {
+    let auth = match request_authenticator(http, username, account, base_url, redirect_port).await {
         Ok(data) => data,
         Err(err) => {
             shutdown_listener(listener).await;
@@ -91,8 +91,8 @@ async fn run_external_browser_flow_with_listener(
         return Err(err);
     }
 
-    let timeout = config.timeout.unwrap_or_else(|| Duration::from_secs(60));
-    let payload = resolve_payload_with_listener(listener, timeout).await?;
+    let payload =
+        resolve_payload_with_listener(listener, EXTERNAL_BROWSER_CALLBACK_WAIT_TIMEOUT).await?;
     Ok(ExternalBrowserResult {
         token: payload.token,
         proof_key: auth.proof_key,
@@ -102,13 +102,12 @@ async fn run_external_browser_flow_with_listener(
 async fn run_external_browser_flow_without_listener(
     http: &Client,
     username: &str,
-    config: &SnowflakeClientConfig,
-    connection_config: &Option<SnowflakeConnectionConfig>,
+    account: &str,
+    base_url: &Url,
     config_without_listener: &WithoutCallbackListenerConfig,
 ) -> Result<ExternalBrowserResult> {
     let redirect_port = config_without_listener.redirect_port().get();
-    let auth =
-        request_authenticator(http, username, config, connection_config, redirect_port).await?;
+    let auth = request_authenticator(http, username, account, base_url, redirect_port).await?;
     let launch_mode = config_without_listener.browser_launch_mode();
     open_auth_page(&auth.sso_url, launch_mode)?;
 
@@ -125,16 +124,20 @@ async fn run_external_browser_flow_without_listener(
 async fn request_authenticator(
     http: &Client,
     username: &str,
-    config: &SnowflakeClientConfig,
-    connection_config: &Option<SnowflakeConnectionConfig>,
+    account: &str,
+    base_url: &Url,
     redirect_port: u16,
 ) -> Result<AuthenticatorData> {
-    let base_url = get_base_url(config, connection_config)?;
     let url = base_url.join("session/authenticator-request")?;
 
-    let body = authenticator_request_body(username, config, redirect_port);
+    let body = authenticator_request_body(username, account, redirect_port);
 
-    let resp = http.post(url).json(&body).send().await?;
+    let resp = http
+        .post(url)
+        .timeout(AUTH_REQUEST_TIMEOUT)
+        .json(&body)
+        .send()
+        .await?;
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
@@ -170,14 +173,14 @@ struct AuthenticatorResponse {
 
 fn authenticator_request_body(
     username: &str,
-    config: &SnowflakeClientConfig,
+    account: &str,
     redirect_port: u16,
 ) -> serde_json::Value {
     json!({
         "data": {
-            "ACCOUNT_NAME": config.account,
+            "ACCOUNT_NAME": account,
             "LOGIN_NAME": username,
-            "CLIENT_ENVIRONMENT": super::client::client_environment(config.timeout),
+            "CLIENT_ENVIRONMENT": super::client::client_environment(),
             "AUTHENTICATOR": "EXTERNALBROWSER",
             "BROWSER_MODE_REDIRECT_PORT": redirect_port.to_string(),
         }
