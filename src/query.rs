@@ -9,7 +9,6 @@ use http::{
     header::{ACCEPT, AUTHORIZATION},
 };
 use reqwest::{Client, Url};
-use serde::de::Error as _;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::sleep;
 
@@ -24,12 +23,20 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 
 pub struct QueryExecutor {
     http: Client,
-    qrmk: String,
+    /// Updated on refresh because it may be rotated.
+    qrmk: Mutex<String>,
     chunks: Mutex<VecDeque<RawQueryResponseChunk>>,
-    chunk_headers: HeaderMap,
+    /// Updated on refresh because it may change.
+    chunk_headers: Mutex<HeaderMap>,
     column_types: Arc<Vec<SnowflakeColumnType>>,
     column_indices: Arc<HashMap<String, usize>>,
     row_set: Mutex<Option<Vec<Vec<Option<String>>>>>,
+    session_token: String,
+    base_url: Url,
+    /// Path to re-fetch query-result metadata with fresh presigned URLs.
+    /// This does **not** re-execute the query.
+    result_path: String,
+    total_chunks: usize,
 }
 
 impl QueryExecutor {
@@ -54,67 +61,16 @@ impl QueryExecutor {
             .append_pair("requestId", &request_id.to_string());
 
         let request: QueryRequest = request.into();
-        let response = http
-            .post(url)
-            .header(ACCEPT, "application/snowflake")
-            .header(
-                AUTHORIZATION,
-                format!(r#"Snowflake Token="{session_token}""#),
-            )
-            .json(&request)
-            .send()
-            .await?;
+        let mut response_data = send_snowflake_request(
+            snowflake_request(http, http::Method::POST, url, session_token).json(&request),
+        )
+        .await?;
 
-        let status = response.status();
-        let body = response.text().await?;
-        if !status.is_success() {
-            return Err(Error::Communication(format!("HTTP {status}: {body}")));
+        if let Some(result_url) = response_data.get_result_url.take() {
+            response_data =
+                poll_for_async_results(http, &result_url, session_token, query_timeout, base_url.clone())
+                    .await?;
         }
-
-        let mut response: SnowflakeResponse =
-            serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
-
-        let response_code = response.code.as_deref();
-        if response_code == Some(QUERY_IN_PROGRESS_ASYNC_CODE)
-            || response_code == Some(QUERY_IN_PROGRESS_CODE)
-        {
-            let Some(data) = response.data else {
-                return Err(Error::Json(
-                    serde_json::Error::custom("missing data field in async query response"),
-                    "".to_string(),
-                ));
-            };
-            match data.get_result_url {
-                Some(result_url) => {
-                    response = poll_for_async_results(
-                        http,
-                        &result_url,
-                        session_token,
-                        query_timeout,
-                        base_url.clone(),
-                    )
-                    .await?
-                }
-                None => {
-                    return Err(Error::NoPollingUrlAsyncQuery);
-                }
-            }
-        }
-
-        if let Some(SESSION_EXPIRED) = response.code.as_deref() {
-            return Err(Error::SessionExpired);
-        }
-
-        if !response.success {
-            return Err(Error::Communication(response.message.unwrap_or_default()));
-        }
-
-        let Some(response_data) = response.data else {
-            return Err(Error::Json(
-                serde_json::Error::custom("missing data field in query response"),
-                "".to_string(),
-            ));
-        };
 
         if let Some(format) = response_data.query_result_format {
             if format != "json" {
@@ -123,8 +79,14 @@ impl QueryExecutor {
         }
 
         let http = http.clone();
+        let session_token = session_token.clone();
         let qrmk = response_data.qrmk.unwrap_or_default();
-        let chunks = Mutex::new(VecDeque::from(response_data.chunks.unwrap_or_default()));
+        let result_path = response_data
+            .get_result_url
+            .unwrap_or_else(|| format!("/queries/{}/result", response_data.query_id));
+        let chunks_vec = response_data.chunks.unwrap_or_default();
+        let total_chunks = chunks_vec.len();
+        let chunks = Mutex::new(VecDeque::from(chunks_vec));
         let row_types = response_data.row_types.ok_or_else(|| {
             Error::UnsupportedFormat("the response doesn't contain 'rowtype'".to_string())
         })?;
@@ -157,12 +119,16 @@ impl QueryExecutor {
 
         Ok(Self {
             http,
-            qrmk,
+            qrmk: Mutex::new(qrmk),
             chunks,
-            chunk_headers,
+            chunk_headers: Mutex::new(chunk_headers),
             column_types,
             column_indices,
             row_set,
+            session_token,
+            base_url,
+            result_path,
+            total_chunks,
         })
     }
 
@@ -173,25 +139,47 @@ impl QueryExecutor {
         row_set.is_none() && chunks.is_empty()
     }
 
-    /// Fetch a single chunk
+    /// Fetch a single chunk.
+    ///
+    /// When a presigned URL has expired, this method transparently refreshes
+    /// all remaining URLs (without re-executing the query) and retries.
     pub async fn fetch_next_chunk(&self) -> Result<Option<Vec<SnowflakeRow>>> {
-        let row_set = &mut *self.row_set.lock().await;
-        if let Some(row_set) = row_set.take() {
-            let rows = row_set.into_iter().map(|r| self.convert_row(r)).collect();
-            return Ok(Some(rows));
+        {
+            let mut row_set = self.row_set.lock().await;
+            if let Some(rs) = row_set.take() {
+                let rows = rs.into_iter().map(|r| self.convert_row(r)).collect();
+                return Ok(Some(rows));
+            }
         }
 
-        let http = self.http.clone();
-        let chunk_headers = self.chunk_headers.clone();
-        let qrmk = self.qrmk.clone();
-        let chunks = &mut *self.chunks.lock().await;
-        let Some(chunk) = chunks.pop_front() else {
-            return Ok(None);
+        // pop_front yields chunks in the original order (0, 1, 2, …).
+        // total_chunks - remaining_after_pop gives the original index.
+        let (chunk_url, original_index) = {
+            let mut chunks = self.chunks.lock().await;
+            let Some(chunk) = chunks.pop_front() else {
+                return Ok(None);
+            };
+            (chunk.url, self.total_chunks - chunks.len() - 1)
         };
 
-        let rows = download_chunk(http, chunk.url, chunk_headers, qrmk).await?;
-        let rows = rows.into_iter().map(|r| self.convert_row(r)).collect();
-        Ok(Some(rows))
+        let http = self.http.clone();
+        let chunk_headers = self.chunk_headers.lock().await.clone();
+        let qrmk = self.qrmk.lock().await.clone();
+
+        match download_chunk(http.clone(), chunk_url, chunk_headers, qrmk).await {
+            Ok(rows) => {
+                let rows = rows.into_iter().map(|r| self.convert_row(r)).collect();
+                Ok(Some(rows))
+            }
+            Err(Error::ChunkUrlExpired) => {
+                let (fresh_url, chunk_headers, qrmk) =
+                    self.refresh_presigned_urls(original_index).await?;
+                let rows = download_chunk(http, fresh_url, chunk_headers, qrmk).await?;
+                let rows = rows.into_iter().map(|r| self.convert_row(r)).collect();
+                Ok(Some(rows))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Fetch all the remaining chunks at once
@@ -229,11 +217,14 @@ impl QueryExecutor {
         // The semaphore ensures that no more than `concurrency` downloads are in flight.
         let semaphore = Arc::new(Semaphore::new(concurrency));
 
+        let chunk_headers = self.chunk_headers.lock().await.clone();
+        let qrmk = self.qrmk.lock().await.clone();
+
         let mut handles = Vec::with_capacity(chunks.len());
         while let Some(chunk) = chunks.pop_front() {
             let http = self.http.clone();
-            let chunk_headers = self.chunk_headers.clone();
-            let qrmk = self.qrmk.clone();
+            let chunk_headers = chunk_headers.clone();
+            let qrmk = qrmk.clone();
             let semaphore = semaphore.clone();
             handles.push(tokio::spawn(async move {
                 let _permit = semaphore.acquire_owned().await?;
@@ -249,6 +240,53 @@ impl QueryExecutor {
         Ok(rows)
     }
 
+    /// Re-fetch result metadata from Snowflake to obtain fresh presigned URLs,
+    /// update internal state (`qrmk`, `chunk_headers`, remaining `chunks`),
+    /// and return the fresh URL + headers + qrmk for `retry_chunk_index`.
+    ///
+    /// This does **not** re-execute the query.  Snowflake persists query
+    /// results for 24 hours; this call simply returns the same result set
+    /// with newly signed download URLs.
+    async fn refresh_presigned_urls(
+        &self,
+        retry_chunk_index: usize,
+    ) -> Result<(String, HeaderMap, String)> {
+        let url = resolve_url(&self.base_url, &self.result_path)?;
+        let data = send_snowflake_request(snowflake_request(
+            &self.http,
+            http::Method::GET,
+            url,
+            &self.session_token,
+        ))
+        .await?;
+
+        let fresh_qrmk = data.qrmk.unwrap_or_default();
+        let fresh_headers: HeaderMap =
+            HeaderMap::try_from(&data.chunk_headers.unwrap_or_default())?;
+        let fresh_chunks = data.chunks.unwrap_or_default();
+
+        let fresh_url = fresh_chunks
+            .get(retry_chunk_index)
+            .ok_or_else(|| {
+                Error::Communication(format!(
+                    "refreshed result missing chunk index {} (total: {})",
+                    retry_chunk_index,
+                    fresh_chunks.len()
+                ))
+            })?
+            .url
+            .clone();
+
+        *self.qrmk.lock().await = fresh_qrmk.clone();
+        *self.chunk_headers.lock().await = fresh_headers.clone();
+        *self.chunks.lock().await = fresh_chunks
+            .into_iter()
+            .skip(retry_chunk_index + 1)
+            .collect();
+
+        Ok((fresh_url, fresh_headers, fresh_qrmk))
+    }
+
     fn convert_row(&self, row: Vec<Option<String>>) -> SnowflakeRow {
         SnowflakeRow {
             row,
@@ -258,44 +296,85 @@ impl QueryExecutor {
     }
 }
 
+/// Build a request with Snowflake's standard auth headers.
+fn snowflake_request(
+    http: &Client,
+    method: http::Method,
+    url: Url,
+    session_token: &str,
+) -> reqwest::RequestBuilder {
+    http.request(method, url)
+        .header(ACCEPT, "application/snowflake")
+        .header(
+            AUTHORIZATION,
+            format!(r#"Snowflake Token="{session_token}""#),
+        )
+}
+
+/// Send a Snowflake API request, validate the response (HTTP errors,
+/// session expiry, API-level failures), and return the `data` payload.
+async fn send_snowflake_request(request: reqwest::RequestBuilder) -> Result<RawQueryResponse> {
+    let resp = request.send().await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() {
+        return Err(Error::Communication(format!("HTTP {status}: {body}")));
+    }
+    let response: SnowflakeResponse =
+        serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
+    if response.code.as_deref() == Some(SESSION_EXPIRED) {
+        return Err(Error::SessionExpired);
+    }
+    if !response.success {
+        return Err(Error::Communication(response.message.unwrap_or_default()));
+    }
+    response
+        .data
+        .ok_or_else(|| Error::Communication("missing data field in response".to_string()))
+}
+
+fn resolve_url(base_url: &Url, path: &str) -> Result<Url> {
+    if let Ok(absolute) = Url::parse(path) {
+        Ok(absolute)
+    } else {
+        Ok(base_url.join(path)?)
+    }
+}
+
+/// Poll until the async query completes, checking the response code.
 async fn poll_for_async_results(
     http: &Client,
     result_url: &str,
     session_token: &str,
     timeout: Duration,
     base_url: Url,
-) -> Result<SnowflakeResponse> {
+) -> Result<RawQueryResponse> {
     let start = Instant::now();
     while start.elapsed() < timeout {
         sleep(Duration::from_secs(10)).await;
-        let url = if let Ok(url) = Url::parse(result_url) {
-            url
-        } else {
-            base_url.join(result_url)?
-        };
-
-        let resp = http
-            .get(url)
-            .header(ACCEPT, "application/snowflake")
-            .header(
-                AUTHORIZATION,
-                format!(r#"Snowflake Token="{session_token}""#),
-            )
+        let url = resolve_url(&base_url, result_url)?;
+        let resp = snowflake_request(http, http::Method::GET, url, session_token)
             .send()
             .await?;
-
         let status = resp.status();
         let body = resp.text().await?;
         if !status.is_success() {
             return Err(Error::Communication(format!("HTTP {status}: {body}")));
         }
-
         let response: SnowflakeResponse =
             serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
         if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE)
             && response.code.as_deref() != Some(QUERY_IN_PROGRESS_CODE)
         {
-            return Ok(response);
+            if response.code.as_deref() == Some(SESSION_EXPIRED) {
+                return Err(Error::SessionExpired);
+            }
+            if !response.success {
+                return Err(Error::Communication(response.message.unwrap_or_default()));
+            }
+            return response
+                .data
+                .ok_or_else(|| Error::Communication("missing data field in response".to_string()));
         }
     }
 
@@ -524,9 +603,7 @@ impl From<String> for QueryRequest {
 struct RawQueryResponse {
     #[allow(unused)]
     parameters: Option<Vec<RawQueryResponseParameter>>,
-    #[allow(unused)]
     query_id: String,
-    #[allow(unused)]
     get_result_url: Option<String>,
     #[allow(unused)]
     returned: Option<i64>,
@@ -583,7 +660,7 @@ struct RawQueryResponseParameter {
     value: serde_json::Value,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawQueryResponseChunk {
     url: String,
