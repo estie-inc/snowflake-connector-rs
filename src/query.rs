@@ -256,6 +256,22 @@ impl QueryExecutor {
             column_types: Arc::clone(&self.column_types),
         }
     }
+
+    /// Column metadata for this result set, including when [`fetch_all`](Self::fetch_all) returns no rows.
+    pub fn snowflake_columns(&self) -> Vec<crate::SnowflakeColumn> {
+        let mut names: Vec<(String, usize)> = self
+            .column_indices
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        names.sort_by_key(|(_, idx)| *idx);
+        names
+            .into_iter()
+            .map(|(name, index)| {
+                crate::SnowflakeColumn::new(name, index, self.column_types[index].clone())
+            })
+            .collect()
+    }
 }
 
 async fn poll_for_async_results(
