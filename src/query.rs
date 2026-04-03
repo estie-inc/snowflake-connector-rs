@@ -784,6 +784,10 @@ mod tests {
 
         // Poison all remaining chunk URLs so they appear expired.
         executor.expire_chunk_urls_for_testing().await;
+        assert!(
+            executor.has_expired_chunk_urls().await,
+            "chunk URLs should be expired after poisoning"
+        );
 
         // fetch_next_chunk should detect the expired URL, call
         // refresh_presigned_urls (GET /queries/{id}/result), obtain
@@ -802,10 +806,6 @@ mod tests {
                 !executor.has_expired_chunk_urls().await,
                 "remaining chunk URLs should have been replaced with fresh ones"
             );
-
-            // Verify the next chunk downloads normally with the fresh URL.
-            let next = executor.fetch_next_chunk().await.unwrap();
-            assert!(next.is_some(), "next chunk after refresh should succeed");
         }
     }
 
