@@ -304,6 +304,16 @@ impl QueryExecutor {
         }
     }
 
+    /// Returns `true` if any remaining chunk URL still contains the
+    /// expired marker set by [`expire_chunk_urls_for_testing`].
+    #[cfg(test)]
+    async fn has_expired_chunk_urls(&self) -> bool {
+        let chunks = self.chunks.lock().await;
+        chunks
+            .iter()
+            .any(|c| c.url.contains("expired.s3.amazonaws.com"))
+    }
+
     fn convert_row(&self, row: Vec<Option<String>>) -> SnowflakeRow {
         SnowflakeRow {
             row,
@@ -784,6 +794,19 @@ mod tests {
             !rows.unwrap().is_empty(),
             "refreshed chunk should contain rows"
         );
+
+        // refresh_presigned_urls must also update the remaining chunk
+        // URLs in the executor so that subsequent fetches use fresh URLs.
+        if !executor.eof().await {
+            assert!(
+                !executor.has_expired_chunk_urls().await,
+                "remaining chunk URLs should have been replaced with fresh ones"
+            );
+
+            // Verify the next chunk downloads normally with the fresh URL.
+            let next = executor.fetch_next_chunk().await.unwrap();
+            assert!(next.is_some(), "next chunk after refresh should succeed");
+        }
     }
 
     #[test]
