@@ -67,9 +67,14 @@ impl QueryExecutor {
         .await?;
 
         if let Some(result_url) = response_data.get_result_url.take() {
-            response_data =
-                poll_for_async_results(http, &result_url, session_token, query_timeout, base_url.clone())
-                    .await?;
+            response_data = poll_for_async_results(
+                http,
+                &result_url,
+                session_token,
+                query_timeout,
+                base_url.clone(),
+            )
+            .await?;
         }
 
         if let Some(format) = response_data.query_result_format {
