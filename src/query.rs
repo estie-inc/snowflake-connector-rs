@@ -292,6 +292,18 @@ impl QueryExecutor {
         Ok((fresh_url, fresh_headers, fresh_qrmk))
     }
 
+    /// Replace all remaining chunk URLs with expired ones so that
+    /// `is_presigned_url_expired` returns `true` on the next download attempt.
+    #[cfg(test)]
+    async fn expire_chunk_urls_for_testing(&self) {
+        let mut chunks = self.chunks.lock().await;
+        for chunk in chunks.iter_mut() {
+            chunk.url = "https://expired.s3.amazonaws.com/chunk\
+                ?X-Amz-Date=20200101T000000Z&X-Amz-Expires=3600"
+                .to_string();
+        }
+    }
+
     fn convert_row(&self, row: Vec<Option<String>>) -> SnowflakeRow {
         SnowflakeRow {
             row,
@@ -692,6 +704,87 @@ struct SnowflakeResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Create a Snowflake session using environment variables.
+    /// Returns `None` when credentials are not available so that
+    /// integration tests can be silently skipped.
+    async fn create_test_session() -> Option<crate::SnowflakeSession> {
+        let username = std::env::var("SNOWFLAKE_USERNAME").ok()?;
+        let account = std::env::var("SNOWFLAKE_ACCOUNT").ok()?;
+        let private_key = std::env::var("SNOWFLAKE_PRIVATE_KEY").ok()?;
+        let password = std::env::var("SNOWFLAKE_PRIVATE_KEY_PASSWORD").ok()?;
+
+        let mut session_config = crate::SnowflakeSessionConfig::default();
+        if let Ok(v) = std::env::var("SNOWFLAKE_ROLE") {
+            session_config = session_config.with_role(v);
+        }
+        if let Ok(v) = std::env::var("SNOWFLAKE_WAREHOUSE") {
+            session_config = session_config.with_warehouse(v);
+        }
+        if let Ok(v) = std::env::var("SNOWFLAKE_DATABASE") {
+            session_config = session_config.with_database(v);
+        }
+        if let Ok(v) = std::env::var("SNOWFLAKE_SCHEMA") {
+            session_config = session_config.with_schema(v);
+        }
+
+        let config = crate::SnowflakeClientConfig::new(
+            &username,
+            &account,
+            crate::SnowflakeAuthMethod::KeyPair {
+                encrypted_pem: private_key,
+                password: password.into_bytes(),
+            },
+        )
+        .with_session(session_config);
+
+        let client = crate::SnowflakeClient::new(config).ok()?;
+        client.create_session().await.ok()
+    }
+
+    /// Verify that `fetch_next_chunk` transparently refreshes expired
+    /// presigned URLs by calling `refresh_presigned_urls`.
+    ///
+    /// 1. Execute a Snowflake query large enough to produce multiple chunks.
+    /// 2. Consume the initial inline row-set.
+    /// 3. Replace remaining chunk URLs with expired ones.
+    /// 4. Call `fetch_next_chunk` and assert it succeeds — proving that
+    ///    the refresh endpoint returned fresh URLs and the download worked.
+    ///
+    /// Skipped when Snowflake credentials are not set.
+    #[tokio::test]
+    async fn test_fetch_next_chunk_refreshes_expired_urls() {
+        let Some(session) = create_test_session().await else {
+            return;
+        };
+
+        let query = "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS PAD \
+                     FROM TABLE(GENERATOR(ROWCOUNT=>200000))";
+        let executor = session.execute(query).await.unwrap();
+
+        // Consume the initial row_set.
+        let first = executor.fetch_next_chunk().await.unwrap();
+        assert!(first.is_some(), "expected initial row_set");
+
+        // We need remaining chunks for this test.
+        assert!(
+            !executor.eof().await,
+            "need remaining chunks to test refresh"
+        );
+
+        // Poison all remaining chunk URLs so they appear expired.
+        executor.expire_chunk_urls_for_testing().await;
+
+        // fetch_next_chunk should detect the expired URL, call
+        // refresh_presigned_urls (GET /queries/{id}/result), obtain
+        // fresh URLs, and download the chunk successfully.
+        let rows = executor.fetch_next_chunk().await.unwrap();
+        assert!(rows.is_some(), "expected rows after URL refresh");
+        assert!(
+            !rows.unwrap().is_empty(),
+            "refreshed chunk should contain rows"
+        );
+    }
 
     #[test]
     fn test_deserialize_session_expired() {
