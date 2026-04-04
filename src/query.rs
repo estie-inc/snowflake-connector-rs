@@ -13,9 +13,10 @@ use serde::de::Error as _;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::sleep;
 
-use crate::SnowflakeSession;
-use crate::row::SnowflakeColumnType;
-use crate::{Error, Result, SnowflakeRow, chunk::download_chunk};
+use crate::{
+    Error, Result, SnowflakeColumn, SnowflakeRow, SnowflakeSession, chunk::download_chunk,
+    row::SnowflakeColumnType,
+};
 
 pub(super) const SESSION_EXPIRED: &str = "390112";
 pub(super) const QUERY_IN_PROGRESS_CODE: &str = "333333";
@@ -27,7 +28,7 @@ pub struct QueryExecutor {
     qrmk: String,
     chunks: Mutex<VecDeque<RawQueryResponseChunk>>,
     chunk_headers: HeaderMap,
-    column_types: Arc<Vec<SnowflakeColumnType>>,
+    columns: Arc<[SnowflakeColumn]>,
     column_indices: Arc<HashMap<String, usize>>,
     row_set: Mutex<Option<Vec<Vec<Option<String>>>>>,
 }
@@ -133,24 +134,30 @@ impl QueryExecutor {
         })?;
         let row_set = Mutex::new(Some(row_set));
 
-        let column_indices = row_types
-            .iter()
-            .enumerate()
-            .map(|(i, row_type)| (row_type.name.to_ascii_uppercase(), i))
-            .collect::<HashMap<_, _>>();
-        let column_indices = Arc::new(column_indices);
-
-        let column_types = row_types
+        let columns = row_types
             .into_iter()
-            .map(|row_type| SnowflakeColumnType {
-                snowflake_type: row_type.data_type,
-                nullable: row_type.nullable,
-                length: row_type.length,
-                precision: row_type.precision,
-                scale: row_type.scale,
+            .enumerate()
+            .map(|(index, row_type)| {
+                SnowflakeColumn::new(
+                    row_type.name.to_ascii_uppercase(),
+                    index,
+                    SnowflakeColumnType {
+                        snowflake_type: row_type.data_type,
+                        nullable: row_type.nullable,
+                        length: row_type.length,
+                        precision: row_type.precision,
+                        scale: row_type.scale,
+                    },
+                )
             })
             .collect::<Vec<_>>();
-        let column_types = Arc::new(column_types);
+
+        let column_indices = columns
+            .iter()
+            .map(|column| (column.name().to_string(), column.index()))
+            .collect::<HashMap<_, _>>();
+        let column_indices = Arc::new(column_indices);
+        let columns = Arc::from(columns);
 
         let chunk_headers = response_data.chunk_headers.unwrap_or_default();
         let chunk_headers: HeaderMap = HeaderMap::try_from(&chunk_headers)?;
@@ -160,7 +167,7 @@ impl QueryExecutor {
             qrmk,
             chunks,
             chunk_headers,
-            column_types,
+            columns,
             column_indices,
             row_set,
         })
@@ -252,25 +259,14 @@ impl QueryExecutor {
     fn convert_row(&self, row: Vec<Option<String>>) -> SnowflakeRow {
         SnowflakeRow {
             row,
+            columns: Arc::clone(&self.columns),
             column_indices: Arc::clone(&self.column_indices),
-            column_types: Arc::clone(&self.column_types),
         }
     }
 
     /// Column metadata for this result set, including when [`fetch_all`](Self::fetch_all) returns no rows.
-    pub fn snowflake_columns(&self) -> Vec<crate::SnowflakeColumn> {
-        let mut names: Vec<(String, usize)> = self
-            .column_indices
-            .iter()
-            .map(|(k, v)| (k.clone(), *v))
-            .collect();
-        names.sort_by_key(|(_, idx)| *idx);
-        names
-            .into_iter()
-            .map(|(name, index)| {
-                crate::SnowflakeColumn::new(name, index, self.column_types[index].clone())
-            })
-            .collect()
+    pub fn columns(&self) -> &[SnowflakeColumn] {
+        self.columns.as_ref()
     }
 }
 

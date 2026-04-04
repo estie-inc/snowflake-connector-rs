@@ -33,7 +33,7 @@ use crate::{Error, Result};
 /// assert_eq!(column.index(), 0);
 /// assert_eq!(column.column_type().snowflake_type(), "fixed");
 /// ```
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnowflakeColumn {
     pub(super) name: String,
     pub(super) index: usize,
@@ -192,7 +192,7 @@ impl SnowflakeColumnType {
 #[derive(Debug)]
 pub struct SnowflakeRow {
     pub(crate) row: Vec<Option<String>>,
-    pub(crate) column_types: Arc<Vec<SnowflakeColumnType>>,
+    pub(crate) columns: Arc<[SnowflakeColumn]>,
     pub(crate) column_indices: Arc<HashMap<String, usize>>,
 }
 
@@ -202,33 +202,21 @@ impl SnowflakeRow {
             .column_indices
             .get(&column_name.to_ascii_uppercase())
             .ok_or_else(|| Error::Decode(format!("column not found: {column_name}")))?;
-        let ty = &self.column_types[*idx];
-        (&self.row[*idx], ty).try_get()
+        self.at(*idx)
     }
     pub fn at<T: SnowflakeDecode>(&self, column_index: usize) -> Result<T> {
-        let ty = &self.column_types[column_index];
+        let ty = self.columns[column_index].column_type();
         (&self.row[column_index], ty).try_get()
     }
     pub fn column_names(&self) -> Vec<&str> {
-        let mut names: Vec<(_, usize)> = self.column_indices.iter().map(|(k, v)| (k, *v)).collect();
-        names.sort_by_key(|(_, v)| *v);
-        names.into_iter().map(|(name, _)| name.as_str()).collect()
+        self.columns.iter().map(|column| column.name()).collect()
     }
+    pub fn columns(&self) -> &[SnowflakeColumn] {
+        self.columns.as_ref()
+    }
+    #[deprecated(note = "use columns() instead")]
     pub fn column_types(&self) -> Vec<SnowflakeColumn> {
-        let mut names: Vec<(String, usize)> = self
-            .column_indices
-            .iter()
-            .map(|(k, v)| (k.clone(), *v))
-            .collect();
-        names.sort_by_key(|(_, v)| *v);
-        names
-            .into_iter()
-            .map(|(name, index)| SnowflakeColumn {
-                name,
-                index,
-                column_type: self.column_types[index].clone(),
-            })
-            .collect()
+        self.columns.iter().cloned().collect()
     }
 }
 
