@@ -1,14 +1,25 @@
 use snowflake_connector_rs::{
     Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig, SnowflakeEndpointConfig,
-    SnowflakeSessionConfig,
+    SnowflakeQueryConfig, SnowflakeSessionConfig,
 };
 use url::Url;
 
 pub fn connect() -> Result<SnowflakeClient> {
-    connect_with_session(session_config())
+    connect_with_configs(session_config(), SnowflakeQueryConfig::default())
 }
 
 pub fn connect_with_session(session_config: SnowflakeSessionConfig) -> Result<SnowflakeClient> {
+    connect_with_configs(session_config, SnowflakeQueryConfig::default())
+}
+
+pub fn connect_with_query(query_config: SnowflakeQueryConfig) -> Result<SnowflakeClient> {
+    connect_with_configs(session_config(), query_config)
+}
+
+fn connect_with_configs(
+    session_config: SnowflakeSessionConfig,
+    query_config: SnowflakeQueryConfig,
+) -> Result<SnowflakeClient> {
     let username = std::env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME for testing");
     let account = std::env::var("SNOWFLAKE_ACCOUNT").expect("set SNOWFLAKE_ACCOUNT for testing");
     let host = std::env::var("SNOWFLAKE_HOST").ok();
@@ -17,8 +28,9 @@ pub fn connect_with_session(session_config: SnowflakeSessionConfig) -> Result<Sn
         .and_then(|var| var.parse().ok());
     let protocol = std::env::var("SNOWFLAKE_PROTOCOL").ok();
 
-    let mut client_config =
-        SnowflakeClientConfig::new(&username, &account, auth_method()).with_session(session_config);
+    let mut client_config = SnowflakeClientConfig::new(&username, &account, auth_method())
+        .with_session(session_config)
+        .with_query(query_config);
 
     if let Some(host) = host {
         let scheme = protocol.unwrap_or_else(|| "https".to_string());

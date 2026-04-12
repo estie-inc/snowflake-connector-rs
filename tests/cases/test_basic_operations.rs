@@ -29,7 +29,7 @@ async fn test_basic_operations() -> Result<()> {
 
     // Create a temporary table with various data types
     let query = "CREATE TEMPORARY TABLE example (
-        id NUMBER, 
+        id NUMBER,
         value STRING,
         price DECIMAL(10,2),
         is_active BOOLEAN,
@@ -44,7 +44,7 @@ async fn test_basic_operations() -> Result<()> {
     );
 
     // Insert some data
-    let query = "INSERT INTO example (id, value, price, is_active, created_date, updated_at) 
+    let query = "INSERT INTO example (id, value, price, is_active, created_date, updated_at)
                  VALUES (1, 'hello', 99.99, true, '2023-01-01', '2023-01-01 12:00:00'),
                         (2, 'world', 149.99, false, '2023-01-02', '2023-01-02 15:30:00')";
     let rows = session.query(query).await?;
@@ -115,15 +115,15 @@ async fn test_basic_operations() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_query_executor_columns_available_without_rows() -> Result<()> {
+async fn test_result_set_columns_available_without_rows() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
-    let executor = session
+    let mut result = session
         .execute("SELECT 1 AS ID, 'hello' AS NAME LIMIT 0")
         .await?;
 
-    let columns = executor.columns();
+    let columns = result.columns();
     assert_eq!(columns.len(), 2);
     assert_eq!(columns[0].name(), "ID");
     assert_eq!(columns[0].index(), 0);
@@ -132,8 +132,9 @@ async fn test_query_executor_columns_available_without_rows() -> Result<()> {
     assert_eq!(columns[1].index(), 1);
     assert_eq!(columns[1].column_type().snowflake_type(), "text");
 
-    let rows = executor.fetch_all().await?;
-    assert!(rows.is_empty());
+    assert!(result.is_exhausted());
+    let batch = result.next_batch().await?;
+    assert!(batch.is_none());
 
     Ok(())
 }

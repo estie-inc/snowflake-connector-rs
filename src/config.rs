@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use url::Url;
@@ -37,9 +38,22 @@ pub struct SnowflakeSessionConfig {
 /// Controls how this connector behaves while executing queries — for example,
 /// how long to poll for the completion of an async query. These settings are
 /// enforced entirely on the client side and are never sent to Snowflake.
-#[derive(Default, Clone)]
+const DEFAULT_COLLECT_PREFETCH_CONCURRENCY: usize = 8;
+
+#[derive(Clone)]
 pub struct SnowflakeQueryConfig {
     async_query_completion_timeout: Option<Duration>,
+    collect_prefetch_concurrency: NonZeroUsize,
+}
+
+impl Default for SnowflakeQueryConfig {
+    fn default() -> Self {
+        Self {
+            async_query_completion_timeout: None,
+            collect_prefetch_concurrency: NonZeroUsize::new(DEFAULT_COLLECT_PREFETCH_CONCURRENCY)
+                .expect("default concurrency is non-zero"),
+        }
+    }
 }
 
 /// Endpoint resolution strategy for the Snowflake API base URL.
@@ -208,8 +222,17 @@ impl SnowflakeQueryConfig {
         self.async_query_completion_timeout
     }
 
+    pub(crate) fn collect_prefetch_concurrency(&self) -> NonZeroUsize {
+        self.collect_prefetch_concurrency
+    }
+
     pub fn with_async_query_completion_timeout(mut self, timeout: Duration) -> Self {
         self.async_query_completion_timeout = Some(timeout);
+        self
+    }
+
+    pub fn with_collect_prefetch_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
+        self.collect_prefetch_concurrency = concurrency;
         self
     }
 }
