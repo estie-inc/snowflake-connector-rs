@@ -265,7 +265,15 @@ impl SnowflakeTransportConfig {
     }
 
     pub(crate) fn build_http_client(&self) -> Result<reqwest::Client> {
-        let builder = reqwest::ClientBuilder::new().gzip(true).use_rustls_tls();
+        // Snowflake uploads query result chunks to S3, and this client fetches
+        // them via presigned URLs. S3 closes idle keep-alive connections after
+        // ~20 seconds, so we set the pool idle timeout below that threshold to
+        // avoid reusing a connection that the server has already closed
+        // (which would cause hyper::Error(IncompleteMessage)).
+        let builder = reqwest::ClientBuilder::new()
+            .gzip(true)
+            .use_rustls_tls()
+            .pool_idle_timeout(Duration::from_secs(15));
 
         let builder = if let Some(proxy) = &self.proxy {
             builder.proxy(proxy.to_reqwest_proxy()?)
