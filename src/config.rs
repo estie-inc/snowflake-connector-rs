@@ -267,6 +267,20 @@ impl SnowflakeTransportConfig {
     pub(crate) fn build_http_client(&self) -> Result<reqwest::Client> {
         let builder = reqwest::ClientBuilder::new().gzip(true).use_rustls_tls();
 
+        // Disable idle connection pooling to prevent stale-connection errors.
+        //
+        // This client talks to both the Snowflake REST API and S3 (for
+        // downloading query-result chunks via presigned URLs). S3 closes
+        // idle keep-alive connections aggressively (the exact timeout is
+        // undocumented, but reported to be only a few seconds). When the
+        // pool hands out a connection that S3 has already closed, hyper
+        // returns `Error(IncompleteMessage)`.
+        //
+        // Disabling pooling is acceptable here because the bottleneck is
+        // data transfer with Snowflake / S3, not establishing TCP
+        // connections.
+        let builder = builder.pool_max_idle_per_host(0);
+
         let builder = if let Some(proxy) = &self.proxy {
             builder.proxy(proxy.to_reqwest_proxy()?)
         } else {
