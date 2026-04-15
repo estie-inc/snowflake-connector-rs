@@ -19,10 +19,13 @@ use tokio::{
     net::TcpListener,
     sync::Mutex,
     sync::{oneshot, watch},
-    task::JoinHandle,
+    task::{JoinError, JoinHandle, JoinSet},
 };
 
 use crate::external_browser_payload::{ParsedTokenAndConsent, parse_token_and_consent_from_pairs};
+
+type ListenerError = Box<dyn Error + Send + Sync>;
+type ConnectionTaskResult = Result<(), ListenerError>;
 
 #[derive(Debug, Deserialize)]
 struct TokenPayload {
@@ -60,148 +63,263 @@ impl Default for ListenerConfig {
 pub struct RunningListener {
     pub addr: SocketAddr,
     pub shutdown: oneshot::Sender<()>,
-    pub handle: JoinHandle<Result<(), Box<dyn Error + Send + Sync>>>,
+    pub handle: JoinHandle<Result<(), ListenerError>>,
     pub payloads: watch::Receiver<Option<CallbackPayload>>,
 }
 
-pub async fn spawn_listener(
-    cfg: ListenerConfig,
-) -> Result<RunningListener, Box<dyn Error + Send + Sync>> {
+struct ListenerShared {
+    expected_origin: String,
+    application: Option<String>,
+    payload_tx: watch::Sender<Option<CallbackPayload>>,
+    validated_origin: Mutex<Option<String>>,
+}
+
+impl ListenerShared {
+    fn new(
+        expected_origin: String,
+        application: Option<String>,
+        payload_tx: watch::Sender<Option<CallbackPayload>>,
+    ) -> Self {
+        Self {
+            expected_origin,
+            application,
+            payload_tx,
+            validated_origin: Mutex::new(None),
+        }
+    }
+
+    async fn handle(&self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
+        let request_origin = header_to_string(req.headers().get(ORIGIN));
+
+        match *req.method() {
+            Method::OPTIONS => self.handle_preflight(request_origin, &req).await,
+            Method::GET => {
+                let payload = extract_payload_from_query(req.uri().query());
+                self.handle_callback(payload).await
+            }
+            Method::POST => {
+                let whole_body = req
+                    .into_body()
+                    .collect()
+                    .await
+                    .map(|c| c.to_bytes())
+                    .unwrap_or_default();
+                let payload = extract_payload_from_body(&whole_body);
+                self.handle_callback(payload).await
+            }
+            _ => Ok(Response::builder()
+                .status(StatusCode::METHOD_NOT_ALLOWED)
+                .body(Full::new(Bytes::from_static(b"method not allowed")))
+                .expect("building method not allowed response failed")),
+        }
+    }
+
+    async fn handle_preflight(
+        &self,
+        request_origin: Option<String>,
+        req: &Request<Incoming>,
+    ) -> Result<Response<Full<Bytes>>, Infallible> {
+        let expected_origin = self.expected_origin.clone();
+        let allowed_origin =
+            request_origin.filter(|origin| origin_allowed_value(origin, &expected_origin));
+        if allowed_origin.is_none() {
+            return Ok(forbidden());
+        }
+
+        self.set_validated_origin(allowed_origin.clone()).await;
+
+        let allow_headers =
+            requested_headers(req).unwrap_or_else(|| "Content-Type, Origin".to_string());
+        Ok(preflight_cors_response(
+            Response::builder().status(StatusCode::OK),
+            allowed_origin
+                .as_deref()
+                .unwrap_or(expected_origin.as_str()),
+            &allow_headers,
+        )
+        .header(VARY, "Accept-Encoding, Origin")
+        .header(CONTENT_LENGTH, "0")
+        .body(Full::new(Bytes::new()))
+        .expect("building preflight response failed"))
+    }
+
+    async fn handle_callback(
+        &self,
+        payload: Option<CallbackPayload>,
+    ) -> Result<Response<Full<Bytes>>, Infallible> {
+        self.publish_payload(&payload);
+        let stored_origin = self.validated_origin().await;
+        Ok(ok_callback_response(
+            payload.as_ref(),
+            stored_origin.as_deref(),
+            self.application.as_deref(),
+        ))
+    }
+
+    fn publish_payload(&self, payload: &Option<CallbackPayload>) {
+        if let Some(payload) = payload {
+            let _ = self.payload_tx.send(Some(payload.clone()));
+        }
+    }
+
+    async fn set_validated_origin(&self, origin: Option<String>) {
+        let mut guard = self.validated_origin.lock().await;
+        *guard = origin;
+    }
+
+    async fn validated_origin(&self) -> Option<String> {
+        self.validated_origin.lock().await.clone()
+    }
+}
+
+struct ConnectionTasks {
+    shutdown_tx: watch::Sender<bool>,
+    shutdown_rx: watch::Receiver<bool>,
+    tasks: JoinSet<ConnectionTaskResult>,
+}
+
+impl ConnectionTasks {
+    fn new() -> Self {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        Self {
+            shutdown_tx,
+            shutdown_rx,
+            tasks: JoinSet::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+
+    fn spawn(&mut self, stream: tokio::net::TcpStream, shared: Arc<ListenerShared>) {
+        let shutdown = self.shutdown_rx.clone();
+        self.tasks
+            .spawn(async move { run_connection(stream, shared, shutdown).await });
+    }
+
+    async fn join_next(&mut self) -> Option<Result<ConnectionTaskResult, JoinError>> {
+        self.tasks.join_next().await
+    }
+
+    async fn shutdown_and_drain(&mut self) {
+        let _ = self.shutdown_tx.send(true);
+        while !self.is_empty() {
+            log_connection_task_result(self.join_next().await);
+        }
+    }
+}
+
+struct ListenerRuntime {
+    listener: TcpListener,
+    shared: Arc<ListenerShared>,
+    shutdown: oneshot::Receiver<()>,
+    connections: ConnectionTasks,
+}
+
+impl ListenerRuntime {
+    fn new(
+        listener: TcpListener,
+        expected_origin: String,
+        application: Option<String>,
+        shutdown: oneshot::Receiver<()>,
+        payload_tx: watch::Sender<Option<CallbackPayload>>,
+    ) -> Self {
+        Self {
+            listener,
+            shared: Arc::new(ListenerShared::new(
+                expected_origin,
+                application,
+                payload_tx,
+            )),
+            shutdown,
+            connections: ConnectionTasks::new(),
+        }
+    }
+
+    async fn run(mut self) -> Result<(), ListenerError> {
+        loop {
+            tokio::select! {
+                join_result = self.connections.join_next(), if !self.connections.is_empty() => {
+                    log_connection_task_result(join_result);
+                }
+                res = self.listener.accept() => {
+                    let (stream, _peer) = match res {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("accept error: {e}");
+                            continue;
+                        }
+                    };
+                    self.connections.spawn(stream, self.shared.clone());
+                }
+                _ = &mut self.shutdown => {
+                    break;
+                }
+            }
+        }
+
+        drop(self.listener);
+        self.connections.shutdown_and_drain().await;
+        Ok(())
+    }
+}
+
+pub async fn spawn_listener(cfg: ListenerConfig) -> Result<RunningListener, ListenerError> {
     let (listener, local_addr) = bind_listener(&cfg)?;
     let expected_origin = build_origin(&cfg.protocol, cfg.host, local_addr.port());
     let application = cfg.application.clone();
-    let (tx, rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (payload_tx, payload_rx) = watch::channel(None);
-    let handle = tokio::spawn(async move {
-        run_loop(listener, expected_origin, application, rx, payload_tx).await
-    });
+    let handle = tokio::spawn(
+        ListenerRuntime::new(
+            listener,
+            expected_origin,
+            application,
+            shutdown_rx,
+            payload_tx,
+        )
+        .run(),
+    );
 
     Ok(RunningListener {
         addr: local_addr,
-        shutdown: tx,
+        shutdown: shutdown_tx,
         handle,
         payloads: payload_rx,
     })
 }
 
-async fn run_loop(
-    listener: TcpListener,
-    expected_origin: String,
-    application: Option<String>,
-    mut shutdown: oneshot::Receiver<()>,
-    payload_tx: watch::Sender<Option<CallbackPayload>>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    // We keep the last validated Origin in state when it receives a successful OPTIONS preflight,
-    // so that GET/POST can return the JSON response (without leaking the token).
-    let validated_origin = Arc::new(Mutex::<Option<String>>::new(None));
+async fn run_connection(
+    stream: tokio::net::TcpStream,
+    shared: Arc<ListenerShared>,
+    mut shutdown: watch::Receiver<bool>,
+) -> ConnectionTaskResult {
+    let io = TokioIo::new(stream);
+    let svc = service_fn(move |req| {
+        let shared = shared.clone();
+        async move { shared.handle(req).await }
+    });
+    let conn = http1::Builder::new().serve_connection(io, svc);
+    tokio::pin!(conn);
 
-    loop {
-        tokio::select! {
-            res = listener.accept() => {
-                let (stream, _peer) = match res {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("accept error: {e}");
-                        continue;
-                    }
-                };
-                let expected = expected_origin.clone();
-                let application = application.clone();
-                let payload_tx = payload_tx.clone();
-                let validated_origin = validated_origin.clone();
-                tokio::spawn(async move {
-                    let io = TokioIo::new(stream);
-                    let svc = service_fn(move |req| {
-                        handler(
-                            req,
-                            expected.clone(),
-                            application.clone(),
-                            payload_tx.clone(),
-                            validated_origin.clone(),
-                        )
-                    });
-                    if let Err(err) = http1::Builder::new().serve_connection(io, svc).await {
-                        eprintln!("serve error: {err}");
-                    }
-                });
-            }
-            _ = &mut shutdown => {
-                break;
-            }
+    tokio::select! {
+        res = conn.as_mut() => {
+            res.map_err(|err| Box::new(err) as ListenerError)
+        }
+        _ = shutdown.changed() => {
+            conn.as_mut().graceful_shutdown();
+            conn.await.map_err(|err| Box::new(err) as ListenerError)
         }
     }
-    Ok(())
 }
 
-async fn handler(
-    req: Request<Incoming>,
-    expected_origin: String,
-    application: Option<String>,
-    payload_tx: watch::Sender<Option<CallbackPayload>>,
-    validated_origin: Arc<Mutex<Option<String>>>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    let request_origin = header_to_string(req.headers().get(ORIGIN));
-
-    match *req.method() {
-        Method::OPTIONS => {
-            let allowed_origin =
-                request_origin.filter(|origin| origin_allowed_value(origin, &expected_origin));
-            if allowed_origin.is_none() {
-                return Ok(forbidden());
-            }
-
-            // Store validated Origin so that subsequent GET/POST can return JSON
-            {
-                let mut guard = validated_origin.lock().await;
-                *guard = allowed_origin.clone();
-            }
-
-            let allow_headers =
-                requested_headers(&req).unwrap_or_else(|| "Content-Type, Origin".to_string());
-            Ok(preflight_cors_response(
-                Response::builder().status(StatusCode::OK),
-                allowed_origin.as_deref().unwrap_or(&expected_origin),
-                &allow_headers,
-            )
-            .header(VARY, "Accept-Encoding, Origin")
-            .header(CONTENT_LENGTH, "0")
-            .body(Full::new(Bytes::new()))
-            .expect("building preflight response failed"))
-        }
-        Method::GET => {
-            let payload = extract_payload_from_query(req.uri().query());
-            if let Some(p) = payload.clone() {
-                let _ = payload_tx.send(Some(p));
-            }
-            let stored_origin = validated_origin.lock().await.clone();
-            Ok(ok_callback_response(
-                payload.as_ref(),
-                stored_origin.as_deref(),
-                application.as_deref(),
-            ))
-        }
-        Method::POST => {
-            let whole_body = req
-                .into_body()
-                .collect()
-                .await
-                .map(|c| c.to_bytes())
-                .unwrap_or_default();
-            let payload = extract_payload_from_body(&whole_body);
-            if let Some(p) = payload.clone() {
-                let _ = payload_tx.send(Some(p));
-            }
-            let stored_origin = validated_origin.lock().await.clone();
-            Ok(ok_callback_response(
-                payload.as_ref(),
-                stored_origin.as_deref(),
-                application.as_deref(),
-            ))
-        }
-        _ => Ok(Response::builder()
-            .status(StatusCode::METHOD_NOT_ALLOWED)
-            .body(Full::new(Bytes::from_static(b"method not allowed")))
-            .expect("building method not allowed response failed")),
+fn log_connection_task_result(join_result: Option<Result<ConnectionTaskResult, JoinError>>) {
+    match join_result {
+        Some(Ok(Ok(()))) => {}
+        Some(Ok(Err(err))) => eprintln!("serve error: {err}"),
+        Some(Err(err)) => eprintln!("connection task join error: {err}"),
+        None => {}
     }
 }
 
@@ -358,10 +476,68 @@ fn requested_headers(req: &Request<Incoming>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+    use std::net::TcpListener as StdTcpListener;
+
     use reqwest::StatusCode as ReqwestStatusCode;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
     use tokio::time::{Duration, sleep};
 
     use super::*;
+
+    async fn read_http_response(stream: &mut TcpStream) -> io::Result<String> {
+        let mut buf = Vec::new();
+        let mut header_end = None;
+
+        while header_end.is_none() {
+            let mut chunk = [0_u8; 1024];
+            let n = stream.read(&mut chunk).await?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "stream closed before headers completed",
+                ));
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            header_end = buf.windows(4).position(|w| w == b"\r\n\r\n");
+        }
+
+        let header_end = header_end.expect("header end must exist") + 4;
+        let headers = String::from_utf8_lossy(&buf[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+
+        while buf.len() < header_end + content_length {
+            let mut chunk = [0_u8; 1024];
+            let n = stream.read(&mut chunk).await?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "stream closed before body completed",
+                ));
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
+
+    fn pick_unused_port() -> u16 {
+        let listener =
+            StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("failed to reserve test port");
+        listener
+            .local_addr()
+            .expect("failed to get local addr")
+            .port()
+    }
 
     async fn with_listener<F, Fut>(test: F)
     where
@@ -707,5 +883,103 @@ mod tests {
 
         let _ = running.shutdown.send(());
         let _ = running.handle.await;
+    }
+
+    #[tokio::test]
+    async fn dropping_running_listener_releases_bound_port() {
+        let running = spawn_listener(ListenerConfig::default()).await.unwrap();
+        let port = running.addr.port();
+        let host = running.addr.ip();
+
+        drop(running);
+
+        let mut rebound = false;
+        for _ in 0..20 {
+            if bind_listener(&ListenerConfig {
+                host,
+                port,
+                ..Default::default()
+            })
+            .is_ok()
+            {
+                rebound = true;
+                break;
+            }
+
+            sleep(Duration::from_millis(25)).await;
+        }
+
+        assert!(
+            rebound,
+            "listener port {port} was still bound after RunningListener drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_stale_connection_before_next_listener_reuses_port() {
+        let port = pick_unused_port();
+        let cfg = ListenerConfig {
+            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port,
+            ..Default::default()
+        };
+
+        let running1 = spawn_listener(ListenerConfig {
+            host: cfg.host,
+            port: cfg.port,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let mut stale_rx = running1.payloads.clone();
+        let mut stream = TcpStream::connect(running1.addr).await.unwrap();
+        let first_request = format!(
+            "GET /callback?token=first HTTP/1.1\r\nHost: {}\r\nConnection: keep-alive\r\n\r\n",
+            running1.addr
+        );
+        stream.write_all(first_request.as_bytes()).await.unwrap();
+        let first_response = read_http_response(&mut stream).await.unwrap();
+        assert!(first_response.contains("200 OK"));
+
+        let _ = stale_rx.changed().await;
+        assert_eq!(stale_rx.borrow().as_ref().unwrap().token, "first");
+
+        let _ = running1.shutdown.send(());
+        let _ = running1.handle.await;
+
+        let mut closed_probe = [0_u8; 1];
+        let close_result =
+            tokio::time::timeout(Duration::from_millis(200), stream.read(&mut closed_probe))
+                .await
+                .expect("stale connection did not close promptly")
+                .unwrap();
+        assert_eq!(close_result, 0, "stale callback connection remained open");
+
+        let running2 = spawn_listener(cfg).await.unwrap();
+        let mut next_rx = running2.payloads.clone();
+
+        let mut second_stream = TcpStream::connect(running2.addr).await.unwrap();
+        let second_request = format!(
+            "GET /callback?token=second HTTP/1.1\r\nHost: {}\r\nConnection: keep-alive\r\n\r\n",
+            running2.addr
+        );
+        second_stream
+            .write_all(second_request.as_bytes())
+            .await
+            .unwrap();
+        let second_response = read_http_response(&mut second_stream).await.unwrap();
+        assert!(second_response.contains("200 OK"));
+
+        let second_seen_by_new_listener =
+            tokio::time::timeout(Duration::from_millis(200), next_rx.changed()).await;
+        assert!(
+            second_seen_by_new_listener.is_ok(),
+            "new listener did not observe callback on fresh connection"
+        );
+        assert_eq!(next_rx.borrow().as_ref().unwrap().token, "second");
+
+        let _ = running2.shutdown.send(());
+        let _ = running2.handle.await;
     }
 }
