@@ -6,7 +6,8 @@ use std::sync::Arc;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{
-    ACCESS_CONTROL_REQUEST_HEADERS, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue, ORIGIN, VARY,
+    ACCESS_CONTROL_REQUEST_HEADERS, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue, ORIGIN,
+    VARY,
 };
 use hyper::http::StatusCode;
 use hyper::server::conn::http1;
@@ -283,7 +284,8 @@ Your identity was confirmed and propagated to Snowflake.
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, content_type)
-        .header(CONTENT_LENGTH, body.len().to_string());
+        .header(CONTENT_LENGTH, body.len().to_string())
+        .header(CONNECTION, "close");
 
     if let Some(origin) = stored_origin {
         builder = builder
@@ -707,5 +709,83 @@ mod tests {
 
         let _ = running.shutdown.send(());
         let _ = running.handle.await;
+    }
+
+    /// Reproduce: spawn listener on a fixed port, send a callback (which
+    /// creates a hyper keep-alive HTTP connection), shut down the listener,
+    /// then spawn again on the same port.  The second bind must succeed.
+    #[tokio::test]
+    async fn rebind_fixed_port_after_http_callback() {
+        let fixed_port = 19991;
+        let cfg = || ListenerConfig {
+            port: fixed_port,
+            application: Some("rebind-test".to_string()),
+            ..Default::default()
+        };
+
+        // ── 1st listener ──
+        let r1 = spawn_listener(cfg())
+            .await
+            .expect("first spawn_listener failed");
+        let base1 = format!("http://{}", r1.addr);
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base1}/callback"))
+            .json(&serde_json::json!({"token": "tok1"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), ReqwestStatusCode::OK);
+
+        let _ = r1.shutdown.send(());
+        let _ = r1.handle.await;
+
+        // ── 2nd listener on the same port ──
+        let r2 = spawn_listener(cfg())
+            .await
+            .expect("second spawn_listener failed (EADDRINUSE?)");
+        let base2 = format!("http://{}", r2.addr);
+
+        let resp = client
+            .post(format!("{base2}/callback"))
+            .json(&serde_json::json!({"token": "tok2"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), ReqwestStatusCode::OK);
+
+        let _ = r2.shutdown.send(());
+        let _ = r2.handle.await;
+    }
+
+    /// Stress test: rapidly cycle spawn → callback → shutdown on the same
+    /// fixed port, leaving hyper keep-alive connections in flight.
+    #[tokio::test]
+    async fn rebind_fixed_port_rapid_cycles() {
+        let fixed_port = 19992;
+        let client = reqwest::Client::new();
+
+        for i in 0..5 {
+            let r = spawn_listener(ListenerConfig {
+                port: fixed_port,
+                application: Some("rapid-cycle".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap_or_else(|e| panic!("cycle {i}: spawn_listener failed: {e}"));
+
+            let base = format!("http://{}", r.addr);
+            let resp = client
+                .post(format!("{base}/callback"))
+                .json(&serde_json::json!({"token": format!("tok{i}")}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), ReqwestStatusCode::OK);
+
+            let _ = r.shutdown.send(());
+            let _ = r.handle.await;
+        }
     }
 }
