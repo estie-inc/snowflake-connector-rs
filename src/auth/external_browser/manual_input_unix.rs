@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 
 use nix::sys::termios::{self, LocalFlags, SetArg, SpecialCharacterIndices, Termios};
 
-use super::validate_redirected_url_input;
+use super::manual_redirect_input::validate_redirected_url_input;
 use crate::{Error, Result};
 
 pub(super) fn try_read_redirected_url_line_noncanonical() -> Option<Result<String>> {

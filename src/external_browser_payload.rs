@@ -1,9 +1,24 @@
 use std::borrow::Cow;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BrowserCallbackPayload {
+    pub(crate) token: String,
+    pub(crate) consent: Option<bool>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ParsedTokenAndConsent {
     pub(crate) token: Option<String>,
     pub(crate) consent: Option<bool>,
+}
+
+impl ParsedTokenAndConsent {
+    pub(crate) fn into_payload(self) -> Option<BrowserCallbackPayload> {
+        self.token.map(|token| BrowserCallbackPayload {
+            token,
+            consent: self.consent,
+        })
+    }
 }
 
 /// Parse `token` and `consent` from key/value pairs shared by both external-browser flows.
