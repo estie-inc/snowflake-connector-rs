@@ -33,13 +33,13 @@ pub struct SnowflakeSessionConfig {
     session_parameters: HashMap<String, serde_json::Value>,
 }
 
+const DEFAULT_COLLECT_PREFETCH_CONCURRENCY: usize = 8;
+
 /// Client-side query execution policy.
 ///
 /// Controls how this connector behaves while executing queries — for example,
 /// how long to poll for the completion of an async query. These settings are
 /// enforced entirely on the client side and are never sent to Snowflake.
-const DEFAULT_COLLECT_PREFETCH_CONCURRENCY: usize = 8;
-
 #[derive(Clone)]
 pub struct SnowflakeQueryConfig {
     async_query_completion_timeout: Option<Duration>,
