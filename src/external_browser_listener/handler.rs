@@ -1,16 +1,15 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, sync::Mutex};
 
 use http_body_util::{BodyExt, Full};
 use hyper::{
     body::{Bytes, Incoming},
-    header::{
-        ACCESS_CONTROL_REQUEST_HEADERS, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue, ORIGIN, VARY,
-    },
+    header::{ACCESS_CONTROL_REQUEST_HEADERS, CONTENT_LENGTH, CONTENT_TYPE, ORIGIN, VARY},
     http::StatusCode,
     {Method, Request, Response},
 };
 use serde::Deserialize;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::watch;
+use url::form_urlencoded;
 
 use crate::external_browser_payload::{
     BrowserCallbackPayload, ParsedTokenAndConsent, parse_token_and_consent_from_pairs,
@@ -47,7 +46,11 @@ impl CallbackHandler {
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
-        let request_origin = header_to_string(req.headers().get(ORIGIN));
+        let request_origin = req
+            .headers()
+            .get(ORIGIN)
+            .and_then(|origin| origin.to_str().ok())
+            .map(ToString::to_string);
 
         match *req.method() {
             Method::OPTIONS => self.handle_preflight(request_origin, &req).await,
@@ -74,20 +77,17 @@ impl CallbackHandler {
         request_origin: Option<String>,
         req: &Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
-        let allowed_origin =
-            request_origin.filter(|origin| origin_allowed_value(origin, &self.expected_origin));
-        if allowed_origin.is_none() {
+        let Some(allowed_origin) =
+            request_origin.filter(|origin| origin.eq_ignore_ascii_case(&self.expected_origin))
+        else {
             return Ok(forbidden_response());
-        }
+        };
 
-        let response_allowed_origin = allowed_origin
-            .as_deref()
-            .unwrap_or(self.expected_origin.as_str());
         let allow_headers =
             requested_headers(req).unwrap_or_else(|| "Content-Type, Origin".to_string());
-        let response = preflight_cors_response(response_allowed_origin, &allow_headers);
+        let response = preflight_cors_response(&allowed_origin, &allow_headers);
 
-        self.set_validated_origin(allowed_origin).await;
+        self.set_validated_origin(allowed_origin);
 
         Ok(response)
     }
@@ -97,7 +97,7 @@ impl CallbackHandler {
         payload: Option<BrowserCallbackPayload>,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
         self.publish_payload(&payload);
-        let stored_origin = self.validated_origin().await;
+        let stored_origin = self.validated_origin();
 
         let response = match payload.as_ref() {
             None => missing_token_response(),
@@ -115,13 +115,19 @@ impl CallbackHandler {
         }
     }
 
-    async fn set_validated_origin(&self, origin: Option<String>) {
-        let mut guard = self.validated_origin.lock().await;
-        *guard = origin;
+    fn set_validated_origin(&self, origin: String) {
+        let mut guard = self
+            .validated_origin
+            .lock()
+            .expect("validated_origin lock poisoned");
+        *guard = Some(origin);
     }
 
-    async fn validated_origin(&self) -> Option<String> {
-        self.validated_origin.lock().await.clone()
+    fn validated_origin(&self) -> Option<String> {
+        self.validated_origin
+            .lock()
+            .expect("validated_origin lock poisoned")
+            .clone()
     }
 }
 
@@ -140,9 +146,7 @@ fn extract_payload_from_body(body: &Bytes) -> Option<BrowserCallbackPayload> {
             std::str::from_utf8(body)
                 .ok()
                 .map(|body_str| {
-                    parse_token_and_consent_from_pairs(url::form_urlencoded::parse(
-                        body_str.as_bytes(),
-                    ))
+                    parse_token_and_consent_from_pairs(form_urlencoded::parse(body_str.as_bytes()))
                 })
                 .and_then(ParsedTokenAndConsent::into_payload)
         })
@@ -150,16 +154,8 @@ fn extract_payload_from_body(body: &Bytes) -> Option<BrowserCallbackPayload> {
 
 fn extract_payload_from_query(query: Option<&str>) -> Option<BrowserCallbackPayload> {
     query
-        .map(|q| parse_token_and_consent_from_pairs(url::form_urlencoded::parse(q.as_bytes())))
+        .map(|q| parse_token_and_consent_from_pairs(form_urlencoded::parse(q.as_bytes())))
         .and_then(ParsedTokenAndConsent::into_payload)
-}
-
-fn header_to_string(value: Option<&HeaderValue>) -> Option<String> {
-    value.and_then(|v| v.to_str().ok()).map(|s| s.to_string())
-}
-
-fn origin_allowed_value(origin: &str, expected: &str) -> bool {
-    origin.eq_ignore_ascii_case(expected)
 }
 
 fn requested_headers(req: &Request<Incoming>) -> Option<String> {
