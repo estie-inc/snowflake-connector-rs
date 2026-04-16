@@ -1,6 +1,8 @@
+use std::num::NonZeroUsize;
+
 use super::common;
 
-use snowflake_connector_rs::Result;
+use snowflake_connector_rs::{CollectOptions, Result};
 
 /// Verify that chunks are yielded in the order Snowflake returns them,
 /// so that ORDER BY is preserved across chunk boundaries.
@@ -11,28 +13,31 @@ async fn test_chunk_order_preserved_with_order_by() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
-    let query = "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS PAD \
-                 FROM TABLE(GENERATOR(ROWCOUNT=>200000)) ORDER BY SEQ";
-    let executor = session.execute(query).await?;
+    let query = r#"
+    SELECT
+        SEQ8() AS SEQ,
+        RANDSTR(1000, RANDOM()) AS PAD
+    FROM
+        TABLE(GENERATOR(ROWCOUNT=>200000))
+    ORDER BY
+        SEQ
+    "#;
+    let mut result = session.execute(query).await?;
 
-    let mut prev: Option<u64> = None;
-    let mut total_rows = 0u64;
+    let mut expected_seq = 0u64;
     let mut chunk_count = 0u64;
-    while let Some(rows) = executor.fetch_next_chunk().await? {
+    while let Some(rows) = result.next_batch().await? {
         chunk_count += 1;
         for row in &rows {
             let seq = row.get::<u64>("SEQ")?;
-            if let Some(p) = prev {
-                assert!(
-                    seq >= p,
-                    "ordering broken: {p} followed by {seq} (row {total_rows})"
-                );
-            }
-            prev = Some(seq);
-            total_rows += 1;
+            assert_eq!(
+                seq, expected_seq,
+                "expected SEQ {expected_seq} but got {seq} (duplicate or gap)"
+            );
+            expected_seq += 1;
         }
     }
-    assert_eq!(total_rows, 200_000);
+    assert_eq!(expected_seq, 200_000);
     assert!(
         chunk_count >= 3,
         "expected multiple chunks but got {chunk_count}; \
@@ -41,23 +46,29 @@ async fn test_chunk_order_preserved_with_order_by() -> Result<()> {
     Ok(())
 }
 
-/// Same verification using `query()` (which calls `fetch_all` internally).
+/// Same verification using `query()` (which calls `collect_all` internally).
 #[tokio::test]
 async fn test_chunk_order_preserved_with_query() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
-    let query = "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS PAD \
-                 FROM TABLE(GENERATOR(ROWCOUNT=>200000)) ORDER BY SEQ";
+    let query = r#"
+    SELECT
+        SEQ8() AS SEQ,
+        RANDSTR(1000, RANDOM()) AS PAD
+    FROM
+        TABLE(GENERATOR(ROWCOUNT=>200000))
+    ORDER BY
+        SEQ
+    "#;
     let rows = session.query(query).await?;
 
     assert_eq!(rows.len(), 200_000);
-    for i in 1..rows.len() {
-        let prev = rows[i - 1].get::<u64>("SEQ")?;
-        let curr = rows[i].get::<u64>("SEQ")?;
-        assert!(
-            curr >= prev,
-            "ordering broken at index {i}: {prev} followed by {curr}"
+    for (i, row) in rows.iter().enumerate() {
+        let seq = row.get::<u64>("SEQ")?;
+        assert_eq!(
+            seq, i as u64,
+            "expected SEQ {i} but got {seq} (duplicate or gap)"
         );
     }
     Ok(())
@@ -70,7 +81,13 @@ async fn test_download_chunked_results() -> Result<()> {
 
     // Act
     let session = client.create_session().await?;
-    let query = "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS RAND FROM TABLE(GENERATOR(ROWCOUNT=>10000))";
+    let query = r#"
+    SELECT
+        SEQ8() AS SEQ,
+        RANDSTR(1000, RANDOM()) AS RAND
+    FROM
+        TABLE(GENERATOR(ROWCOUNT=>10000))
+    "#;
     let rows = session.query(query).await?;
 
     // Assert
@@ -103,18 +120,128 @@ async fn test_download_chunked_results() -> Result<()> {
     Ok(())
 }
 
+/// After consuming one or more batches via `next_batch()`, `collect_all()`
+/// must return only the remaining rows — no duplicates, no gaps.
+/// Uses 200 000 rows with 1 000-char padding to guarantee multiple S3 chunks.
 #[tokio::test]
-async fn test_query_executor() -> Result<()> {
+async fn test_partial_next_batch_then_collect_all() -> Result<()> {
+    let client = common::connect()?;
+    let session = client.create_session().await?;
+
+    let query = r#"
+    SELECT
+        SEQ8() AS SEQ,
+        RANDSTR(1000, RANDOM()) AS PAD
+    FROM
+        TABLE(GENERATOR(ROWCOUNT=>200000))
+    ORDER BY
+        SEQ
+    "#;
+    let mut result = session.execute(query).await?;
+
+    let first_batch = result
+        .next_batch()
+        .await?
+        .expect("should have at least one batch");
+    let first_batch_len = first_batch.len();
+    assert!(first_batch_len > 0);
+    assert!(
+        !result.is_exhausted(),
+        "expected remote partitions remaining after first batch"
+    );
+
+    // Verify first batch is an exact prefix 0..first_batch_len
+    for (i, row) in first_batch.iter().enumerate() {
+        let seq = row.get::<u64>("SEQ")?;
+        assert_eq!(seq, i as u64, "first_batch: expected SEQ {i} but got {seq}");
+    }
+
+    let remaining = result.collect_all().await?;
+    assert_eq!(first_batch_len + remaining.len(), 200_000);
+
+    // Verify remaining continues exactly where first_batch left off
+    for (i, row) in remaining.iter().enumerate() {
+        let expected = (first_batch_len + i) as u64;
+        let seq = row.get::<u64>("SEQ")?;
+        assert_eq!(
+            seq, expected,
+            "remaining: expected SEQ {expected} but got {seq}"
+        );
+    }
+
+    Ok(())
+}
+
+/// `collect_all_with_options` with a custom concurrency override must
+/// preserve partition order and remaining-only semantics.
+/// Uses 200 000 rows with 1 000-char padding to guarantee multiple S3 chunks.
+#[tokio::test]
+async fn test_partial_next_batch_then_collect_all_with_options() -> Result<()> {
+    let client = common::connect()?;
+    let session = client.create_session().await?;
+
+    let query = r#"
+    SELECT
+        SEQ8() AS SEQ,
+        RANDSTR(1000, RANDOM()) AS PAD
+    FROM
+        TABLE(GENERATOR(ROWCOUNT=>200000))
+    ORDER BY
+        SEQ
+    "#;
+    let mut result = session.execute(query).await?;
+
+    let first_batch = result
+        .next_batch()
+        .await?
+        .expect("should have at least one batch");
+    let first_batch_len = first_batch.len();
+    assert!(
+        !result.is_exhausted(),
+        "expected remote partitions remaining after first batch"
+    );
+
+    for (i, row) in first_batch.iter().enumerate() {
+        let seq = row.get::<u64>("SEQ")?;
+        assert_eq!(seq, i as u64, "first_batch: expected SEQ {i} but got {seq}");
+    }
+
+    let options =
+        CollectOptions::default().with_prefetch_concurrency(NonZeroUsize::new(2).unwrap());
+    let remaining = result.collect_all_with_options(options).await?;
+
+    assert_eq!(first_batch_len + remaining.len(), 200_000);
+
+    for (i, row) in remaining.iter().enumerate() {
+        let expected = (first_batch_len + i) as u64;
+        let seq = row.get::<u64>("SEQ")?;
+        assert_eq!(
+            seq, expected,
+            "remaining: expected SEQ {expected} but got {seq}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_result_set_streaming() -> Result<()> {
     // Arrange
     let client = common::connect()?;
 
     // Act
     let session = client.create_session().await?;
-    let query = "SELECT SEQ8() AS SEQ, RANDSTR(1000, RANDOM()) AS RAND FROM TABLE(GENERATOR(ROWCOUNT=>10000))";
+    let query = r#"
+    SELECT
+        SEQ8() AS SEQ,
+        RANDSTR(1000, RANDOM()) AS RAND
+    FROM
+        TABLE(GENERATOR(ROWCOUNT=>10000))
+    "#;
 
-    let executor = session.execute(query).await?;
+    let mut result = session.execute(query).await?;
     let mut rows = Vec::with_capacity(10000);
-    while let Some(mut r) = executor.fetch_next_chunk().await? {
+    while let Some(mut r) = result.next_batch().await? {
         rows.append(&mut r);
     }
 

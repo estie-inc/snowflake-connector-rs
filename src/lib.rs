@@ -34,17 +34,24 @@
 //! let query = "INSERT INTO example (id, value) VALUES (1, 'hello'), (2, 'world')";
 //! session.query(query).await?;
 //!
-//! let query = "SELECT * FROM example ORDER BY id";
-//! let rows = session.query(query).await?;
+//! // Fetch all results at once
+//! let rows = session.query("SELECT * FROM example ORDER BY id").await?;
 //! assert_eq!(rows.len(), 2);
 //! assert_eq!(rows[0].get::<i64>("ID")?, 1);
 //! assert_eq!(rows[0].get::<String>("VALUE")?, "hello");
+//!
+//! // Or stream batch by batch via ResultSet
+//! let mut result = session.execute("SELECT * FROM example ORDER BY id").await?;
+//! while let Some(batch) = result.next_batch().await? {
+//!     for row in &batch {
+//!         println!("{}", row.get::<String>("VALUE")?);
+//!     }
+//! }
 //! # Ok(())
 //! # }
 //! ```
 
 mod auth;
-mod chunk;
 mod config;
 mod error;
 #[cfg(feature = "external-browser-sso")]
@@ -69,7 +76,7 @@ pub use external_browser_config::{
     BrowserLaunchMode, ExternalBrowserConfig, WithCallbackListenerConfig,
     WithoutCallbackListenerConfig,
 };
-pub use query::{Binding, BindingType, QueryExecutor, QueryRequest};
+pub use query::{Binding, BindingType, CollectOptions, QueryRequest, ResultSet};
 pub use row::{SnowflakeColumn, SnowflakeColumnType, SnowflakeDecode, SnowflakeRow};
 pub use session::SnowflakeSession;
 
