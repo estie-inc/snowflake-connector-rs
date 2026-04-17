@@ -12,7 +12,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::external_browser_payload::BrowserCallbackPayload;
+use super::payload::BrowserCallbackPayload;
 
 use runtime::{ListenerRuntime, bind_listener, build_origin};
 

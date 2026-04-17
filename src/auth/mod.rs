@@ -1,6 +1,6 @@
 mod client;
 #[cfg(feature = "external-browser-sso")]
-mod external_browser;
+pub(crate) mod external_browser;
 mod key_pair;
 mod login;
 

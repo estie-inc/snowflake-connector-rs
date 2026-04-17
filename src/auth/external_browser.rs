@@ -4,20 +4,25 @@ use reqwest::{Client, Url};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::auth::client::AUTH_REQUEST_TIMEOUT;
-use crate::external_browser_launcher::{BrowserLauncher, LaunchOutcome, SystemCommandRunner};
-use crate::external_browser_listener::{
-    CallbackWaitError, ListenerConfig, RunningListener, spawn_listener,
-};
-use crate::external_browser_payload::BrowserCallbackPayload;
-use crate::{
-    BrowserLaunchMode, Error, ExternalBrowserConfig, Result, WithCallbackListenerConfig,
-    WithoutCallbackListenerConfig,
-};
-
+mod config;
+mod launcher;
+mod listener;
 #[cfg(unix)]
 mod manual_input_unix;
 mod manual_redirect_input;
+mod payload;
+
+use crate::auth::client::AUTH_REQUEST_TIMEOUT;
+use crate::{Error, Result};
+
+use launcher::{BrowserLauncher, LaunchOutcome, SystemCommandRunner};
+use listener::{CallbackWaitError, ListenerConfig, RunningListener, spawn_listener};
+use payload::BrowserCallbackPayload;
+
+pub use config::{
+    BrowserLaunchMode, ExternalBrowserConfig, WithCallbackListenerConfig,
+    WithoutCallbackListenerConfig,
+};
 
 const EXTERNAL_BROWSER_CALLBACK_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 

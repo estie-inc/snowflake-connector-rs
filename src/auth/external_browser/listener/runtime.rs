@@ -12,7 +12,7 @@ use tokio::{
     task::{JoinError, JoinSet},
 };
 
-use crate::external_browser_payload::BrowserCallbackPayload;
+use super::super::payload::BrowserCallbackPayload;
 
 use super::ListenerError;
 use super::handler::CallbackHandler;

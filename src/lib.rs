@@ -54,28 +54,20 @@
 mod auth;
 mod config;
 mod error;
-#[cfg(feature = "external-browser-sso")]
-mod external_browser_config;
-#[cfg(feature = "external-browser-sso")]
-mod external_browser_launcher;
-#[cfg(feature = "external-browser-sso")]
-mod external_browser_listener;
-#[cfg(feature = "external-browser-sso")]
-mod external_browser_payload;
 mod query;
 mod row;
 mod session;
 
+#[cfg(feature = "external-browser-sso")]
+pub use auth::external_browser::{
+    BrowserLaunchMode, ExternalBrowserConfig, WithCallbackListenerConfig,
+    WithoutCallbackListenerConfig,
+};
 pub use config::{
     SnowflakeClientConfig, SnowflakeEndpointConfig, SnowflakeProxyConfig, SnowflakeQueryConfig,
     SnowflakeSessionConfig, SnowflakeTransportConfig,
 };
 pub use error::{Error, Result};
-#[cfg(feature = "external-browser-sso")]
-pub use external_browser_config::{
-    BrowserLaunchMode, ExternalBrowserConfig, WithCallbackListenerConfig,
-    WithoutCallbackListenerConfig,
-};
 pub use query::{Binding, BindingType, CollectOptions, QueryRequest, ResultSet};
 pub use row::{SnowflakeColumn, SnowflakeColumnType, SnowflakeDecode, SnowflakeRow};
 pub use session::SnowflakeSession;
