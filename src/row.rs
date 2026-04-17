@@ -206,7 +206,7 @@ impl SnowflakeRow {
     }
     pub fn at<T: SnowflakeDecode>(&self, column_index: usize) -> Result<T> {
         let ty = self.columns[column_index].column_type();
-        (&self.row[column_index], ty).try_get()
+        T::try_decode(&self.row[column_index], ty)
     }
     pub fn column_names(&self) -> Vec<&str> {
         self.columns.iter().map(|column| column.name()).collect()
@@ -522,16 +522,6 @@ impl<T: SnowflakeDecode> SnowflakeDecode for Option<T> {
             return Ok(None);
         }
         T::try_decode(value, ty).map(|v| Some(v))
-    }
-}
-
-trait TryGet {
-    fn try_get<T: SnowflakeDecode>(&self) -> Result<T>;
-}
-
-impl TryGet for (&Option<String>, &SnowflakeColumnType) {
-    fn try_get<T: SnowflakeDecode>(&self) -> Result<T> {
-        T::try_decode(self.0, self.1)
     }
 }
 
