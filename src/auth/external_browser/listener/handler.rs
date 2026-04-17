@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tokio::sync::watch;
 use url::form_urlencoded;
 
-use crate::external_browser_payload::{
+use super::super::payload::{
     BrowserCallbackPayload, ParsedTokenAndConsent, parse_token_and_consent_from_pairs,
 };
 
@@ -248,7 +248,7 @@ mod tests {
         http::StatusCode,
     };
 
-    use crate::external_browser_payload::BrowserCallbackPayload;
+    use super::super::super::payload::BrowserCallbackPayload;
 
     use super::{
         cors_consent_response, extract_payload_from_body, extract_payload_from_query,

@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use reqwest::Url;
 
-use crate::external_browser_payload::{BrowserCallbackPayload, parse_token_and_consent_from_pairs};
+use super::payload::{BrowserCallbackPayload, parse_token_and_consent_from_pairs};
 use crate::{Error, Result};
 
 #[cfg(unix)]

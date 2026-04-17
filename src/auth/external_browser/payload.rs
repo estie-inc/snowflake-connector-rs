@@ -24,8 +24,8 @@ impl ParsedTokenAndConsent {
 /// Parse `token` and `consent` from key/value pairs shared by both external-browser flows.
 ///
 /// This parser is intentionally reused in:
-/// - callback listener flow (`GET` query / `POST` form body parsing in `external_browser_listener`)
-/// - manual redirected-URL flow (query/fragment parsing in `auth::external_browser`)
+/// - callback listener flow (`GET` query / `POST` form body parsing in `listener`)
+/// - manual redirected-URL flow (query/fragment parsing in `manual_redirect_input`)
 ///
 /// Keeping this in one place guarantees both flows use identical parsing rules
 /// (case-insensitive keys, first non-empty token wins, consent parsing behavior).
