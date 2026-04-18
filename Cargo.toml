@@ -1,69 +1,112 @@
 [package]
 name = "snowflake-connector-rs"
-version = "0.9.0"
-edition = "2024"
-authors = ["kenkoooo <kenkou.n@gmail.com>"]
-description = "A Rust client for Snowflake"
-readme = "README.md"
 repository = "https://github.com/estie-inc/snowflake-connector-rs"
+version = "0.9.0"
+
+authors = [
+    "kenkoooo <kenkou.n@gmail.com>",
+]
+description = "A Rust client for Snowflake"
+edition = "2024"
+keywords = [
+    "client",
+    "database",
+    "snowflake",
+    "sql",
+]
 license = "MIT"
-keywords = ["snowflake", "database", "sql", "client"]
+readme = "README.md"
 
 [dependencies]
+base64 = "0.22"
+chrono = "0.4"
+flate2 = "1.0"
 http = "1.1"
+jsonwebtoken = { version = "10.3.0", features = [
+    "rust_crypto",
+] }
+pkcs8 = { version = "0.10", features = [
+    "encryption",
+    "pem",
+    "pkcs5",
+] }
 reqwest = { version = "0.12", features = [
-    "json",
     "gzip",
+    "json",
     "rustls-tls",
 ], default-features = false }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "2.0"
-uuid = { version = "1.11", features = ["v4"] }
-flate2 = "1.0"
-tokio = { version = "1.41", features = ["rt", "time"] }
-chrono = "0.4"
-pkcs8 = { version = "0.10", features = ["pem", "pkcs5", "encryption"] }
 rsa = "0.9"
+serde = { version = "1.0", features = [
+    "derive",
+] }
+serde_json = "1.0"
 sha2 = "0.10"
-base64 = "0.22"
-jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
+thiserror = "2.0"
+tokio = { version = "1.41", features = [
+    "rt",
+    "time",
+] }
 url = "2.5"
+uuid = { version = "1.11", features = [
+    "v4",
+] }
+
 http-body-util = { version = "0.1", optional = true }
-hyper = { version = "1", features = ["http1", "server"], optional = true }
-hyper-util = { version = "0.1", features = ["http1", "server", "tokio"], optional = true }
+hyper = { version = "1", features = [
+    "http1",
+    "server",
+], optional = true }
+hyper-util = { version = "0.1", features = [
+    "http1",
+    "server",
+    "tokio",
+], optional = true }
 indexmap = { version = "2.13", optional = true }
+nix = { version = "0.31", optional = true, features = [
+    "term",
+] }
 shell-words = { version = "1.1", optional = true }
 socket2 = { version = "0.6", optional = true }
-nix = { version = "0.31", optional = true, features = ["term"] }
 
 [features]
-pkcs8-des = ["pkcs8/des-insecure"]
-pkcs8-3des = ["pkcs8/3des"]
 external-browser-sso = [
     "dep:http-body-util",
     "dep:hyper",
     "dep:hyper-util",
     "dep:indexmap",
+    "dep:nix",
     "dep:shell-words",
     "dep:socket2",
-    "dep:nix",
     "tokio/macros",
     "tokio/net",
     "tokio/sync",
     "tokio/time",
+]
+pkcs8-3des = [
+    "pkcs8/3des",
+]
+pkcs8-des = [
+    "pkcs8/des-insecure",
 ]
 
 [package.metadata.docs.rs]
 all-features = true
 
 [dev-dependencies]
-tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "test-util"] }
+tokio = { version = "1.41", features = [
+    "macros",
+    "rt-multi-thread",
+    "test-util",
+] }
 
 [[example]]
 name = "external_browser_sso"
-required-features = ["external-browser-sso"]
+required-features = [
+    "external-browser-sso",
+]
 
 [[example]]
 name = "external_browser_sso_without_callback_listener"
-required-features = ["external-browser-sso"]
+required-features = [
+    "external-browser-sso",
+]
