@@ -19,9 +19,12 @@ readme = "README.md"
 
 [dependencies]
 base64 = "0.22"
-chrono = "0.4"
-flate2 = "1.0"
-http = "1.1"
+chrono = { version = "0.4", default-features = false, features = [
+    "clock",
+    "std",
+] }
+flate2 = "1.1"
+http = "1.4"
 jsonwebtoken = { version = "10.3.0", features = [
     "rust_crypto",
 ] }
@@ -30,29 +33,30 @@ pkcs8 = { version = "0.10", features = [
     "pem",
     "pkcs5",
 ] }
-reqwest = { version = "0.12", features = [
+reqwest = { version = "0.13", features = [
     "gzip",
     "json",
-    "rustls-tls",
+    "query",
+    "rustls",
 ], default-features = false }
 rsa = "0.9"
 serde = { version = "1.0", features = [
     "derive",
 ] }
 serde_json = "1.0"
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2.0"
-tokio = { version = "1.41", features = [
+tokio = { version = "1.52", features = [
     "rt",
     "time",
 ] }
 url = "2.5"
-uuid = { version = "1.11", features = [
+uuid = { version = "1.23", features = [
     "v4",
 ] }
 
 http-body-util = { version = "0.1", optional = true }
-hyper = { version = "1", features = [
+hyper = { version = "1.9", features = [
     "http1",
     "server",
 ], optional = true }
@@ -61,7 +65,7 @@ hyper-util = { version = "0.1", features = [
     "server",
     "tokio",
 ], optional = true }
-indexmap = { version = "2.13", optional = true }
+indexmap = { version = "2.14", optional = true }
 nix = { version = "0.31", optional = true, features = [
     "term",
 ] }
@@ -93,7 +97,7 @@ pkcs8-des = [
 all-features = true
 
 [dev-dependencies]
-tokio = { version = "1.41", features = [
+tokio = { version = "1.52", features = [
     "macros",
     "rt-multi-thread",
     "test-util",
