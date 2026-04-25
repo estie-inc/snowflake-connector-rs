@@ -59,11 +59,18 @@ impl PartitionCursor {
     }
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct DownloadLocator {
     pub(crate) url: String,
     pub(crate) headers: Arc<HeaderMap>,
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedLease {
+    /// Monotonically incremented each time the lease is refreshed. The initial
+    /// lease built from the execute response is always `generation == 0`.
+    /// Used by `RefreshingPartitionSource` for single-flight refresh.
+    #[allow(dead_code)]
+    pub(crate) generation: u64,
     pub(crate) locators: HashMap<usize, DownloadLocator>,
 }

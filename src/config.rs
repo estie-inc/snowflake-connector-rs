@@ -44,6 +44,7 @@ const DEFAULT_COLLECT_PREFETCH_CONCURRENCY: usize = 8;
 pub struct SnowflakeQueryConfig {
     async_query_completion_timeout: Option<Duration>,
     collect_prefetch_concurrency: NonZeroUsize,
+    result_chunk_refresh: bool,
 }
 
 impl Default for SnowflakeQueryConfig {
@@ -52,6 +53,7 @@ impl Default for SnowflakeQueryConfig {
             async_query_completion_timeout: None,
             collect_prefetch_concurrency: NonZeroUsize::new(DEFAULT_COLLECT_PREFETCH_CONCURRENCY)
                 .expect("default concurrency is non-zero"),
+            result_chunk_refresh: false,
         }
     }
 }
@@ -226,6 +228,10 @@ impl SnowflakeQueryConfig {
         self.collect_prefetch_concurrency
     }
 
+    pub(crate) fn result_chunk_refresh(&self) -> bool {
+        self.result_chunk_refresh
+    }
+
     pub fn with_async_query_completion_timeout(mut self, timeout: Duration) -> Self {
         self.async_query_completion_timeout = Some(timeout);
         self
@@ -233,6 +239,33 @@ impl SnowflakeQueryConfig {
 
     pub fn with_collect_prefetch_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
         self.collect_prefetch_concurrency = concurrency;
+        self
+    }
+
+    /// Keep a long-lived [`ResultSet`](crate::ResultSet) usable across the
+    /// point where its backing data would otherwise expire.
+    ///
+    /// This is an experimental feature. Behavior may change in future
+    /// releases without backward compatibility guarantees.
+    ///
+    /// Disabled by default. Enable it only when you plan to keep a
+    /// `ResultSet` alive for hours — for example, streaming a very large
+    /// result at a throttled rate. Most workloads finish well within the
+    /// default lifetime and do not need this.
+    ///
+    /// Currently only Snowflake accounts backed by AWS S3 benefit from this.
+    /// Azure- and GCS-backed accounts accept the opt-in but receive the
+    /// default behavior. On those accounts, chunk URL expiry surfaces as
+    /// [`Error::ChunkDownload`](crate::Error::ChunkDownload) (or another
+    /// existing variant) rather than
+    /// [`Error::ResultSetExpired`](crate::Error::ResultSetExpired), so retry
+    /// loops branching on `ResultSetExpired` will not fire for those accounts.
+    ///
+    /// When enabled, [`Error::ResultSetExpired`](crate::Error::ResultSetExpired)
+    /// becomes a possible outcome and should be handled by re-running the
+    /// query.
+    pub fn with_result_chunk_refresh(mut self, enabled: bool) -> Self {
+        self.result_chunk_refresh = enabled;
         self
     }
 }
@@ -372,6 +405,21 @@ fn validate_proxy_url(url: Url) -> Result<Url> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn result_chunk_refresh_defaults_to_disabled() {
+        let config = SnowflakeQueryConfig::default();
+        assert!(!config.result_chunk_refresh());
+    }
+
+    #[test]
+    fn with_result_chunk_refresh_toggles_the_flag() {
+        let on = SnowflakeQueryConfig::default().with_result_chunk_refresh(true);
+        assert!(on.result_chunk_refresh());
+
+        let off = on.with_result_chunk_refresh(false);
+        assert!(!off.result_chunk_refresh());
+    }
 
     #[test]
     fn proxy_http_url_is_accepted() {

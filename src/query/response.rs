@@ -84,14 +84,8 @@ pub(crate) struct RawQueryResponseParameter {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RawQueryResponseChunk {
     pub(crate) url: String,
-
-    #[allow(unused)]
     pub(crate) row_count: i64,
-
-    #[allow(unused)]
     pub(crate) uncompressed_size: i64,
-
-    #[allow(unused)]
     pub(crate) compressed_size: i64,
 }
 

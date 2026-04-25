@@ -70,6 +70,11 @@ impl ResultSet {
         &self.snapshot.identity.query_id
     }
 
+    #[cfg(test)]
+    pub(crate) fn source(&self) -> &PartitionSource {
+        &self.source
+    }
+
     /// Column metadata for this result set, available even when there are no rows.
     pub fn columns(&self) -> &[SnowflakeColumn] {
         self.snapshot.columns.as_ref()
@@ -96,7 +101,13 @@ impl ResultSet {
                 .inline_rows
                 .take()
                 .expect("inline_rows must be Some when partition spec is Inline"),
-            PartitionSpec::Remote { .. } => self.source.fetch(FetchContext { ordinal }).await?,
+            PartitionSpec::Remote { .. } => {
+                let ctx = FetchContext {
+                    ordinal,
+                    committed_before: ordinal,
+                };
+                self.source.fetch(ctx).await?
+            }
         };
 
         self.cursor.advance();
@@ -214,9 +225,16 @@ impl CollectWindow {
     fn fill(&mut self, source: &Arc<PartitionSource>) {
         while self.tasks.len() < self.max_in_flight && self.next_spawn_ordinal < self.total {
             let ordinal = self.next_spawn_ordinal;
+            // `committed_before` is the commit frontier at the moment this task
+            // is spawned. We intentionally do not update it later, so refresh
+            // sees the frontier from the task's own perspective.
+            let ctx = FetchContext {
+                ordinal,
+                committed_before: self.next_commit_ordinal,
+            };
             let source = Arc::clone(source);
             self.tasks.spawn(async move {
-                let result = source.fetch(FetchContext { ordinal }).await;
+                let result = source.fetch(ctx).await;
                 (ordinal, result)
             });
             self.next_spawn_ordinal += 1;
@@ -269,10 +287,13 @@ fn convert_rows(
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, VecDeque};
+    use std::sync::Mutex;
 
     use super::*;
-    use crate::query::partition_source::tests::FakePartitionSource;
-    use crate::query::snapshot::{PartitionCursor, PartitionSpec, ResultIdentity, ResultSnapshot};
+    use crate::query::{
+        partition_source::tests::FakePartitionSource,
+        snapshot::{PartitionCursor, PartitionSpec, ResultIdentity, ResultSnapshot},
+    };
     use crate::row::SnowflakeColumnType;
 
     fn make_columns() -> (Arc<[SnowflakeColumn]>, Arc<HashMap<String, usize>>) {
@@ -434,6 +455,78 @@ mod tests {
 
         assert!(rs.is_exhausted());
         assert!(rs.next_batch().await.unwrap().is_none());
+    }
+
+    fn recording_source(
+        responses: Vec<(usize, Vec<crate::Result<RawPartitionRows>>)>,
+    ) -> (PartitionSource, Arc<Mutex<Vec<FetchContext>>>) {
+        let recorder = Arc::new(Mutex::new(Vec::<FetchContext>::new()));
+        let map = responses
+            .into_iter()
+            .map(|(ord, results)| (ord, VecDeque::from(results)))
+            .collect();
+        let fake = FakePartitionSource::with_recorder(map, Arc::clone(&recorder));
+        (PartitionSource::Fake(fake), recorder)
+    }
+
+    /// `next_batch` must pass `committed_before == ordinal` for each remote
+    /// fetch: the caller cannot have committed the partition it's about to
+    /// fetch, but every earlier ordinal is already consumed.
+    #[tokio::test]
+    async fn next_batch_passes_committed_before_equal_to_ordinal() {
+        let snapshot = dummy_snapshot(3);
+        let (source, recorder) = recording_source(vec![
+            (0, vec![ok_rows(1)]),
+            (1, vec![ok_rows(1)]),
+            (2, vec![ok_rows(1)]),
+        ]);
+        let mut rs = build_result_set(snapshot, source);
+        for _ in 0..3 {
+            rs.next_batch().await.unwrap();
+        }
+        let observed = recorder.lock().unwrap().clone();
+        let expected: Vec<FetchContext> = (0..3)
+            .map(|o| FetchContext {
+                ordinal: o,
+                committed_before: o,
+            })
+            .collect();
+        assert_eq!(observed, expected);
+    }
+
+    /// `collect_all` spawns tasks greedily up to the prefetch concurrency.
+    /// Every recorded `committed_before` must be <= the spawned ordinal
+    /// (it can be lower because spawns are issued before prior ones commit).
+    #[tokio::test]
+    async fn collect_all_records_committed_before_leq_ordinal_with_monotone_frontier() {
+        let snapshot = dummy_snapshot(4);
+        let (source, recorder) = recording_source(vec![
+            (0, vec![ok_rows(1)]),
+            (1, vec![ok_rows(1)]),
+            (2, vec![ok_rows(1)]),
+            (3, vec![ok_rows(1)]),
+        ]);
+        let rs = build_result_set(snapshot, source);
+        rs.collect_all().await.unwrap();
+
+        let mut observed = recorder.lock().unwrap().clone();
+        observed.sort_by_key(|ctx| ctx.ordinal);
+        assert_eq!(observed.len(), 4);
+
+        let mut prev_committed: Option<usize> = None;
+        for ctx in &observed {
+            assert!(
+                ctx.committed_before <= ctx.ordinal,
+                "committed_before must not exceed ordinal: {ctx:?}",
+            );
+            if let Some(prev) = prev_committed {
+                assert!(
+                    ctx.committed_before >= prev,
+                    "committed_before must be monotone non-decreasing across spawns: {ctx:?} after prev={prev}",
+                );
+            }
+            prev_committed = Some(ctx.committed_before);
+        }
     }
 
     /// collect_all must consume inline rows synchronously first, then
