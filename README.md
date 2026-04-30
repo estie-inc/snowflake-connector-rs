@@ -12,13 +12,19 @@ The minimum supported Rust version (MSRV) is 1.88.
 ## Usage
 
 ```rust
-let session = SnowflakeSessionConfig::default()
+#[derive(Debug, PartialEq, snowflake_connector_rs::FromRow)]
+struct ExampleRow {
+    id: i64,
+    value: String,
+}
+
+let session_config = SnowflakeSessionConfig::default()
     .with_role("ROLE")
     .with_warehouse("WAREHOUSE")
     .with_database("DATABASE")
     .with_schema("SCHEMA");
 
-let query = SnowflakeQueryConfig::default()
+let query_config = SnowflakeQueryConfig::default()
     .with_async_query_completion_timeout(std::time::Duration::from_secs(30));
 
 let client = SnowflakeClient::new(
@@ -27,22 +33,64 @@ let client = SnowflakeClient::new(
         "ACCOUNT",
         SnowflakeAuthMethod::Password("PASSWORD".to_string()),
     )
-    .with_session(session)
-    .with_query(query),
+    .with_session(session_config)
+    .with_query(query_config),
 )?;
 let session = client.create_session().await?;
 
-let query = "CREATE TEMPORARY TABLE example (id NUMBER, value STRING)";
-session.query(query).await?;
+session
+    .query("CREATE TEMPORARY TABLE example (id NUMBER, value STRING)")
+    .await?;
+session
+    .query("INSERT INTO example (id, value) VALUES (1, 'hello'), (2, 'world')")
+    .await?;
 
-let query = "INSERT INTO example (id, value) VALUES (1, 'hello'), (2, 'world')";
-session.query(query).await?;
+let dynamic_rows = session
+    .query("SELECT id, value FROM example ORDER BY id")
+    .await?
+    .collect()
+    .await?;
+assert_eq!(dynamic_rows.len(), 2);
 
-let query = "SELECT * FROM example ORDER BY id";
-let rows = session.query(query).await?;
-assert_eq!(rows.len(), 2);
-assert_eq!(rows[0].get::<i64>("ID")?, 1);
-assert_eq!(rows[0].get::<String>("VALUE")?, "hello");
+let rows: Vec<ExampleRow> = session
+    .query_as::<ExampleRow, _>("SELECT id, value FROM example ORDER BY id")
+    .await?
+    .collect()
+    .await?;
+assert_eq!(
+    rows,
+    vec![
+        ExampleRow {
+            id: 1,
+            value: "hello".to_string(),
+        },
+        ExampleRow {
+            id: 2,
+            value: "world".to_string(),
+        },
+    ]
+);
+
+let typed_table = session
+    .query_as::<ExampleRow, _>("SELECT id, value FROM example ORDER BY id")
+    .await?
+    .collect_table()
+    .await?;
+assert_eq!(typed_table.row_count(), 2);
+
+let mut result = session
+    .query_as::<ExampleRow, _>("SELECT id, value FROM example ORDER BY id")
+    .await?;
+while let Some(table) = result.next_table().await? {
+    for row in table.rows() {
+        let row = row?;
+        println!("{row:?}");
+    }
+}
+
+let result = session.query("SELECT id, value FROM example ORDER BY id").await?;
+let table = result.collect_table().await?;
+assert_eq!(table.row_count(), 2);
 ```
 
 ### Custom Endpoint

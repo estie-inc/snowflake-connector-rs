@@ -1,43 +1,37 @@
+use std::collections::HashMap;
+
 use super::common;
 
-use snowflake_connector_rs::Result;
+use snowflake_connector_rs::{Result, SnowflakeValue};
 
 #[tokio::test]
-async fn test_session_parameter_chunk_size() -> Result<()> {
+async fn test_session_parameters_support_bulk_and_incremental_configuration() -> Result<()> {
+    let params = HashMap::from([(
+        "CLIENT_RESULT_CHUNK_SIZE".to_string(),
+        serde_json::json!(48),
+    )]);
     let client = common::connect_with_session(
         common::session_config()
-            .with_session_parameter("CLIENT_RESULT_CHUNK_SIZE", serde_json::json!(48)),
+            .with_session_parameters(params)
+            .with_session_parameter("TIMEZONE", serde_json::json!("Asia/Tokyo")),
     )?;
     let session = client.create_session().await?;
 
     let rows = session
         .query("SHOW PARAMETERS LIKE 'CLIENT_RESULT_CHUNK_SIZE' IN SESSION")
+        .await?
+        .collect()
         .await?;
+    let value = rows[0].get("value").unwrap();
+    assert_eq!(value, &SnowflakeValue::String("48".to_owned()));
 
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get::<String>("value")?, "48");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_multiple_session_parameters() -> Result<()> {
-    let client = common::connect_with_session(
-        common::session_config()
-            .with_session_parameter("CLIENT_RESULT_CHUNK_SIZE", serde_json::json!(48))
-            .with_session_parameter("TIMEZONE", serde_json::json!("Asia/Tokyo")),
-    )?;
-    let session = client.create_session().await?;
-
-    let chunk_rows = session
-        .query("SHOW PARAMETERS LIKE 'CLIENT_RESULT_CHUNK_SIZE' IN SESSION")
-        .await?;
-    assert_eq!(chunk_rows[0].get::<String>("value")?, "48");
-
-    let tz_rows = session
+    let rows = session
         .query("SHOW PARAMETERS LIKE 'TIMEZONE' IN SESSION")
+        .await?
+        .collect()
         .await?;
-    assert_eq!(tz_rows[0].get::<String>("value")?, "Asia/Tokyo");
+    let value = rows[0].get("value").unwrap();
+    assert_eq!(value, &SnowflakeValue::String("Asia/Tokyo".to_owned()));
 
     Ok(())
 }

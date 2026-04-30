@@ -1,38 +1,25 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use http::HeaderMap;
 
-use crate::SnowflakeColumn;
-
-pub(crate) type RawRow = Vec<Option<String>>;
-pub(crate) type RawPartitionRows = Vec<RawRow>;
+use crate::result::Schema;
 
 pub(crate) struct ResultIdentity {
-    pub(crate) query_id: String,
+    pub(crate) query_id: Arc<str>,
 }
 
 pub(crate) struct ResultSnapshot {
     pub(crate) identity: ResultIdentity,
-    pub(crate) columns: Arc<[SnowflakeColumn]>,
-    pub(crate) column_indices: Arc<HashMap<String, usize>>,
+    pub(crate) schema: Arc<Schema>,
     pub(crate) partitions: Vec<PartitionSpec>,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum PartitionSpec {
     Inline,
     Remote {
-        /// Number of rows in this partition as reported by the server.
-        /// Retained for byte-budget / weighted scheduling in the future.
-        #[allow(dead_code)]
         row_count: i64,
-        /// Compressed byte size as reported by the server.
-        /// Retained for byte-budget / weighted scheduling in the future.
-        #[allow(dead_code)]
         compressed_size: i64,
-        /// Uncompressed byte size as reported by the server.
-        /// Retained for byte-budget / weighted scheduling in the future.
-        #[allow(dead_code)]
         uncompressed_size: i64,
     },
 }

@@ -45,39 +45,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         created_date DATE,
         updated_at TIMESTAMP_NTZ
     )";
-    let rows = session.query(query).await?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].get::<String>("STATUS")?,
-        "Table EXAMPLE successfully created."
-    );
+    let table = session
+        .query_as::<(String,), _>(query)
+        .await?
+        .collect_table()
+        .await?;
+    assert_eq!(table.row_count(), 1);
+    let (status,) = table.rows().next().expect("status row")?;
+    assert_eq!(status, "Table EXAMPLE successfully created.");
 
-    // Insert some data
-    let query = "INSERT INTO example (id, value, price, is_active, created_date, updated_at)
-                 VALUES (1, 'hello', 99.99, true, '2023-01-01', '2023-01-01 12:00:00'),
-                        (2, 'world', 149.99, false, '2023-01-02', '2023-01-02 15:30:00')";
+    let query = "
+    INSERT INTO
+        example (
+            id,
+            value,
+            price,
+            is_active,
+            created_date,
+            updated_at
+        )
+    VALUES
+        (
+            1,
+            'hello',
+            99.99,
+            true,
+            '2023-01-01',
+            '2023-01-01 12:00:00'
+        ),
+        (
+            2,
+            'world',
+            149.99,
+            false,
+            '2023-01-02',
+            '2023-01-02 15:30:00'
+        )
+    ";
     println!("Executing query:\n{query}");
-    let rows = session.query(query).await?;
-    assert_eq!(rows.len(), 1);
-    let inserted: i64 = rows[0].get("NUMBER OF ROWS INSERTED")?;
+
+    let rows = session
+        .query_as::<(i64,), _>(query)
+        .await?
+        .collect()
+        .await?;
+    let inserted = rows[0].0;
     assert_eq!(inserted, 2);
     println!("Inserted {inserted} rows.");
 
-    // Select the data back
     let query = "SELECT * FROM example ORDER BY id";
     println!("Executing query:\n{query}");
-    let rows = session.query(query).await?;
-    assert_eq!(rows.len(), 2);
-    let row0_id: i64 = rows[0].get("ID")?;
-    let row0_value: String = rows[0].get("VALUE")?;
-    assert_eq!(row0_id, 1);
-    assert_eq!(row0_value, "hello");
-    println!("Row 0: id={row0_id}, value={row0_value}");
-    let row1_id: i64 = rows[1].get("ID")?;
-    let row1_value: String = rows[1].get("VALUE")?;
-    assert_eq!(row1_id, 2);
-    assert_eq!(row1_value, "world");
-    println!("Row 1: id={row1_id}, value={row1_value}");
+
+    let rows = session
+        .query_as::<(i64, String), _>("SELECT id, value FROM example ORDER BY id")
+        .await?
+        .collect()
+        .await?;
+    assert_eq!(
+        rows,
+        vec![(1, "hello".to_string()), (2, "world".to_string())],
+    );
+    for (id, value) in &rows {
+        println!("id={id}, value={value}");
+    }
 
     Ok(())
 }

@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::fmt::Write;
+use std::{collections::HashMap, fmt::Write};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 use serde::Serialize;
@@ -239,23 +238,17 @@ mod tests {
     }
 
     #[test]
-    fn test_query_request_without_bindings_omits_field() {
-        let request = QueryRequest::from("SELECT 1");
-        let json = serde_json::to_value(&request).unwrap();
-        assert_eq!(json["sqlText"], "SELECT 1");
-        assert!(json.get("bindings").is_none());
-    }
+    fn test_from_inputs_without_bindings_omit_field() {
+        for request in [
+            QueryRequest::from("SELECT 1"),
+            QueryRequest::from("SELECT 1".to_string()),
+        ] {
+            assert!(request.bindings().is_empty());
 
-    #[test]
-    fn test_from_str_has_no_bindings() {
-        let request = QueryRequest::from("SELECT 1");
-        assert!(request.bindings().is_empty());
-    }
-
-    #[test]
-    fn test_from_string_has_no_bindings() {
-        let request = QueryRequest::from("SELECT 1".to_string());
-        assert!(request.bindings().is_empty());
+            let json = serde_json::to_value(&request).unwrap();
+            assert_eq!(json["sqlText"], "SELECT 1");
+            assert!(json.get("bindings").is_none());
+        }
     }
 
     #[test]

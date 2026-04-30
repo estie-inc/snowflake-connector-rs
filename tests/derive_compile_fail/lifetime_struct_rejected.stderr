@@ -1,0 +1,5 @@
+error: FromRow does not support lifetime parameters
+ --> tests/derive_compile_fail/lifetime_struct_rejected.rs:4:12
+  |
+4 | struct Bad<'a> {
+  |            ^^

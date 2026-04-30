@@ -1,62 +1,79 @@
 //! # Snowflake Connector
 //!
-//! A Rust client for Snowflake, which enables you to connect to Snowflake and run queries.
+//! A Rust client for Snowflake. Query results are materialized into a
+//! [`ResultTable`] and decoded with the [`FromRow`] / [`FromCell`] traits.
 //!
-//! ```rust
+//! ```rust,no_run
 //! # use snowflake_connector_rs::{
 //! #     Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig,
-//! #     SnowflakeQueryConfig, SnowflakeSessionConfig,
 //! # };
 //! # async fn run() -> Result<()> {
-//! let session = SnowflakeSessionConfig::default()
-//!     .with_role("ROLE")
-//!     .with_warehouse("WAREHOUSE")
-//!     .with_database("DATABASE")
-//!     .with_schema("SCHEMA");
-//!
-//! let query = SnowflakeQueryConfig::default()
-//!     .with_async_query_completion_timeout(std::time::Duration::from_secs(30));
-//!
-//! let client = SnowflakeClient::new(
-//!     SnowflakeClientConfig::new(
-//!         "USERNAME",
-//!         "ACCOUNT",
-//!         SnowflakeAuthMethod::Password("PASSWORD".to_string()),
-//!     )
-//!     .with_session(session)
-//!     .with_query(query),
-//! )?;
+//! let client = SnowflakeClient::new(SnowflakeClientConfig::new(
+//!     "USERNAME",
+//!     "ACCOUNT",
+//!     SnowflakeAuthMethod::Password("PASSWORD".to_string()),
+//! ))?;
 //! let session = client.create_session().await?;
 //!
-//! let query = "CREATE TEMPORARY TABLE example (id NUMBER, value STRING)";
-//! session.query(query).await?;
+//! // Collect dynamic or typed rows in one shot.
+//! let dynamic_rows = session
+//!     .query("SELECT 1 AS id, 'hi' AS name")
+//!     .await?
+//!     .collect()
+//!     .await?;
+//! assert_eq!(dynamic_rows.len(), 1);
 //!
-//! let query = "INSERT INTO example (id, value) VALUES (1, 'hello'), (2, 'world')";
-//! session.query(query).await?;
+//! let typed_rows = session
+//!     .query_as::<(i64, String), _>("SELECT 1 AS id, 'hi' AS name")
+//!     .await?
+//!     .collect()
+//!     .await?;
+//! assert_eq!(typed_rows, vec![(1, "hi".to_string())]);
 //!
-//! // Fetch all results at once
-//! let rows = session.query("SELECT * FROM example ORDER BY id").await?;
-//! assert_eq!(rows.len(), 2);
-//! assert_eq!(rows[0].get::<i64>("ID")?, 1);
-//! assert_eq!(rows[0].get::<String>("VALUE")?, "hello");
+//! // Collect materialized storage as a ResultTable or TypedResultTable.
+//! let table = session
+//!     .query("SELECT 1 AS id")
+//!     .await?
+//!     .collect_table()
+//!     .await?;
+//! assert_eq!(table.row_count(), 1);
 //!
-//! // Or stream batch by batch via ResultSet
-//! let mut result = session.execute("SELECT * FROM example ORDER BY id").await?;
-//! while let Some(batch) = result.next_batch().await? {
-//!     for row in &batch {
-//!         println!("{}", row.get::<String>("VALUE")?);
+//! let typed_table = session
+//!     .query_as::<(i64,), _>("SELECT 1 AS id")
+//!     .await?
+//!     .collect_table()
+//!     .await?;
+//! assert_eq!(typed_table.row_count(), 1);
+//!
+//! // Or stream typed partitions for large results.
+//! let mut result = session
+//!     .query_as::<(i64, String), _>("SELECT 1 AS id, 'hi' AS name")
+//!     .await?;
+//! while let Some(table) = result.next_table().await? {
+//!     for row in table.rows() {
+//!         let (id, name) = row?;
+//!         println!("{id} {name}");
 //!     }
 //! }
+//!
+//! // Keep the untyped streaming path when you only need materialized storage.
+//! let result = session.query("SELECT 1 AS id").await?;
+//! assert_eq!(result.schema().len(), 1);
 //! # Ok(())
 //! # }
 //! ```
 
 mod auth;
+mod chunk;
 mod config;
 mod error;
 mod query;
-mod row;
+mod query_result;
+mod result;
+mod rowset;
+mod runtime;
 mod session;
+mod statement;
 
 #[cfg(feature = "external-browser-sso")]
 pub use auth::external_browser::{
@@ -67,19 +84,32 @@ pub use config::{
     SnowflakeClientConfig, SnowflakeEndpointConfig, SnowflakeProxyConfig, SnowflakeQueryConfig,
     SnowflakeSessionConfig, SnowflakeTransportConfig,
 };
-pub use error::{Error, Result};
-pub use query::{Binding, BindingType, CollectOptions, QueryRequest, ResultSet};
-pub use row::{SnowflakeColumn, SnowflakeColumnType, SnowflakeDecode, SnowflakeRow};
+pub use error::{DecodeError, Error, ParseError, Result, SchemaError};
+pub use query::{Binding, BindingType, QueryRequest};
+pub use query_result::{CollectOptions, ResultSet, TypedResultSet};
+pub use result::{
+    CellRef, Column, ColumnIndex, ColumnType, DecimalValue, DynamicRow, FromCell, FromRow,
+    ResultTable, RowPlanContext, RowRef, Rows, Schema, SnowflakeValue, TypedResultTable,
+};
 pub use session::SnowflakeSession;
 
-use auth::login;
+#[cfg(feature = "derive")]
+pub use snowflake_connector_rs_derive::FromRow;
+
+#[cfg(feature = "bench-internals")]
+#[doc(hidden)]
+pub mod bench_support;
+
 use url::Url;
+
+use auth::login;
 
 #[derive(Clone)]
 pub struct SnowflakeClient {
     http: reqwest::Client,
     config: SnowflakeClientConfig,
     base_url: Url,
+    runtime: runtime::QueryRuntime,
 }
 
 #[derive(Clone)]
@@ -148,6 +178,7 @@ impl SnowflakeClient {
             http,
             config,
             base_url,
+            runtime: runtime::QueryRuntime::new(),
         })
     }
 
@@ -159,6 +190,7 @@ impl SnowflakeClient {
             base_url: self.base_url.clone(),
             session_token,
             query: self.config.query().clone(),
+            runtime: self.runtime.clone(),
         })
     }
 }

@@ -5,9 +5,10 @@ on:
   push:
     branches:
       - main
+
 env:
-  RUSTFLAGS: -Dwarnings
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  RUSTFLAGS: -Dwarnings
   SNOWFLAKE_USERNAME: ${{ secrets.SNOWFLAKE_USERNAME }}
   SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
   SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
@@ -19,22 +20,45 @@ env:
 
 jobs:
   test:
+    name: Rust ${{ matrix.version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        version: [1.88, stable]
-    name: Test with Rust ${{ matrix.version }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+        version: ["1.88", stable]
+
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
       - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561 # 2025-12-17
         with:
           toolchain: ${{ matrix.version }}
           components: rustfmt, clippy
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features
-      - run: cargo check
-      - run: cargo check --features external-browser-sso
-      - run: cargo test
-      - run: cargo test --lib --features external-browser-sso
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --lib --tests --examples --all-features -- -D warnings
+
+      - name: Check default features
+        run: cargo check --workspace --lib --tests --examples
+
+      - name: Check all features
+        run: cargo check --workspace --lib --tests --examples --all-features
+
+      - name: Check without default features
+        run: cargo check --workspace --lib --tests --examples --no-default-features
+
+      - name: Test library
+        run: cargo test --workspace --all-features --lib
+
+      - name: Test derive macro
+        run: cargo test --workspace --all-features --test derive_trybuild
+
+      - name: Test integration
+        run: cargo test --workspace --test integration
+
+      - name: Test documentation
+        run: cargo test --workspace --all-features --doc

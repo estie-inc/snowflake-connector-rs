@@ -1,33 +1,13 @@
 use super::common;
 
-use snowflake_connector_rs::Result;
-
-#[tokio::test]
-async fn test_decode_naive_date() -> Result<()> {
-    // Arrange
-    let client = common::connect()?;
-    let session = client.create_session().await?;
-
-    // Act
-    let query = "SELECT '2020-01-01'::DATE AS date";
-    let rows = session.query(query).await?;
-
-    // Assert
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].get::<chrono::NaiveDate>("DATE")?,
-        chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap()
-    );
-
-    Ok(())
-}
+use chrono::{NaiveDate, NaiveDateTime};
+use snowflake_connector_rs::{ColumnType, DecimalValue, Result};
 
 #[tokio::test]
 async fn test_basic_operations() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
-    // Create a temporary table with various data types
     let query = "CREATE TEMPORARY TABLE example (
         id NUMBER,
         value STRING,
@@ -36,105 +16,126 @@ async fn test_basic_operations() -> Result<()> {
         created_date DATE,
         updated_at TIMESTAMP_NTZ
     )";
-    let rows = session.query(query).await?;
-    assert_eq!(rows.len(), 1);
+    let table = session.query(query).await?.collect_table().await?;
+    assert_eq!(table.row_count(), 1);
+
+    let value = table.rows::<(String,)>()?.next().unwrap()?.0;
+    assert_eq!(value, "Table EXAMPLE successfully created.");
+
+    let query = "
+    INSERT INTO
+        example (
+            id,
+            value,
+            price,
+            is_active,
+            created_date,
+            updated_at
+        )
+    VALUES
+        (
+            1,
+            'hello',
+            99.99,
+            true,
+            '2023-01-01',
+            '2023-01-01 12:00:00'
+        ),
+        (
+            2,
+            'world',
+            149.99,
+            false,
+            '2023-01-02',
+            '2023-01-02 15:30:00'
+        )";
+    let table = session.query(query).await?.collect_table().await?;
+    assert_eq!(table.row_count(), 1);
+    let value = table.rows::<(i64,)>()?.next().unwrap()?.0;
+    assert_eq!(value, 2);
+
+    let table = session
+        .query("SELECT * FROM example ORDER BY id")
+        .await?
+        .collect_table()
+        .await?;
+    assert_eq!(table.row_count(), 2);
+
+    let rows = table
+        .rows::<(i64, String, DecimalValue, bool, NaiveDate, NaiveDateTime)>()?
+        .collect::<Result<Vec<_>>>()?;
     assert_eq!(
-        rows[0].get::<String>("STATUS")?,
-        "Table EXAMPLE successfully created."
+        rows,
+        vec![
+            (
+                1,
+                "hello".to_string(),
+                DecimalValue::new("99.99", Some(10), Some(2)),
+                true,
+                NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
+                NaiveDateTime::parse_from_str("2023-01-01 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+            ),
+            (
+                2,
+                "world".to_string(),
+                DecimalValue::new("149.99", Some(10), Some(2)),
+                false,
+                NaiveDate::from_ymd_opt(2023, 1, 2).unwrap(),
+                NaiveDateTime::parse_from_str("2023-01-02 15:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
+            )
+        ]
     );
 
-    // Insert some data
-    let query = "INSERT INTO example (id, value, price, is_active, created_date, updated_at)
-                 VALUES (1, 'hello', 99.99, true, '2023-01-01', '2023-01-01 12:00:00'),
-                        (2, 'world', 149.99, false, '2023-01-02', '2023-01-02 15:30:00')";
-    let rows = session.query(query).await?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get::<i64>("NUMBER OF ROWS INSERTED")?, 2);
-
-    // Select the data back
-    let query = "SELECT * FROM example ORDER BY id";
-    let rows = session.query(query).await?;
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].get::<i64>("ID")?, 1);
-    assert_eq!(rows[0].get::<String>("VALUE")?, "hello");
-    assert_eq!(rows[1].get::<i64>("ID")?, 2);
-    assert_eq!(rows[1].get::<String>("VALUE")?, "world");
-
-    // Test columns method with various data types
-    let columns = rows[0].columns();
+    let columns = table.schema().columns();
     assert_eq!(columns.len(), 6);
 
-    // Check ID column (NUMBER/FIXED)
     let id_column = &columns[0];
     assert_eq!(id_column.name(), "ID");
-    assert_eq!(id_column.index(), 0);
-    assert_eq!(id_column.column_type().snowflake_type(), "fixed");
-    assert!(id_column.column_type().nullable());
+    assert_eq!(id_column.index().as_usize(), 0);
+    assert!(matches!(id_column.ty(), ColumnType::Fixed { .. }));
+    assert!(id_column.nullable());
 
-    // Check VALUE column (STRING/TEXT)
     let value_column = &columns[1];
     assert_eq!(value_column.name(), "VALUE");
-    assert_eq!(value_column.index(), 1);
-    assert_eq!(value_column.column_type().snowflake_type(), "text");
-    assert!(value_column.column_type().nullable());
+    assert_eq!(value_column.index().as_usize(), 1);
+    assert!(matches!(value_column.ty(), ColumnType::Text { .. }));
+    assert!(value_column.nullable());
 
-    // Check PRICE column (DECIMAL)
     let price_column = &columns[2];
     assert_eq!(price_column.name(), "PRICE");
-    assert_eq!(price_column.index(), 2);
-    assert_eq!(price_column.column_type().snowflake_type(), "fixed");
-    assert!(price_column.column_type().nullable());
-    assert_eq!(price_column.column_type().precision(), Some(10));
-    assert_eq!(price_column.column_type().scale(), Some(2));
+    assert!(matches!(price_column.ty(), ColumnType::Fixed { .. }));
+    assert!(price_column.nullable());
+    assert_eq!(price_column.ty().precision(), Some(10));
+    assert_eq!(price_column.ty().scale(), Some(2));
 
-    // Check IS_ACTIVE column (BOOLEAN)
     let is_active_column = &columns[3];
     assert_eq!(is_active_column.name(), "IS_ACTIVE");
-    assert_eq!(is_active_column.index(), 3);
-    assert_eq!(is_active_column.column_type().snowflake_type(), "boolean");
-    assert!(is_active_column.column_type().nullable());
+    assert!(matches!(is_active_column.ty(), ColumnType::Boolean));
+    assert!(is_active_column.nullable());
 
-    // Check CREATED_DATE column (DATE)
     let date_column = &columns[4];
     assert_eq!(date_column.name(), "CREATED_DATE");
-    assert_eq!(date_column.index(), 4);
-    assert_eq!(date_column.column_type().snowflake_type(), "date");
-    assert!(date_column.column_type().nullable());
+    assert!(matches!(date_column.ty(), ColumnType::Date));
 
-    // Check UPDATED_AT column (TIMESTAMP_NTZ)
     let timestamp_column = &columns[5];
     assert_eq!(timestamp_column.name(), "UPDATED_AT");
-    assert_eq!(timestamp_column.index(), 5);
-    assert_eq!(
-        timestamp_column.column_type().snowflake_type(),
-        "timestamp_ntz"
-    );
-    assert!(timestamp_column.column_type().nullable());
+    assert!(matches!(
+        timestamp_column.ty(),
+        ColumnType::TimestampNtz { .. }
+    ));
 
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_result_set_columns_available_without_rows() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
-
-    let mut result = session
-        .execute("SELECT 1 AS ID, 'hello' AS NAME LIMIT 0")
+    let price_rows = session
+        .query_as::<(i64, DecimalValue), _>("SELECT id, price FROM example ORDER BY id")
+        .await?
+        .collect()
         .await?;
-
-    let columns = result.columns();
-    assert_eq!(columns.len(), 2);
-    assert_eq!(columns[0].name(), "ID");
-    assert_eq!(columns[0].index(), 0);
-    assert_eq!(columns[0].column_type().snowflake_type(), "fixed");
-    assert_eq!(columns[1].name(), "NAME");
-    assert_eq!(columns[1].index(), 1);
-    assert_eq!(columns[1].column_type().snowflake_type(), "text");
-
-    assert!(result.is_exhausted());
-    let batch = result.next_batch().await?;
-    assert!(batch.is_none());
+    assert_eq!(
+        price_rows,
+        vec![
+            (1, DecimalValue::new("99.99", Some(10), Some(2))),
+            (2, DecimalValue::new("149.99", Some(10), Some(2))),
+        ]
+    );
 
     Ok(())
 }

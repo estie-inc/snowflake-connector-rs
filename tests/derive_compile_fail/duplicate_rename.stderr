@@ -1,0 +1,5 @@
+error: duplicate `rename`
+ --> tests/derive_compile_fail/duplicate_rename.rs:5:31
+  |
+5 |     #[snowflake(rename = "A", rename = "B")]
+  |                               ^^^^^^

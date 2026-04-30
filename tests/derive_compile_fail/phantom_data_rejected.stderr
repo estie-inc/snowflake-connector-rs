@@ -1,0 +1,5 @@
+error: FromRow does not support PhantomData fields
+ --> tests/derive_compile_fail/phantom_data_rejected.rs:8:13
+  |
+8 |     marker: PhantomData<()>,
+  |             ^^^^^^^^^^^

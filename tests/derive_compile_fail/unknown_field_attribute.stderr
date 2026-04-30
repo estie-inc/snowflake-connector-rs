@@ -1,0 +1,5 @@
+error: unknown field attribute
+ --> tests/derive_compile_fail/unknown_field_attribute.rs:5:17
+  |
+5 |     #[snowflake(unknown = "value")]
+  |                 ^^^^^^^

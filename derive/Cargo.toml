@@ -1,0 +1,21 @@
+[package]
+name = "snowflake-connector-rs-derive"
+repository = "https://github.com/estie-inc/snowflake-connector-rs"
+version = "0.9.0"
+
+authors = [
+    "estie-inc",
+]
+description = "Derive macros for snowflake-connector-rs"
+edition = "2024"
+license = "MIT"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = [
+    "full",
+] }
