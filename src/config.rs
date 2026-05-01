@@ -374,57 +374,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn proxy_http_url_is_accepted() {
-        let url = Url::parse("http://proxy.example.com:8080").unwrap();
-        let proxy = SnowflakeProxyConfig::new(url);
-        assert!(proxy.to_reqwest_proxy().is_ok());
+    fn proxy_urls_with_supported_schemes_build_successfully() {
+        for proxy in [
+            SnowflakeProxyConfig::new(Url::parse("http://proxy.example.com:8080").unwrap()),
+            SnowflakeProxyConfig::new(Url::parse("https://proxy.example.com:8080").unwrap()),
+            SnowflakeProxyConfig::new(Url::parse("http://proxy.example.com:8080").unwrap())
+                .with_basic_auth("user", "pass"),
+        ] {
+            assert!(proxy.to_reqwest_proxy().is_ok());
+        }
     }
 
-    #[test]
-    fn proxy_https_url_is_accepted() {
-        let url = Url::parse("https://proxy.example.com:8080").unwrap();
-        let proxy = SnowflakeProxyConfig::new(url);
-        assert!(proxy.to_reqwest_proxy().is_ok());
-    }
-
-    #[test]
-    fn proxy_socks5_url_is_rejected() {
-        let url = Url::parse("socks5://proxy.example.com:1080").unwrap();
-        let proxy = SnowflakeProxyConfig::new(url);
+    fn assert_proxy_rejected(url: &str, expected: &str) {
+        let proxy = SnowflakeProxyConfig::new(Url::parse(url).unwrap());
         let err = proxy.to_reqwest_proxy().unwrap_err();
         assert!(
-            format!("{err}").contains("unsupported proxy URL scheme"),
+            format!("{err}").contains(expected),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn proxy_urls_with_unsupported_schemes_are_rejected() {
+        for url in ["socks5://proxy.example.com:1080", "ftp://proxy.example.com"] {
+            assert_proxy_rejected(url, "unsupported proxy URL scheme");
+        }
     }
 
     #[test]
     fn proxy_url_with_credentials_is_rejected() {
-        let url = Url::parse("http://user:pass@proxy.example.com:8080").unwrap();
-        let proxy = SnowflakeProxyConfig::new(url);
-        let err = proxy.to_reqwest_proxy().unwrap_err();
-        assert!(
-            format!("{err}").contains("must not contain credentials"),
-            "unexpected error: {err}"
+        assert_proxy_rejected(
+            "http://user:pass@proxy.example.com:8080",
+            "must not contain credentials",
         );
-    }
-
-    #[test]
-    fn proxy_url_with_unsupported_scheme_is_rejected() {
-        let url = Url::parse("ftp://proxy.example.com").unwrap();
-        let proxy = SnowflakeProxyConfig::new(url);
-        let err = proxy.to_reqwest_proxy().unwrap_err();
-        assert!(
-            format!("{err}").contains("unsupported proxy URL scheme"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn proxy_basic_auth_builds_successfully() {
-        let url = Url::parse("http://proxy.example.com:8080").unwrap();
-        let proxy = SnowflakeProxyConfig::new(url).with_basic_auth("user", "pass");
-        assert!(proxy.to_reqwest_proxy().is_ok());
     }
 
     #[test]
@@ -435,98 +417,70 @@ mod tests {
 
     #[test]
     fn proxy_url_with_query_is_rejected() {
-        let url = Url::parse("http://proxy.example.com:8080?foo=bar").unwrap();
-        let proxy = SnowflakeProxyConfig::new(url);
-        let err = proxy.to_reqwest_proxy().unwrap_err();
+        assert_proxy_rejected(
+            "http://proxy.example.com:8080?foo=bar",
+            "must not contain query or fragment",
+        );
+    }
+
+    #[test]
+    fn custom_base_urls_with_supported_schemes_are_accepted_and_normalized() {
+        for (url, expected) in [
+            (
+                "https://custom.snowflake.example.com",
+                "https://custom.snowflake.example.com/",
+            ),
+            ("http://localhost:8080", "http://localhost:8080/"),
+            (
+                "https://snowflake.example.com",
+                "https://snowflake.example.com/",
+            ),
+        ] {
+            let result = validate_custom_base_url(Url::parse(url).unwrap()).unwrap();
+            assert_eq!(result.as_str(), expected);
+            assert_eq!(result.path(), "/");
+        }
+    }
+
+    fn assert_custom_base_url_rejected(url: &str, expected: &str) {
+        let err = validate_custom_base_url(Url::parse(url).unwrap()).unwrap_err();
         assert!(
-            format!("{err}").contains("must not contain query or fragment"),
+            format!("{err}").contains(expected),
             "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn custom_base_url_https_is_accepted() {
-        let url = Url::parse("https://custom.snowflake.example.com").unwrap();
-        let result = validate_custom_base_url(url);
-        assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap().as_str(),
-            "https://custom.snowflake.example.com/"
-        );
+    fn custom_base_urls_with_unsupported_schemes_are_rejected() {
+        for url in ["ftp://snowflake.example.com", "ws://snowflake.example.com"] {
+            assert_custom_base_url_rejected(url, "unsupported custom base URL scheme");
+        }
     }
 
     #[test]
-    fn custom_base_url_http_is_accepted() {
-        let url = Url::parse("http://localhost:8080").unwrap();
-        let result = validate_custom_base_url(url);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn custom_base_url_ftp_scheme_is_rejected() {
-        let url = Url::parse("ftp://snowflake.example.com").unwrap();
-        let err = validate_custom_base_url(url).unwrap_err();
-        assert!(
-            format!("{err}").contains("unsupported custom base URL scheme"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn custom_base_url_ws_scheme_is_rejected() {
-        let url = Url::parse("ws://snowflake.example.com").unwrap();
-        let err = validate_custom_base_url(url).unwrap_err();
-        assert!(
-            format!("{err}").contains("unsupported custom base URL scheme"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn custom_base_url_with_query_is_rejected() {
-        let url = Url::parse("https://snowflake.example.com?foo=bar").unwrap();
-        let err = validate_custom_base_url(url).unwrap_err();
-        assert!(
-            format!("{err}").contains("must not contain query or fragment"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn custom_base_url_with_fragment_is_rejected() {
-        let url = Url::parse("https://snowflake.example.com#section").unwrap();
-        let err = validate_custom_base_url(url).unwrap_err();
-        assert!(
-            format!("{err}").contains("must not contain query or fragment"),
-            "unexpected error: {err}"
-        );
+    fn custom_base_urls_with_query_or_fragment_are_rejected() {
+        for url in [
+            "https://snowflake.example.com?foo=bar",
+            "https://snowflake.example.com#section",
+        ] {
+            assert_custom_base_url_rejected(url, "must not contain query or fragment");
+        }
     }
 
     #[test]
     fn custom_base_url_with_credentials_is_rejected() {
-        let url = Url::parse("https://user:pass@snowflake.example.com").unwrap();
-        let err = validate_custom_base_url(url).unwrap_err();
-        assert!(
-            format!("{err}").contains("must not contain credentials"),
-            "unexpected error: {err}"
+        assert_custom_base_url_rejected(
+            "https://user:pass@snowflake.example.com",
+            "must not contain credentials",
         );
     }
 
     #[test]
     fn custom_base_url_with_path_is_rejected() {
-        let url = Url::parse("https://snowflake.example.com/some/path").unwrap();
-        let err = validate_custom_base_url(url).unwrap_err();
-        assert!(
-            format!("{err}").contains("must not contain a path"),
-            "unexpected error: {err}"
+        assert_custom_base_url_rejected(
+            "https://snowflake.example.com/some/path",
+            "must not contain a path",
         );
-    }
-
-    #[test]
-    fn custom_base_url_normalizes_trailing_slash() {
-        let url = Url::parse("https://snowflake.example.com").unwrap();
-        let result = validate_custom_base_url(url).unwrap();
-        assert_eq!(result.path(), "/");
     }
 
     #[test]

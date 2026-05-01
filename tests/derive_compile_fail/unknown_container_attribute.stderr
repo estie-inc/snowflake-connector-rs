@@ -1,0 +1,5 @@
+error: unknown container attribute
+ --> tests/derive_compile_fail/unknown_container_attribute.rs:4:13
+  |
+4 | #[snowflake(unknown = "value")]
+  |             ^^^^^^^

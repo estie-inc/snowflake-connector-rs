@@ -1,89 +1,227 @@
 use super::common;
 
-use snowflake_connector_rs::Result;
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use snowflake_connector_rs::{Result, SnowflakeValue};
 
 #[tokio::test]
 async fn test_decode() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
-    // Fix session timezone to UTC so TIMESTAMP_LTZ/TZ tests are deterministic.
     session.query("ALTER SESSION SET TIMEZONE = 'UTC'").await?;
 
-    // Create a temporary table
-    let query = "CREATE TEMPORARY TABLE example (
-        n NUMBER, s STRING, b BOOLEAN, d DATE,
-        tm TIME, tm3 TIME(3), tm9 TIME(9),
-        ltz TIMESTAMP_LTZ, ntz TIMESTAMP_NTZ, tz TIMESTAMP_TZ
+    let query = "
+    CREATE TEMPORARY TABLE example (
+        n NUMBER,
+        s STRING,
+        b BOOLEAN,
+        d DATE,
+        tm TIME,
+        tm3 TIME(3),
+        tm9 TIME(9),
+        ltz TIMESTAMP_LTZ,
+        ntz TIMESTAMP_NTZ,
+        tz TIMESTAMP_TZ
     )";
-    let rows = session.query(query).await?;
-    assert_eq!(rows.len(), 1);
+    let table = session.query(query).await?.collect_table().await?;
+    assert_eq!(table.row_count(), 1);
+
+    let row = table.dynamic_rows()?.next().unwrap()?;
+    let status = row.get("STATUS").unwrap();
     assert_eq!(
-        rows[0].get::<String>("STATUS")?,
-        "Table EXAMPLE successfully created."
+        status,
+        &SnowflakeValue::String("Table EXAMPLE successfully created.".to_owned()),
     );
 
-    // Insert some data
-    let query = "INSERT INTO example (n, s, b, d, tm, tm3, tm9, ltz, ntz, tz) VALUES (
-        42, 'hello', 0, '2024-01-01',
-        '01:23:45', '01:23:45.123', '01:23:45.123456789',
-        '2024-01-01 00:00:00', '2024-01-01 00:00:00', '2024-01-01 00:00:00')";
-    let rows = session.query(query).await?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get::<i64>("NUMBER OF ROWS INSERTED")?, 1);
+    let query = "
+    INSERT INTO example (n, s, b, d, tm, tm3, tm9, ltz, ntz, tz) VALUES (
+        42,
+        'hello',
+        0,
+        '2024-01-01',
+        '01:23:45',
+        '01:23:45.123',
+        '01:23:45.123456789',
+        '2024-01-01 00:00:00',
+        '2024-01-01 00:00:00',
+        '2024-01-01 00:00:00'
+    )";
+    let table = session.query(query).await?.collect_table().await?;
+    assert_eq!(table.row_count(), 1);
 
-    // Select the data back
-    let query = "SELECT * FROM example";
-    let rows = session.query(query).await?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get::<i64>("n")?, 42);
-    assert_eq!(rows[0].get::<String>("s")?, "hello");
-    assert!(!(rows[0].get::<bool>("b")?));
+    let row = table.dynamic_rows()?.next().unwrap()?;
+    let number_of_rows_inserted = row.get("NUMBER OF ROWS INSERTED").unwrap();
+    assert_eq!(number_of_rows_inserted, &SnowflakeValue::Integer(1));
+
+    let table = session
+        .query_as::<(
+            i64,
+            String,
+            bool,
+            NaiveDate,
+            NaiveTime,
+            NaiveTime,
+            NaiveTime,
+            DateTime<Utc>,
+            NaiveDateTime,
+            DateTime<Utc>,
+        ), _>("SELECT * FROM example")
+        .await?
+        .collect_table()
+        .await?;
+    assert_eq!(table.row_count(), 1);
+
+    let row = table.rows().next().unwrap()?;
+    assert_eq!(row.0, 42);
+    assert_eq!(row.1, "hello");
+    assert!(!row.2);
+    assert_eq!(row.3, NaiveDate::from_ymd_opt(2024, 1, 1).unwrap());
+    assert_eq!(row.4, NaiveTime::from_hms_opt(1, 23, 45).unwrap());
     assert_eq!(
-        rows[0].get::<chrono::NaiveDate>("d")?,
-        chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
+        row.5,
+        NaiveTime::from_hms_milli_opt(1, 23, 45, 123).unwrap()
     );
     assert_eq!(
-        rows[0].get::<chrono::NaiveTime>("tm")?,
-        chrono::NaiveTime::from_hms_opt(1, 23, 45).unwrap()
+        row.6,
+        NaiveTime::from_hms_nano_opt(1, 23, 45, 123_456_789).unwrap()
     );
     assert_eq!(
-        rows[0].get::<chrono::NaiveTime>("tm3")?,
-        chrono::NaiveTime::from_hms_milli_opt(1, 23, 45, 123).unwrap()
-    );
-    assert_eq!(
-        rows[0].get::<chrono::NaiveTime>("tm9")?,
-        chrono::NaiveTime::from_hms_nano_opt(1, 23, 45, 123_456_789).unwrap()
-    );
-    assert_eq!(
-        rows[0].get::<chrono::NaiveDateTime>("ltz")?,
-        chrono::NaiveDateTime::parse_from_str("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
-    );
-    // TIMESTAMP_LTZ can also be decoded as DateTime<Utc>
-    assert_eq!(
-        rows[0].get::<chrono::DateTime<chrono::Utc>>("ltz")?,
-        chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+        row.7,
+        NaiveDate::from_ymd_opt(2024, 1, 1)
             .unwrap()
             .and_hms_opt(0, 0, 0)
             .unwrap()
             .and_utc()
     );
     assert_eq!(
-        rows[0].get::<chrono::NaiveDateTime>("ntz")?,
-        chrono::NaiveDateTime::parse_from_str("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+        row.8,
+        NaiveDateTime::parse_from_str("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
     );
     assert_eq!(
-        rows[0].get::<chrono::NaiveDateTime>("tz")?,
-        chrono::NaiveDateTime::parse_from_str("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
-    );
-    // TIMESTAMP_TZ can also be decoded as DateTime<Utc>
-    assert_eq!(
-        rows[0].get::<chrono::DateTime<chrono::Utc>>("tz")?,
-        chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+        row.9,
+        NaiveDate::from_ymd_opt(2024, 1, 1)
             .unwrap()
             .and_hms_opt(0, 0, 0)
             .unwrap()
             .and_utc()
+    );
+
+    Ok(())
+}
+
+/// Verify TIMESTAMP_TZ decoding into `DateTime<FixedOffset>` and
+/// `DateTime<Utc>` for both eastern (UTC+09:00) and western (UTC-05:00)
+/// offsets.
+#[tokio::test]
+async fn test_decode_timestamp_tz_offsets() -> Result<()> {
+    let client = common::connect()?;
+    let session = client.create_session().await?;
+
+    // Use a session timezone that is not UTC so any accidental
+    // session-default leakage shows up in the failure mode.
+    session
+        .query("ALTER SESSION SET TIMEZONE = 'America/New_York'")
+        .await?;
+
+    let table = session
+        .query(
+            "SELECT
+                '2024-06-15 12:30:45 +09:00'::TIMESTAMP_TZ AS east,
+                '2024-06-15 12:30:45 -05:00'::TIMESTAMP_TZ AS west,
+                '2024-06-15 12:30:45 +23:59'::TIMESTAMP_TZ AS far_east,
+                '2024-06-15 12:30:45 -23:59'::TIMESTAMP_TZ AS far_west",
+        )
+        .await?
+        .collect_table()
+        .await?;
+
+    let (east_utc, west_utc, far_east_utc, far_west_utc) = table
+        .rows::<(DateTime<Utc>, DateTime<Utc>, DateTime<Utc>, DateTime<Utc>)>()?
+        .next()
+        .unwrap()?;
+    let (east_off, west_off, far_east_off, far_west_off) = table
+        .rows::<(
+            DateTime<FixedOffset>,
+            DateTime<FixedOffset>,
+            DateTime<FixedOffset>,
+            DateTime<FixedOffset>,
+        )>()?
+        .next()
+        .unwrap()?;
+
+    // East: 2024-06-15 12:30:45 +09:00 == 2024-06-15 03:30:45 UTC
+    assert_eq!(
+        east_utc,
+        NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(3, 30, 45)
+            .unwrap()
+            .and_utc()
+    );
+    assert_eq!(east_off.offset().local_minus_utc(), 9 * 3600);
+    assert_eq!(
+        east_off.naive_local(),
+        NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(12, 30, 45)
+            .unwrap()
+    );
+
+    // West: 2024-06-15 12:30:45 -05:00 == 2024-06-15 17:30:45 UTC
+    assert_eq!(
+        west_utc,
+        NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(17, 30, 45)
+            .unwrap()
+            .and_utc()
+    );
+    assert_eq!(west_off.offset().local_minus_utc(), -5 * 3600);
+    assert_eq!(
+        west_off.naive_local(),
+        NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(12, 30, 45)
+            .unwrap()
+    );
+
+    // Far east: 2024-06-15 12:30:45 +23:59 == 2024-06-14 12:31:45 UTC
+    assert_eq!(
+        far_east_utc,
+        NaiveDate::from_ymd_opt(2024, 6, 14)
+            .unwrap()
+            .and_hms_opt(12, 31, 45)
+            .unwrap()
+            .and_utc()
+    );
+    assert_eq!(far_east_off.offset().local_minus_utc(), 23 * 3600 + 59 * 60);
+    assert_eq!(
+        far_east_off.naive_local(),
+        NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(12, 30, 45)
+            .unwrap()
+    );
+
+    // Far west: 2024-06-15 12:30:45 -23:59 == 2024-06-16 12:29:45 UTC
+    assert_eq!(
+        far_west_utc,
+        NaiveDate::from_ymd_opt(2024, 6, 16)
+            .unwrap()
+            .and_hms_opt(12, 29, 45)
+            .unwrap()
+            .and_utc()
+    );
+    assert_eq!(
+        far_west_off.offset().local_minus_utc(),
+        -(23 * 3600 + 59 * 60)
+    );
+    assert_eq!(
+        far_west_off.naive_local(),
+        NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(12, 30, 45)
+            .unwrap()
     );
 
     Ok(())

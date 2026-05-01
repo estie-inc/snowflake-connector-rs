@@ -1,0 +1,5 @@
+error: duplicate `default`
+ --> tests/derive_compile_fail/duplicate_default.rs:5:26
+  |
+5 |     #[snowflake(default, default)]
+  |                          ^^^^^^^

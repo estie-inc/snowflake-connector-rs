@@ -1,14 +1,15 @@
-use std::io::Read;
-use std::time::Duration;
+use std::{io, sync::Arc, time::Duration};
 
-use flate2::bufread::GzDecoder;
 use http::HeaderMap;
 use reqwest::StatusCode;
 use tokio::time::sleep;
 
-use crate::{Error, Result};
-
-use super::snapshot::RawPartitionRows;
+use crate::{
+    Error, Result,
+    query_result::partition_source::FetchContext,
+    result::{ResultTable, Schema},
+    rowset::{ParseWorkload, parser::parse_remote_chunk_result_table_async},
+};
 
 const MAX_RETRIES: usize = 7;
 const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -34,8 +35,8 @@ impl From<reqwest::Error> for DownloadFailure {
     }
 }
 
-impl From<std::io::Error> for DownloadFailure {
-    fn from(e: std::io::Error) -> Self {
+impl From<io::Error> for DownloadFailure {
+    fn from(e: io::Error) -> Self {
         Self::Retryable(Error::IO(e))
     }
 }
@@ -51,15 +52,20 @@ impl ChunkDownloader {
         Self { client }
     }
 
-    pub(crate) async fn download(
+    pub(crate) async fn download_table(
         &self,
         url: &str,
         headers: &HeaderMap,
-    ) -> Result<RawPartitionRows> {
+        schema: Arc<Schema>,
+        ctx: FetchContext,
+    ) -> Result<ResultTable> {
         let mut retries = 0;
         loop {
-            match self.download_once(url, headers.clone()).await {
-                Ok(rows) => return Ok(rows),
+            match self
+                .download_once(url, headers.clone(), Arc::clone(&schema), ctx.clone())
+                .await
+            {
+                Ok(t) => return Ok(t),
                 Err(DownloadFailure::Retryable(_)) if retries < MAX_RETRIES => {
                     sleep(retry_delay(retries)).await;
                     retries += 1;
@@ -73,10 +79,11 @@ impl ChunkDownloader {
         &self,
         url: &str,
         headers: HeaderMap,
-    ) -> std::result::Result<RawPartitionRows, DownloadFailure> {
+        schema: Arc<Schema>,
+        ctx: FetchContext,
+    ) -> std::result::Result<ResultTable, DownloadFailure> {
         let response = self.client.get(url).headers(headers).send().await?;
         let status = response.status();
-
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             let error = Error::ChunkDownload(body);
@@ -88,28 +95,25 @@ impl ChunkDownloader {
         }
 
         let body = response.bytes().await?;
-        if body.len() < 2 {
-            return Err(DownloadFailure::Fatal(Error::ChunkDownload(
-                "invalid chunk format".into(),
-            )));
-        }
+        let gzip_encoded = body.len() >= 2 && body[0] == 0x1f && body[1] == 0x8b;
+        let workload = ParseWorkload::remote_chunk(
+            body.len(),
+            ctx.row_count,
+            schema.len(),
+            gzip_encoded,
+            ctx.compressed_size,
+            ctx.uncompressed_size,
+        );
 
-        let bytes = if body[0] == 0x1f && body[1] == 0x8b {
-            let mut d = GzDecoder::new(&body[..]);
-            let mut buf = vec![];
-            d.read_to_end(&mut buf)?;
-            buf
-        } else {
-            body.to_vec()
-        };
-
-        let mut buf = vec![b'['];
-        buf.extend(bytes);
-        buf.push(b']');
-
-        serde_json::from_slice(&buf).map_err(|e| {
-            DownloadFailure::Fatal(Error::Json(e, String::from_utf8_lossy(&buf).into_owned()))
-        })
+        parse_remote_chunk_result_table_async(
+            schema,
+            ctx.query_id,
+            body,
+            workload,
+            ctx.blocking_parse_limiter,
+        )
+        .await
+        .map_err(DownloadFailure::Fatal)
     }
 }
 

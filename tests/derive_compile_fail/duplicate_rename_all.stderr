@@ -1,0 +1,5 @@
+error: duplicate `rename_all`
+ --> tests/derive_compile_fail/duplicate_rename_all.rs:4:50
+  |
+4 | #[snowflake(rename_all = "SCREAMING_SNAKE_CASE", rename_all = "SCREAMING_SNAKE_CASE")]
+  |                                                  ^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: duplicate `crate`
+ --> tests/derive_compile_fail/duplicate_crate.rs:4:49
+  |
+4 | #[snowflake(crate = "::snowflake_connector_rs", crate = "::other")]
+  |                                                 ^^^^^

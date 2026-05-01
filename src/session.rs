@@ -1,9 +1,13 @@
 use url::Url;
 
 use crate::{
-    Result, SnowflakeRow,
+    Result,
     config::SnowflakeQueryConfig,
-    query::{QueryRequest, ResultSet, StatementExecutor},
+    query::QueryRequest,
+    query_result::{ResultSet, TypedResultSet},
+    result::{FromRow, RowPlanContext},
+    runtime::QueryRuntime,
+    statement::StatementExecutor,
 };
 
 pub struct SnowflakeSession {
@@ -11,17 +15,24 @@ pub struct SnowflakeSession {
     pub(super) base_url: Url,
     pub(super) session_token: String,
     pub(super) query: SnowflakeQueryConfig,
+    pub(super) runtime: QueryRuntime,
 }
 
 impl SnowflakeSession {
-    /// Run a query and fetch all results.
-    pub async fn query<Q: Into<QueryRequest>>(&self, request: Q) -> Result<Vec<SnowflakeRow>> {
-        let result = self.execute(request).await?;
-        result.collect_all().await
-    }
-
-    pub async fn execute<Q: Into<QueryRequest>>(&self, request: Q) -> Result<ResultSet> {
+    /// Submit a statement and return a `ResultSet` for streaming partition access.
+    pub async fn query<Q: Into<QueryRequest>>(&self, request: Q) -> Result<ResultSet> {
         let executor = StatementExecutor::new(self);
         executor.execute(request.into()).await
+    }
+
+    /// Submit a statement and return a typed `ResultSet` for streaming partition access.
+    pub async fn query_as<T, Q>(&self, request: Q) -> Result<TypedResultSet<T>>
+    where
+        T: FromRow,
+        Q: Into<QueryRequest>,
+    {
+        let result = self.query(request).await?;
+        let plan = T::build_plan(RowPlanContext::new(result.schema_arc()))?;
+        Ok(TypedResultSet::new(result, plan))
     }
 }
