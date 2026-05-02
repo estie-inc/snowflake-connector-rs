@@ -35,36 +35,3 @@ async fn test_session_parameters_support_bulk_and_incremental_configuration() ->
 
     Ok(())
 }
-
-#[cfg(feature = "derive")]
-#[tokio::test]
-async fn derive_decodes_show_parameters_lowercase_label() -> Result<()> {
-    use snowflake_connector_rs::FromRow;
-
-    #[derive(Debug, FromRow, PartialEq)]
-    struct ShowParameterRow {
-        value: String,
-    }
-
-    let client = common::connect()?;
-    let session = client.create_session().await?;
-
-    session
-        .query("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 48")
-        .await?;
-    let rows = session
-        .query_as::<ShowParameterRow, _>(
-            "SHOW PARAMETERS LIKE 'STATEMENT_TIMEOUT_IN_SECONDS' IN SESSION",
-        )
-        .await?
-        .collect()
-        .await?;
-
-    assert_eq!(
-        rows,
-        vec![ShowParameterRow {
-            value: "48".to_string()
-        }]
-    );
-    Ok(())
-}

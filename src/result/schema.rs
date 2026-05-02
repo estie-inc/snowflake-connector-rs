@@ -205,7 +205,7 @@ impl ColumnIndexMap {
         Self { map: entries }
     }
 
-    fn lookup_label(&self, name: &str) -> Option<&LookupEntry> {
+    fn get(&self, name: &str) -> Option<&LookupEntry> {
         self.map.get(name)
     }
 }
@@ -248,7 +248,7 @@ impl Schema {
 
     /// Resolves an exact raw result label (case-sensitive).
     pub fn column(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
-        lookup_result(name, self.indices.lookup_label(name))
+        lookup_result(name, self.indices.get(name))
     }
 
     #[doc(hidden)]

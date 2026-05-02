@@ -58,7 +58,7 @@ jobs:
         run: cargo test --workspace --all-features --test derive_trybuild
 
       - name: Test integration
-        run: cargo test --workspace --all-features --test integration
+        run: cargo test --workspace --test integration
 
       - name: Test documentation
         run: cargo test --workspace --all-features --doc

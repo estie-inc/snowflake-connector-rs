@@ -100,8 +100,19 @@ impl DynamicRow {
         self.at(idx)
     }
 
-    /// Moves a decoded value out of the row, replacing the slot with `Null`.
-    pub fn take(&mut self, index: ColumnIndex) -> std::result::Result<SnowflakeValue, SchemaError> {
+    /// Moves a decoded value out of the row by exact raw result label
+    /// (case-sensitive), replacing the slot with `Null`.
+    pub fn take(&mut self, name: &str) -> std::result::Result<SnowflakeValue, SchemaError> {
+        let idx = self.schema.column(name)?;
+        self.take_at(idx)
+    }
+
+    /// Moves a decoded value out of the row by resolved column index,
+    /// replacing the slot with `Null`.
+    pub fn take_at(
+        &mut self,
+        index: ColumnIndex,
+    ) -> std::result::Result<SnowflakeValue, SchemaError> {
         self.schema
             .column_at(index)
             .ok_or_else(|| SchemaError::InvalidColumnIndex {
@@ -367,25 +378,46 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_row_take_replaces_slots_with_null() {
+    fn dynamic_row_take_at_replaces_slots_with_null() {
         let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
         let index = row.schema().column("PAYLOAD").unwrap();
 
         assert_eq!(
-            row.take(index).unwrap(),
+            row.take_at(index).unwrap(),
             SnowflakeValue::String("value".into())
         );
         assert_eq!(row.at(index).unwrap(), &SnowflakeValue::Null);
-        assert_eq!(row.take(index).unwrap(), SnowflakeValue::Null);
+        assert_eq!(row.take_at(index).unwrap(), SnowflakeValue::Null);
     }
 
     #[test]
-    fn dynamic_row_take_rejects_invalid_indices() {
+    fn dynamic_row_take_at_rejects_invalid_indices() {
         let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
         let index = ColumnIndex::new(1).unwrap();
         assert!(matches!(
-            row.take(index),
+            row.take_at(index),
             Err(SchemaError::InvalidColumnIndex { index: actual, len: 1 }) if actual == index
+        ));
+    }
+
+    #[test]
+    fn dynamic_row_take_resolves_label_and_replaces_slot() {
+        let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
+
+        assert_eq!(
+            row.take("PAYLOAD").unwrap(),
+            SnowflakeValue::String("value".into())
+        );
+        assert_eq!(row.get("PAYLOAD").unwrap(), &SnowflakeValue::Null,);
+        assert_eq!(row.take("PAYLOAD").unwrap(), SnowflakeValue::Null);
+    }
+
+    #[test]
+    fn dynamic_row_take_reports_missing_column_for_unknown_label() {
+        let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
+        assert!(matches!(
+            row.take("missing"),
+            Err(SchemaError::MissingColumn { name }) if name.as_ref() == "missing"
         ));
     }
 
