@@ -10,9 +10,9 @@ use crate::result::{
         parse_timestamp_tz_with_offset,
     },
     row::RowRef,
-    schema::{ColumnType, Schema},
+    schema::{ColumnIndex, ColumnType, Schema},
 };
-use crate::{Error, Result, SchemaError};
+use crate::{Result, SchemaError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecimalValue {
@@ -81,29 +81,66 @@ impl DynamicRow {
         &self.values
     }
 
-    pub fn at(&self, index: usize) -> Option<&SnowflakeValue> {
-        self.values.get(index)
+    pub fn at(
+        &self,
+        index: ColumnIndex,
+    ) -> std::result::Result<&SnowflakeValue, SchemaError> {
+        self.schema
+            .column_at(index)
+            .ok_or_else(|| SchemaError::InvalidColumnIndex {
+                index,
+                len: self.schema.len(),
+            })?;
+        Ok(&self.values[index.as_usize()])
     }
 
-    pub fn get(&self, name: &str) -> Option<&SnowflakeValue> {
-        let idx = self.schema.column(name)?;
-        self.values.get(idx.as_usize())
+    pub fn value_by_label(
+        &self,
+        name: &str,
+    ) -> std::result::Result<&SnowflakeValue, SchemaError> {
+        let idx = self.schema.column_by_label(name)?;
+        self.at(idx)
     }
 
-    pub fn get_exact(&self, name: &str) -> Option<&SnowflakeValue> {
-        let idx = self.schema.column_exact(name)?;
-        self.values.get(idx.as_usize())
+    pub fn value_by_identifier(
+        &self,
+        name: &str,
+    ) -> std::result::Result<&SnowflakeValue, SchemaError> {
+        let idx = self.schema.column_by_identifier(name)?;
+        self.at(idx)
     }
 
-    pub fn into_json_object(self) -> Result<serde_json::Map<String, serde_json::Value>> {
+    pub fn take(
+        &mut self,
+        index: ColumnIndex,
+    ) -> std::result::Result<SnowflakeValue, SchemaError> {
+        self.schema
+            .column_at(index)
+            .ok_or_else(|| SchemaError::InvalidColumnIndex {
+                index,
+                len: self.schema.len(),
+            })?;
+        Ok(std::mem::replace(
+            &mut self.values[index.as_usize()],
+            SnowflakeValue::Null,
+        ))
+    }
+
+    pub fn into_parts(self) -> (Arc<Schema>, Box<[SnowflakeValue]>) {
+        (self.schema, self.values)
+    }
+
+    pub fn into_json_object(
+        self,
+    ) -> std::result::Result<serde_json::Map<String, serde_json::Value>, SchemaError> {
         let DynamicRow { schema, values } = self;
 
         let mut map = serde_json::Map::new();
         for (col, value) in schema.columns().iter().zip(values.into_vec()) {
             if map.contains_key(col.name()) {
-                return Err(Error::Schema(SchemaError::DuplicateColumnName {
+                return Err(SchemaError::DuplicateColumnName {
                     name: Box::from(col.name()),
-                }));
+                });
             }
             map.insert(col.name().to_string(), value.into_json_value());
         }
