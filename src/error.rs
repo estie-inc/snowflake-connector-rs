@@ -250,13 +250,19 @@ impl std::fmt::Display for SchemaError {
                 write!(f, "invalid unquoted identifier {input:?}: {reason}")
             }
             SchemaError::InvalidColumnIndex { index, len } => {
-                write!(f, "invalid column index {index:?} for schema with {len} columns")
+                write!(
+                    f,
+                    "invalid column index {index:?} for schema with {len} columns"
+                )
             }
             SchemaError::DuplicateColumnName { name } => {
                 write!(f, "duplicate column name in result: {name}")
             }
             SchemaError::ColumnCountMismatch { expected, actual } => {
-                write!(f, "column count mismatch (expected {expected}, actual {actual})")
+                write!(
+                    f,
+                    "column count mismatch (expected {expected}, actual {actual})"
+                )
             }
             SchemaError::SchemaMismatch => write!(f, "schema mismatch"),
         }
@@ -277,10 +283,7 @@ fn fmt_lookup_target(
             if canonical == name {
                 write!(f, "unquoted identifier {name:?}")
             } else {
-                write!(
-                    f,
-                    "unquoted identifier {name:?} (canonical {canonical:?})"
-                )
+                write!(f, "unquoted identifier {name:?} (canonical {canonical:?})")
             }
         }
     }

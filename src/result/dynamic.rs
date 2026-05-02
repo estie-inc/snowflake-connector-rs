@@ -84,10 +84,7 @@ impl DynamicRow {
     }
 
     /// Borrows a value by resolved column index.
-    pub fn at(
-        &self,
-        index: ColumnIndex,
-    ) -> std::result::Result<&SnowflakeValue, SchemaError> {
+    pub fn at(&self, index: ColumnIndex) -> std::result::Result<&SnowflakeValue, SchemaError> {
         self.schema
             .column_at(index)
             .ok_or_else(|| SchemaError::InvalidColumnIndex {
@@ -98,10 +95,7 @@ impl DynamicRow {
     }
 
     /// Resolves an exact result label and borrows the corresponding value.
-    pub fn value_by_label(
-        &self,
-        name: &str,
-    ) -> std::result::Result<&SnowflakeValue, SchemaError> {
+    pub fn value_by_label(&self, name: &str) -> std::result::Result<&SnowflakeValue, SchemaError> {
         let idx = self.schema.column_by_label(name)?;
         self.at(idx)
     }
@@ -116,10 +110,7 @@ impl DynamicRow {
     }
 
     /// Moves a decoded value out of the row, replacing the slot with `Null`.
-    pub fn take(
-        &mut self,
-        index: ColumnIndex,
-    ) -> std::result::Result<SnowflakeValue, SchemaError> {
+    pub fn take(&mut self, index: ColumnIndex) -> std::result::Result<SnowflakeValue, SchemaError> {
         self.schema
             .column_at(index)
             .ok_or_else(|| SchemaError::InvalidColumnIndex {
@@ -379,8 +370,14 @@ mod tests {
         .unwrap();
         let row = table.dynamic_rows().unwrap().next().unwrap().unwrap();
 
-        assert_eq!(row.value_by_label("ID").unwrap(), &SnowflakeValue::Integer(1));
-        assert_eq!(row.value_by_label("id").unwrap(), &SnowflakeValue::Integer(2));
+        assert_eq!(
+            row.value_by_label("ID").unwrap(),
+            &SnowflakeValue::Integer(1)
+        );
+        assert_eq!(
+            row.value_by_label("id").unwrap(),
+            &SnowflakeValue::Integer(2)
+        );
         assert_eq!(
             row.value_by_identifier("id").unwrap(),
             &SnowflakeValue::Integer(1)
@@ -392,7 +389,10 @@ mod tests {
         let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
         let index = row.schema().column_by_label("PAYLOAD").unwrap();
 
-        assert_eq!(row.take(index).unwrap(), SnowflakeValue::String("value".into()));
+        assert_eq!(
+            row.take(index).unwrap(),
+            SnowflakeValue::String("value".into())
+        );
         assert_eq!(row.at(index).unwrap(), &SnowflakeValue::Null);
         assert_eq!(row.take(index).unwrap(), SnowflakeValue::Null);
     }
@@ -410,7 +410,10 @@ mod tests {
 
         let (schema, values) = row.into_parts();
         assert!(ptr::eq(schema.as_ref(), table.schema()));
-        assert_eq!(values.as_ref(), &[SnowflakeValue::String("value".to_string())]);
+        assert_eq!(
+            values.as_ref(),
+            &[SnowflakeValue::String("value".to_string())]
+        );
     }
 
     #[test]

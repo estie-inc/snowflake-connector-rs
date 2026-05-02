@@ -121,8 +121,14 @@ async fn test_dynamic_row_lookup_distinguishes_label_and_identifier() -> Result<
         .await?;
 
     let row = table.dynamic_rows()?.next().unwrap()?;
-    assert_eq!(row.value_by_label("ID").unwrap(), &SnowflakeValue::Integer(1));
-    assert_eq!(row.value_by_label("id").unwrap(), &SnowflakeValue::Integer(2));
+    assert_eq!(
+        row.value_by_label("ID").unwrap(),
+        &SnowflakeValue::Integer(1)
+    );
+    assert_eq!(
+        row.value_by_label("id").unwrap(),
+        &SnowflakeValue::Integer(2)
+    );
     assert_eq!(
         row.value_by_identifier("id").unwrap(),
         &SnowflakeValue::Integer(1)

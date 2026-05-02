@@ -185,7 +185,9 @@ impl ColumnIndexMap {
     fn build(columns: &[Column]) -> Self {
         let mut map: HashMap<Arc<str>, Vec<ColumnIndex>> = HashMap::with_capacity(columns.len());
         for col in columns {
-            map.entry(Arc::clone(&col.name)).or_default().push(col.index());
+            map.entry(Arc::clone(&col.name))
+                .or_default()
+                .push(col.index());
         }
 
         let entries = map
@@ -301,13 +303,12 @@ impl Schema {
         &self,
         name: &str,
     ) -> std::result::Result<ColumnIndex, SchemaError> {
-        let entry = self
-            .indices
-            .lookup_identifier(name)
-            .map_err(|reason| SchemaError::InvalidIdentifier {
+        let entry = self.indices.lookup_identifier(name).map_err(|reason| {
+            SchemaError::InvalidIdentifier {
                 input: Box::from(name),
                 reason,
-            })?;
+            }
+        })?;
         lookup_result(LookupKind::Identifier, name, entry)
     }
 }
@@ -376,7 +377,15 @@ mod tests {
                     scale: Some(0),
                 },
             ),
-            Column::new("id", 1, false, ColumnType::Fixed { precision: None, scale: Some(0) }),
+            Column::new(
+                "id",
+                1,
+                false,
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+            ),
         ])
         .unwrap();
         let err = schema.column_by_label("id").unwrap_err();
@@ -402,8 +411,24 @@ mod tests {
     #[test]
     fn schema_identifier_lookup_reports_ambiguous_canonical_matches() {
         let schema = Schema::from_columns(vec![
-            Column::new("ID", 0, false, ColumnType::Fixed { precision: None, scale: Some(0) }),
-            Column::new("ID", 1, false, ColumnType::Fixed { precision: None, scale: Some(0) }),
+            Column::new(
+                "ID",
+                0,
+                false,
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+            ),
+            Column::new(
+                "ID",
+                1,
+                false,
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+            ),
         ])
         .unwrap();
         let err = schema.column_by_identifier("id").unwrap_err();
