@@ -1,7 +1,8 @@
 use super::common;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use snowflake_connector_rs::{Result, SnowflakeValue};
+
+use snowflake_connector_rs::{Result, SchemaError, SnowflakeValue};
 
 #[tokio::test]
 async fn test_decode() -> Result<()> {
@@ -110,19 +111,37 @@ async fn test_decode() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_dynamic_row_get_distinguishes_quoted_aliases() -> Result<()> {
+async fn test_dynamic_row_get_resolves_escaped_identifiers() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
     let table = session
-        .query(r#"SELECT 1 AS id, 2 AS "id""#)
+        .query(
+            r#"SELECT
+                1 AS id,
+                2 AS "id",
+                3 AS "my column",
+                4 AS "MixedCase""#,
+        )
         .await?
         .collect_table()
         .await?;
 
     let row = table.dynamic_rows()?.next().unwrap()?;
+
     assert_eq!(row.get("ID").unwrap(), &SnowflakeValue::Integer(1));
     assert_eq!(row.get("id").unwrap(), &SnowflakeValue::Integer(2));
+    assert_eq!(row.get("my column").unwrap(), &SnowflakeValue::Integer(3));
+    assert_eq!(row.get("MixedCase").unwrap(), &SnowflakeValue::Integer(4));
+
+    assert!(matches!(
+        row.get("MIXEDCASE"),
+        Err(SchemaError::MissingColumn { .. })
+    ));
+    assert!(matches!(
+        row.get("MY COLUMN"),
+        Err(SchemaError::MissingColumn { .. })
+    ));
 
     Ok(())
 }
