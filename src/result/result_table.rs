@@ -8,7 +8,7 @@ use crate::{
         DynamicRow, FromRow,
         cell::{Cell, CellBlock, RawSpan, StringArenaBuilder},
         row::Rows,
-        schema::{ColumnIndex, Schema},
+        schema::Schema,
     },
 };
 
@@ -62,14 +62,6 @@ impl ResultTable {
 
     pub fn dynamic_rows(&self) -> Result<Rows<'_, DynamicRow>> {
         self.rows::<DynamicRow>()
-    }
-
-    pub fn column(&self, name: &str) -> Option<ColumnIndex> {
-        self.schema.column(name)
-    }
-
-    pub fn column_exact(&self, name: &str) -> Option<ColumnIndex> {
-        self.schema.column_exact(name)
     }
 
     pub(crate) fn storage(&self) -> &ResultTableStorage {

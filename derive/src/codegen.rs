@@ -63,20 +63,18 @@ fn build_plan_line(field: &FieldInfo, crate_path: &syn::Path) -> TokenStream2 {
             if field.has_default {
                 quote! {
                     let #ident: ::core::option::Option<#crate_path::ColumnIndex> =
-                        match schema.require_column(#name) {
+                        match schema.column_by_identifier(#name) {
                             ::core::result::Result::Ok(idx) => ::core::option::Option::Some(idx),
                             ::core::result::Result::Err(
-                                #crate_path::Error::Schema(
-                                    #crate_path::SchemaError::MissingColumn { .. },
-                                ),
+                                #crate_path::SchemaError::MissingColumn { .. },
                             ) => ::core::option::Option::None,
                             ::core::result::Result::Err(e) => {
-                                return ::core::result::Result::Err(e);
+                                return ::core::result::Result::Err(e.into());
                             }
                         };
                 }
             } else {
-                quote! { let #ident = schema.require_column(#name)?; }
+                quote! { let #ident = schema.column_by_identifier(#name)?; }
             }
         }
         FieldLookup::Position(pos) => {

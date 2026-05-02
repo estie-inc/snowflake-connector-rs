@@ -1,8 +1,6 @@
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
-use crate::{
-    Error, IdentifierError, LookupKind, ParseError, Result, SchemaError,
-};
+use crate::{Error, IdentifierError, LookupKind, ParseError, Result, SchemaError};
 
 /// Index into a result-set column list.
 #[repr(transparent)]
@@ -309,41 +307,6 @@ impl Schema {
             })?;
         lookup_result(LookupKind::Identifier, name, entry)
     }
-
-    /// Legacy case-insensitive lookup retained temporarily while call sites migrate.
-    pub fn column(&self, name: &str) -> Option<ColumnIndex> {
-        match legacy_case_insensitive_lookup(&self.columns, name)? {
-            LookupEntry::Unique(idx) => Some(idx),
-            LookupEntry::Ambiguous(_) => None,
-        }
-    }
-
-    /// Legacy case-insensitive lookup retained temporarily while call sites migrate.
-    pub fn require_column(&self, name: &str) -> Result<ColumnIndex> {
-        match legacy_case_insensitive_lookup(&self.columns, name) {
-            Some(LookupEntry::Unique(idx)) => Ok(idx),
-            Some(LookupEntry::Ambiguous(candidates)) => {
-                Err(Error::Schema(SchemaError::AmbiguousColumn {
-                    lookup: LookupKind::Label,
-                    name: Box::from(name),
-                    candidates,
-                }))
-            }
-            None => Err(Error::Schema(SchemaError::MissingColumn {
-                lookup: LookupKind::Label,
-                name: Box::from(name),
-            })),
-        }
-    }
-
-    /// Exact (case-sensitive) lookup. Returns `Some` only if exactly one
-    /// column has the given original name.
-    pub fn column_exact(&self, name: &str) -> Option<ColumnIndex> {
-        match self.indices.lookup_label(name)? {
-            LookupEntry::Unique(idx) => Some(*idx),
-            LookupEntry::Ambiguous(_) => None,
-        }
-    }
 }
 
 fn lookup_result(
@@ -363,23 +326,6 @@ fn lookup_result(
             name: Box::from(name),
         }),
     }
-}
-
-fn legacy_case_insensitive_lookup(columns: &[Column], name: &str) -> Option<LookupEntry> {
-    let mut matches = columns
-        .iter()
-        .filter(|column| column.name().eq_ignore_ascii_case(name))
-        .map(Column::index);
-    let first = matches.next()?;
-    let second = matches.next();
-    Some(match second {
-        None => LookupEntry::Unique(first),
-        Some(second) => {
-            let mut candidates = vec![first, second];
-            candidates.extend(matches);
-            LookupEntry::Ambiguous(candidates.into_boxed_slice())
-        }
-    })
 }
 
 #[cfg(test)]
