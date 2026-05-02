@@ -22,7 +22,7 @@ async fn test_session_parameters_support_bulk_and_incremental_configuration() ->
         .await?
         .collect()
         .await?;
-    let value = rows[0].get("value").unwrap();
+    let value = rows[0].value_by_label("value").unwrap();
     assert_eq!(value, &SnowflakeValue::String("48".to_owned()));
 
     let rows = session
@@ -30,7 +30,7 @@ async fn test_session_parameters_support_bulk_and_incremental_configuration() ->
         .await?
         .collect()
         .await?;
-    let value = rows[0].get("value").unwrap();
+    let value = rows[0].value_by_label("value").unwrap();
     assert_eq!(value, &SnowflakeValue::String("Asia/Tokyo".to_owned()));
 
     Ok(())

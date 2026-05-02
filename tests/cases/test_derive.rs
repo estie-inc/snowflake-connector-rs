@@ -50,6 +50,11 @@ struct KeywordRow {
     r#type: i64,
 }
 
+#[derive(Debug, FromRow, PartialEq)]
+struct IdentifierLookupRow {
+    id: i64,
+}
+
 #[tokio::test]
 async fn derive_named_struct_decodes_query_results() -> Result<()> {
     let client = common::connect()?;
@@ -258,11 +263,26 @@ async fn derive_raw_identifier_uses_logical_field_name() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn derive_identifier_lookup_distinguishes_quoted_labels() -> Result<()> {
+    let client = common::connect()?;
+    let session = client.create_session().await?;
+
+    let rows = session
+        .query_as::<IdentifierLookupRow, _>(r#"SELECT 1 AS id, 2 AS "id""#)
+        .await?
+        .collect()
+        .await?;
+
+    assert_eq!(rows, vec![IdentifierLookupRow { id: 1 }]);
+    Ok(())
+}
+
 #[derive(Debug, FromRow, PartialEq)]
 struct AmbiguousIdWithDefault {
-    /// `id` resolves case-insensitively. If the result schema contains both
-    /// `id` and `"id"`, the lookup is ambiguous; `#[snowflake(default)]` must
-    /// NOT swallow that — it should surface as a `SchemaError::AmbiguousColumn`.
+    /// `id` resolves through unquoted identifier lookup. If the result schema
+    /// contains two raw `ID` labels, the identifier namespace is ambiguous;
+    /// `#[snowflake(default)]` must NOT swallow that.
     #[snowflake(default)]
     id: Option<i64>,
 }
@@ -273,10 +293,10 @@ async fn derive_default_does_not_swallow_ambiguous_column() -> Result<()> {
     let session = client.create_session().await?;
 
     let err = session
-        .query_as::<AmbiguousIdWithDefault, _>(r#"SELECT 1 AS id, 2 AS "id""#)
+        .query_as::<AmbiguousIdWithDefault, _>("SELECT 1 AS id, 2 AS ID")
         .await
         .err()
-        .expect("ambiguous case-insensitive id should not silently default");
+        .expect("ambiguous identifier lookup should not silently default");
 
     match err {
         Error::Schema(SchemaError::AmbiguousColumn { .. }) => {}

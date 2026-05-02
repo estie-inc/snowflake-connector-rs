@@ -318,7 +318,7 @@ mod tests {
     fn dynamic_row_keeps_text_cells_as_strings() {
         for value in [r#"{"a":1}"#, "plain text"] {
             let row = one_cell_row(ColumnType::Text { length: None }, value);
-            match row.get("PAYLOAD").unwrap() {
+            match row.value_by_label("PAYLOAD").unwrap() {
                 SnowflakeValue::String(actual) => assert_eq!(actual, value),
                 other => panic!("expected String, got {other:?}"),
             }
@@ -328,10 +328,114 @@ mod tests {
     #[test]
     fn dynamic_row_decodes_variant_cells_as_json() {
         let row = one_cell_row(ColumnType::Variant, r#"{"a":1}"#);
-        match row.get("PAYLOAD").unwrap() {
+        match row.value_by_label("PAYLOAD").unwrap() {
             SnowflakeValue::Json(value) => assert_eq!(value["a"], 1),
             other => panic!("expected Json, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dynamic_row_at_rejects_invalid_indices() {
+        let row = one_cell_row(ColumnType::Text { length: None }, "value");
+        let index = ColumnIndex::new(1).unwrap();
+        assert!(matches!(
+            row.at(index),
+            Err(SchemaError::InvalidColumnIndex { index: actual, len: 1 }) if actual == index
+        ));
+    }
+
+    #[test]
+    fn dynamic_row_value_lookup_distinguishes_labels_and_identifiers() {
+        let schema = make_schema(vec![
+            (
+                "ID".to_string(),
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                false,
+            ),
+            (
+                "id".to_string(),
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                false,
+            ),
+        ]);
+        let table = make_result_table_from_rows(
+            schema,
+            vec![vec![Some("1".to_string()), Some("2".to_string())]],
+        )
+        .unwrap();
+        let row = table.dynamic_rows().unwrap().next().unwrap().unwrap();
+
+        assert_eq!(row.value_by_label("ID").unwrap(), &SnowflakeValue::Integer(1));
+        assert_eq!(row.value_by_label("id").unwrap(), &SnowflakeValue::Integer(2));
+        assert_eq!(
+            row.value_by_identifier("id").unwrap(),
+            &SnowflakeValue::Integer(1)
+        );
+    }
+
+    #[test]
+    fn dynamic_row_take_replaces_slots_with_null() {
+        let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
+        let index = row.schema().column_by_label("PAYLOAD").unwrap();
+
+        assert_eq!(row.take(index).unwrap(), SnowflakeValue::String("value".into()));
+        assert_eq!(row.at(index).unwrap(), &SnowflakeValue::Null);
+        assert_eq!(row.take(index).unwrap(), SnowflakeValue::Null);
+    }
+
+    #[test]
+    fn dynamic_row_into_parts_preserves_schema_and_values() {
+        let schema = make_schema(vec![(
+            "PAYLOAD".to_string(),
+            ColumnType::Text { length: None },
+            true,
+        )]);
+        let table =
+            make_result_table_from_rows(schema, vec![vec![Some("value".to_string())]]).unwrap();
+        let row = table.dynamic_rows().unwrap().next().unwrap().unwrap();
+
+        let (schema, values) = row.into_parts();
+        assert!(ptr::eq(schema.as_ref(), table.schema()));
+        assert_eq!(values.as_ref(), &[SnowflakeValue::String("value".to_string())]);
+    }
+
+    #[test]
+    fn dynamic_row_into_json_object_rejects_duplicate_labels() {
+        let schema = make_schema(vec![
+            (
+                "id".to_string(),
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                false,
+            ),
+            (
+                "id".to_string(),
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                false,
+            ),
+        ]);
+        let table = make_result_table_from_rows(
+            schema,
+            vec![vec![Some("1".to_string()), Some("2".to_string())]],
+        )
+        .unwrap();
+        let row = table.dynamic_rows().unwrap().next().unwrap().unwrap();
+
+        assert!(matches!(
+            row.into_json_object(),
+            Err(SchemaError::DuplicateColumnName { name }) if name.as_ref() == "id"
+        ));
     }
 
     #[test]

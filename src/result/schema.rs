@@ -333,38 +333,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schema_lookup_normalizes_case() {
+    fn schema_label_and_identifier_lookups_are_distinct() {
         let schema = Schema::from_columns(vec![
-            Column::new(
-                "id",
-                0,
-                false,
-                ColumnType::Fixed {
-                    precision: None,
-                    scale: Some(0),
-                },
-            ),
-            Column::new("Name", 1, true, ColumnType::Text { length: None }),
-        ])
-        .unwrap();
-        assert_eq!(schema.column("ID").unwrap().as_usize(), 0);
-        assert_eq!(schema.column("name").unwrap().as_usize(), 1);
-    }
-
-    #[test]
-    fn schema_ambiguous_quoted_columns() {
-        let schema = Schema::from_columns(vec![
-            Column::new(
-                "id",
-                0,
-                false,
-                ColumnType::Fixed {
-                    precision: None,
-                    scale: Some(0),
-                },
-            ),
             Column::new(
                 "ID",
+                0,
+                false,
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+            ),
+            Column::new(
+                "id",
                 1,
                 false,
                 ColumnType::Fixed {
@@ -374,14 +355,96 @@ mod tests {
             ),
         ])
         .unwrap();
-        assert!(schema.column("id").is_none());
-        let err = schema.require_column("id").unwrap_err();
+        assert_eq!(schema.column_by_label("ID").unwrap().as_usize(), 0);
+        assert_eq!(schema.column_by_label("id").unwrap().as_usize(), 1);
+        assert_eq!(schema.column_by_identifier("id").unwrap().as_usize(), 0);
+        assert_eq!(schema.column_by_identifier("ID").unwrap().as_usize(), 0);
+    }
+
+    #[test]
+    fn schema_label_lookup_reports_duplicate_raw_labels() {
+        let schema = Schema::from_columns(vec![
+            Column::new(
+                "id",
+                0,
+                false,
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+            ),
+            Column::new("id", 1, false, ColumnType::Fixed { precision: None, scale: Some(0) }),
+        ])
+        .unwrap();
+        let err = schema.column_by_label("id").unwrap_err();
+        match err {
+            SchemaError::AmbiguousColumn {
+                lookup: LookupKind::Label,
+                name,
+                candidates,
+            } => {
+                assert_eq!(name.as_ref(), "id");
+                assert_eq!(
+                    candidates
+                        .iter()
+                        .map(|candidate| candidate.as_usize())
+                        .collect::<Vec<_>>(),
+                    vec![0, 1]
+                );
+            }
+            other => panic!("expected label ambiguity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn schema_identifier_lookup_reports_ambiguous_canonical_matches() {
+        let schema = Schema::from_columns(vec![
+            Column::new("ID", 0, false, ColumnType::Fixed { precision: None, scale: Some(0) }),
+            Column::new("ID", 1, false, ColumnType::Fixed { precision: None, scale: Some(0) }),
+        ])
+        .unwrap();
+        let err = schema.column_by_identifier("id").unwrap_err();
+        match err {
+            SchemaError::AmbiguousColumn {
+                lookup: LookupKind::Identifier,
+                name,
+                candidates,
+            } => {
+                assert_eq!(name.as_ref(), "id");
+                assert_eq!(
+                    candidates
+                        .iter()
+                        .map(|candidate| candidate.as_usize())
+                        .collect::<Vec<_>>(),
+                    vec![0, 1]
+                );
+            }
+            other => panic!("expected identifier ambiguity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn schema_identifier_lookup_rejects_invalid_names() {
+        let schema = Schema::from_columns(vec![Column::new(
+            "NUMBER OF ROWS INSERTED",
+            0,
+            false,
+            ColumnType::Fixed {
+                precision: None,
+                scale: Some(0),
+            },
+        )])
+        .unwrap();
+        let err = schema
+            .column_by_identifier("NUMBER OF ROWS INSERTED")
+            .unwrap_err();
         assert!(matches!(
             err,
-            crate::Error::Schema(SchemaError::AmbiguousColumn { .. })
+            SchemaError::InvalidIdentifier {
+                input,
+                reason: IdentifierError::InvalidChar { offset: 6, ch: ' ' },
+            } if input.as_ref() == "NUMBER OF ROWS INSERTED"
         ));
-        assert_eq!(schema.column_exact("id").unwrap().as_usize(), 0);
-        assert_eq!(schema.column_exact("ID").unwrap().as_usize(), 1);
     }
 
     #[test]
