@@ -286,14 +286,17 @@ impl Schema {
         self.columns.is_empty()
     }
 
+    /// Borrows column metadata by index.
     pub fn column_at(&self, index: ColumnIndex) -> Option<&Column> {
         self.columns.get(index.as_usize())
     }
 
+    /// Resolves an exact raw result label.
     pub fn column_by_label(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
         lookup_result(LookupKind::Label, name, self.indices.lookup_label(name))
     }
 
+    /// Resolves an unquoted identifier using Snowflake's uppercase rules.
     pub fn column_by_identifier(
         &self,
         name: &str,

@@ -73,14 +73,17 @@ pub struct DynamicRow {
 }
 
 impl DynamicRow {
+    /// Returns the shared schema metadata for this row.
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
 
+    /// Returns all decoded values in column order.
     pub fn values(&self) -> &[SnowflakeValue] {
         &self.values
     }
 
+    /// Borrows a value by resolved column index.
     pub fn at(
         &self,
         index: ColumnIndex,
@@ -94,6 +97,7 @@ impl DynamicRow {
         Ok(&self.values[index.as_usize()])
     }
 
+    /// Resolves an exact result label and borrows the corresponding value.
     pub fn value_by_label(
         &self,
         name: &str,
@@ -102,6 +106,7 @@ impl DynamicRow {
         self.at(idx)
     }
 
+    /// Resolves an unquoted identifier and borrows the corresponding value.
     pub fn value_by_identifier(
         &self,
         name: &str,
@@ -110,6 +115,7 @@ impl DynamicRow {
         self.at(idx)
     }
 
+    /// Moves a decoded value out of the row, replacing the slot with `Null`.
     pub fn take(
         &mut self,
         index: ColumnIndex,
@@ -126,10 +132,12 @@ impl DynamicRow {
         ))
     }
 
+    /// Consumes the row and returns its schema and decoded values.
     pub fn into_parts(self) -> (Arc<Schema>, Box<[SnowflakeValue]>) {
         (self.schema, self.values)
     }
 
+    /// Consumes the row into a JSON object keyed by raw result labels.
     pub fn into_json_object(
         self,
     ) -> std::result::Result<serde_json::Map<String, serde_json::Value>, SchemaError> {
