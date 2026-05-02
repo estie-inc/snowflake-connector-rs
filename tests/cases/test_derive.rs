@@ -51,8 +51,9 @@ struct KeywordRow {
 }
 
 #[derive(Debug, FromRow, PartialEq)]
-struct IdentifierLookupRow {
-    id: i64,
+struct QuotedAliasRow {
+    #[snowflake(rename = "value")]
+    v: i64,
 }
 
 #[tokio::test]
@@ -263,26 +264,11 @@ async fn derive_raw_identifier_uses_logical_field_name() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn derive_identifier_lookup_distinguishes_quoted_labels() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
-
-    let rows = session
-        .query_as::<IdentifierLookupRow, _>(r#"SELECT 1 AS id, 2 AS "id""#)
-        .await?
-        .collect()
-        .await?;
-
-    assert_eq!(rows, vec![IdentifierLookupRow { id: 1 }]);
-    Ok(())
-}
-
 #[derive(Debug, FromRow, PartialEq)]
 struct AmbiguousIdWithDefault {
-    /// `id` resolves through unquoted identifier lookup. If the result schema
-    /// contains two raw `ID` labels, the identifier namespace is ambiguous;
-    /// `#[snowflake(default)]` must NOT swallow that.
+    /// `id` resolves through derive's temporary case-insensitive compatibility
+    /// lookup. If the result schema contains two labels that differ only by
+    /// ASCII case, `#[snowflake(default)]` must NOT swallow that ambiguity.
     #[snowflake(default)]
     id: Option<i64>,
 }
@@ -293,14 +279,29 @@ async fn derive_default_does_not_swallow_ambiguous_column() -> Result<()> {
     let session = client.create_session().await?;
 
     let err = session
-        .query_as::<AmbiguousIdWithDefault, _>("SELECT 1 AS id, 2 AS ID")
+        .query_as::<AmbiguousIdWithDefault, _>(r#"SELECT 1 AS id, 2 AS "id""#)
         .await
         .err()
-        .expect("ambiguous identifier lookup should not silently default");
+        .expect("ambiguous case-insensitive lookup should not silently default");
 
     match err {
         Error::Schema(SchemaError::AmbiguousColumn { .. }) => {}
         other => panic!("expected AmbiguousColumn, got: {other:?}"),
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn derive_rename_resolves_quoted_lowercase_alias() -> Result<()> {
+    let client = common::connect()?;
+    let session = client.create_session().await?;
+
+    let rows = session
+        .query_as::<QuotedAliasRow, _>(r#"SELECT 1 AS "value""#)
+        .await?
+        .collect()
+        .await?;
+
+    assert_eq!(rows, vec![QuotedAliasRow { v: 1 }]);
     Ok(())
 }
