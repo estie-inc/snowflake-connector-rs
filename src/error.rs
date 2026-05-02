@@ -315,3 +315,90 @@ pub enum ParseError {
     #[error("capacity overflow")]
     CapacityOverflow,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index(value: usize) -> ColumnIndex {
+        ColumnIndex::new(value).unwrap()
+    }
+
+    #[test]
+    fn schema_error_display_formats_missing_and_ambiguous_variants() {
+        assert_eq!(
+            SchemaError::MissingColumn {
+                lookup: LookupKind::Label,
+                name: Box::from("value"),
+            }
+            .to_string(),
+            r#"missing result label "value""#
+        );
+        assert_eq!(
+            SchemaError::MissingColumn {
+                lookup: LookupKind::Identifier,
+                name: Box::from("id"),
+            }
+            .to_string(),
+            r#"missing unquoted identifier "id" (canonical "ID")"#
+        );
+        assert_eq!(
+            SchemaError::AmbiguousColumn {
+                lookup: LookupKind::Label,
+                name: Box::from("value"),
+                candidates: vec![index(0), index(1)].into_boxed_slice(),
+            }
+            .to_string(),
+            r#"ambiguous result label "value""#
+        );
+        assert_eq!(
+            SchemaError::AmbiguousColumn {
+                lookup: LookupKind::Identifier,
+                name: Box::from("id"),
+                candidates: vec![index(0), index(1)].into_boxed_slice(),
+            }
+            .to_string(),
+            r#"ambiguous unquoted identifier "id" (canonical "ID")"#
+        );
+    }
+
+    #[test]
+    fn schema_error_display_formats_invalid_identifier_variant() {
+        assert_eq!(
+            SchemaError::InvalidIdentifier {
+                input: Box::from("PAY LOAD"),
+                reason: IdentifierError::InvalidChar { offset: 3, ch: ' ' },
+            }
+            .to_string(),
+            r#"invalid unquoted identifier "PAY LOAD": identifier contains an invalid character at offset 3: ' ' (allowed: ASCII letters, digits, `_`, `$`)"#
+        );
+    }
+
+    #[test]
+    fn schema_error_display_formats_remaining_variants() {
+        assert_eq!(
+            SchemaError::InvalidColumnIndex {
+                index: index(7),
+                len: 3,
+            }
+            .to_string(),
+            "invalid column index ColumnIndex(7) for schema with 3 columns"
+        );
+        assert_eq!(
+            SchemaError::DuplicateColumnName {
+                name: Box::from("id"),
+            }
+            .to_string(),
+            "duplicate column name in result: id"
+        );
+        assert_eq!(
+            SchemaError::ColumnCountMismatch {
+                expected: 4,
+                actual: 2,
+            }
+            .to_string(),
+            "column count mismatch (expected 4, actual 2)"
+        );
+        assert_eq!(SchemaError::SchemaMismatch.to_string(), "schema mismatch");
+    }
+}

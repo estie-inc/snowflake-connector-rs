@@ -398,6 +398,28 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_row_take_rejects_invalid_indices() {
+        let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
+        let index = ColumnIndex::new(1).unwrap();
+        assert!(matches!(
+            row.take(index),
+            Err(SchemaError::InvalidColumnIndex { index: actual, len: 1 }) if actual == index
+        ));
+    }
+
+    #[test]
+    fn dynamic_row_value_by_identifier_propagates_invalid_identifier() {
+        let row = one_cell_row(ColumnType::Text { length: None }, "x");
+        assert!(matches!(
+            row.value_by_identifier("PAY LOAD"),
+            Err(SchemaError::InvalidIdentifier {
+                input,
+                reason: crate::IdentifierError::InvalidChar { offset: 3, ch: ' ' },
+            }) if input.as_ref() == "PAY LOAD"
+        ));
+    }
+
+    #[test]
     fn dynamic_row_into_parts_preserves_schema_and_values() {
         let schema = make_schema(vec![(
             "PAYLOAD".to_string(),
@@ -413,6 +435,49 @@ mod tests {
         assert_eq!(
             values.as_ref(),
             &[SnowflakeValue::String("value".to_string())]
+        );
+    }
+
+    #[test]
+    fn dynamic_row_into_parts_supports_schema_coordinated_walk() {
+        let schema = make_schema(vec![
+            (
+                "ID".to_string(),
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                false,
+            ),
+            (
+                "PAYLOAD".to_string(),
+                ColumnType::Text { length: None },
+                true,
+            ),
+        ]);
+        let table = make_result_table_from_rows(
+            schema,
+            vec![vec![Some("1".to_string()), Some("value".to_string())]],
+        )
+        .unwrap();
+        let row = table.dynamic_rows().unwrap().next().unwrap().unwrap();
+
+        let (schema, values) = row.into_parts();
+        let walked = schema
+            .columns()
+            .iter()
+            .zip(values.into_vec())
+            .map(|(column, value)| (column.name().to_string(), value))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            walked,
+            vec![
+                ("ID".to_string(), SnowflakeValue::Integer(1)),
+                (
+                    "PAYLOAD".to_string(),
+                    SnowflakeValue::String("value".to_string())
+                ),
+            ]
         );
     }
 

@@ -334,7 +334,58 @@ fn lookup_result(
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
+
+    #[test]
+    fn canonicalize_unquoted_rejects_invalid_inputs() {
+        assert!(matches!(
+            canonicalize_unquoted(""),
+            Err(IdentifierError::Empty)
+        ));
+        assert!(matches!(
+            canonicalize_unquoted("1col"),
+            Err(IdentifierError::InvalidStart { ch: '1' })
+        ));
+
+        let input = "a".repeat(256);
+        assert!(matches!(
+            canonicalize_unquoted(&input),
+            Err(IdentifierError::TooLong { len: 256, max: 255 })
+        ));
+    }
+
+    #[test]
+    fn canonicalize_unquoted_returns_borrowed_for_canonical_inputs() {
+        assert!(matches!(
+            canonicalize_unquoted("A$1"),
+            Ok(Cow::Borrowed("A$1"))
+        ));
+        assert!(matches!(
+            canonicalize_unquoted("ID"),
+            Ok(Cow::Borrowed("ID"))
+        ));
+    }
+
+    #[test]
+    fn canonicalize_unquoted_returns_owned_for_case_changes() {
+        assert!(matches!(
+            canonicalize_unquoted("_test"),
+            Ok(Cow::Owned(ref canonical)) if canonical == "_TEST"
+        ));
+        assert!(matches!(
+            canonicalize_unquoted("id"),
+            Ok(Cow::Owned(ref canonical)) if canonical == "ID"
+        ));
+
+        let input = "a".repeat(255);
+        let expected = "A".repeat(255);
+        assert!(matches!(
+            canonicalize_unquoted(&input),
+            Ok(Cow::Owned(ref canonical)) if canonical == &expected
+        ));
+    }
 
     #[test]
     fn schema_label_and_identifier_lookups_are_distinct() {
