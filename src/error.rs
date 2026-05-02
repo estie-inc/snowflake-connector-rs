@@ -186,23 +186,104 @@ fn truncate_preview(s: &str) -> Box<str> {
     out.into_boxed_str()
 }
 
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookupKind {
+    Label,
+    Identifier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum IdentifierError {
+    #[error("identifier must not be empty")]
+    Empty,
+    #[error("identifier must start with an ASCII letter or underscore, found {ch:?}")]
+    InvalidStart { ch: char },
+    #[error(
+        "identifier contains an invalid character at offset {offset}: {ch:?} (allowed: ASCII letters, digits, `_`, `$`)"
+    )]
+    InvalidChar { offset: usize, ch: char },
+    #[error("identifier exceeds the maximum length of {max} characters (got {len})")]
+    TooLong { len: usize, max: usize },
+}
+
+#[derive(Debug, Clone)]
 pub enum SchemaError {
-    #[error("missing column: {name}")]
-    MissingColumn { name: Box<str> },
-    #[error("ambiguous column: {name}")]
+    MissingColumn {
+        lookup: LookupKind,
+        name: Box<str>,
+    },
     AmbiguousColumn {
+        lookup: LookupKind,
         name: Box<str>,
         candidates: Box<[ColumnIndex]>,
     },
-    #[error("invalid column index {index:?} for schema with {len} columns")]
-    InvalidColumnIndex { index: ColumnIndex, len: usize },
-    #[error("duplicate column name in result: {name}")]
-    DuplicateColumnName { name: Box<str> },
-    #[error("column count mismatch (expected {expected}, actual {actual})")]
-    ColumnCountMismatch { expected: usize, actual: usize },
-    #[error("schema mismatch")]
+    InvalidIdentifier {
+        input: Box<str>,
+        reason: IdentifierError,
+    },
+    InvalidColumnIndex {
+        index: ColumnIndex,
+        len: usize,
+    },
+    DuplicateColumnName {
+        name: Box<str>,
+    },
+    ColumnCountMismatch {
+        expected: usize,
+        actual: usize,
+    },
     SchemaMismatch,
+}
+
+impl std::fmt::Display for SchemaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SchemaError::MissingColumn { lookup, name } => {
+                write!(f, "missing ")?;
+                fmt_lookup_target(f, *lookup, name)
+            }
+            SchemaError::AmbiguousColumn { lookup, name, .. } => {
+                write!(f, "ambiguous ")?;
+                fmt_lookup_target(f, *lookup, name)
+            }
+            SchemaError::InvalidIdentifier { input, reason } => {
+                write!(f, "invalid unquoted identifier {input:?}: {reason}")
+            }
+            SchemaError::InvalidColumnIndex { index, len } => {
+                write!(f, "invalid column index {index:?} for schema with {len} columns")
+            }
+            SchemaError::DuplicateColumnName { name } => {
+                write!(f, "duplicate column name in result: {name}")
+            }
+            SchemaError::ColumnCountMismatch { expected, actual } => {
+                write!(f, "column count mismatch (expected {expected}, actual {actual})")
+            }
+            SchemaError::SchemaMismatch => write!(f, "schema mismatch"),
+        }
+    }
+}
+
+impl std::error::Error for SchemaError {}
+
+fn fmt_lookup_target(
+    f: &mut std::fmt::Formatter<'_>,
+    lookup: LookupKind,
+    name: &str,
+) -> std::fmt::Result {
+    match lookup {
+        LookupKind::Label => write!(f, "result label {name:?}"),
+        LookupKind::Identifier => {
+            let canonical = name.to_ascii_uppercase();
+            if canonical == name {
+                write!(f, "unquoted identifier {name:?}")
+            } else {
+                write!(
+                    f,
+                    "unquoted identifier {name:?} (canonical {canonical:?})"
+                )
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, thiserror::Error)]

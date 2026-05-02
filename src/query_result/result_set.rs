@@ -241,7 +241,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        Error, SchemaError,
+        Error, LookupKind, SchemaError,
         query_result::{
             TypedResultSet,
             collect::CollectPolicy,
@@ -377,6 +377,7 @@ mod tests {
 
         fn build_plan(_: RowPlanContext<'_>) -> crate::Result<Self::Plan> {
             Err(Error::Schema(SchemaError::MissingColumn {
+                lookup: LookupKind::Identifier,
                 name: Box::from("MISSING"),
             }))
         }

@@ -84,7 +84,7 @@ pub use config::{
     SnowflakeClientConfig, SnowflakeEndpointConfig, SnowflakeProxyConfig, SnowflakeQueryConfig,
     SnowflakeSessionConfig, SnowflakeTransportConfig,
 };
-pub use error::{DecodeError, Error, ParseError, Result, SchemaError};
+pub use error::{DecodeError, Error, IdentifierError, LookupKind, ParseError, Result, SchemaError};
 pub use query::{Binding, BindingType, QueryRequest};
 pub use query_result::{CollectOptions, ResultSet, TypedResultSet};
 pub use result::{

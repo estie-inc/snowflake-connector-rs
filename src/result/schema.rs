@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
-use crate::{Error, ParseError, Result, SchemaError};
+use crate::{
+    Error, IdentifierError, LookupKind, ParseError, Result, SchemaError,
+};
 
 /// Index into a result-set column list.
 #[repr(transparent)]
@@ -140,14 +142,14 @@ impl ColumnType {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Column {
-    name: Box<str>,
+    name: Arc<str>,
     index: ColumnIndex,
     nullable: bool,
     ty: ColumnType,
 }
 
 impl Column {
-    pub fn new(name: impl Into<Box<str>>, index: u32, nullable: bool, ty: ColumnType) -> Self {
+    pub fn new(name: impl Into<Arc<str>>, index: u32, nullable: bool, ty: ColumnType) -> Self {
         Self {
             name: name.into(),
             index: ColumnIndex(index),
@@ -178,23 +180,21 @@ pub(crate) enum LookupEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct ColumnIndexMap {
-    map: HashMap<String, LookupEntry>,
+    map: HashMap<Arc<str>, LookupEntry>,
 }
 
 impl ColumnIndexMap {
     fn build(columns: &[Column]) -> Self {
-        let mut map: HashMap<String, Vec<ColumnIndex>> = HashMap::with_capacity(columns.len());
+        let mut map: HashMap<Arc<str>, Vec<ColumnIndex>> = HashMap::with_capacity(columns.len());
         for col in columns {
-            map.entry(col.name().to_ascii_uppercase())
-                .or_default()
-                .push(col.index());
+            map.entry(Arc::clone(&col.name)).or_default().push(col.index());
         }
 
         let entries = map
             .into_iter()
             .map(|(k, mut v)| {
                 let entry = if v.len() == 1 {
-                    LookupEntry::Unique(v.remove(0))
+                    LookupEntry::Unique(v.pop().expect("exactly one match"))
                 } else {
                     LookupEntry::Ambiguous(v.into_boxed_slice())
                 };
@@ -205,10 +205,56 @@ impl ColumnIndexMap {
         Self { map: entries }
     }
 
-    fn get(&self, name: &str) -> Option<&LookupEntry> {
-        let key = name.to_ascii_uppercase();
-        self.map.get(&key)
+    fn lookup_label(&self, name: &str) -> Option<&LookupEntry> {
+        self.map.get(name)
     }
+
+    fn lookup_identifier(
+        &self,
+        name: &str,
+    ) -> std::result::Result<Option<&LookupEntry>, IdentifierError> {
+        let canonical = canonicalize_unquoted(name)?;
+        Ok(self.map.get(canonical.as_ref()))
+    }
+}
+
+pub(crate) fn canonicalize_unquoted(
+    name: &str,
+) -> std::result::Result<Cow<'_, str>, IdentifierError> {
+    if name.is_empty() {
+        return Err(IdentifierError::Empty);
+    }
+
+    let len = name.chars().count();
+    if len > 255 {
+        return Err(IdentifierError::TooLong { len, max: 255 });
+    }
+
+    let mut canonical = None::<String>;
+    for (offset, ch) in name.char_indices() {
+        if offset == 0 {
+            if !(ch.is_ascii_alphabetic() || ch == '_') {
+                return Err(IdentifierError::InvalidStart { ch });
+            }
+        } else if !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$')) {
+            return Err(IdentifierError::InvalidChar { offset, ch });
+        }
+
+        let upper = ch.to_ascii_uppercase();
+        if let Some(buf) = &mut canonical {
+            buf.push(upper);
+        } else if upper != ch {
+            let mut buf = String::with_capacity(name.len());
+            buf.push_str(&name[..offset]);
+            buf.push(upper);
+            canonical = Some(buf);
+        }
+    }
+
+    Ok(match canonical {
+        Some(canonical) => Cow::Owned(canonical),
+        None => Cow::Borrowed(name),
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,25 +292,45 @@ impl Schema {
         self.columns.get(index.as_usize())
     }
 
-    /// Case-insensitive lookup. Returns `None` if missing or ambiguous.
+    pub fn column_by_label(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
+        lookup_result(LookupKind::Label, name, self.indices.lookup_label(name))
+    }
+
+    pub fn column_by_identifier(
+        &self,
+        name: &str,
+    ) -> std::result::Result<ColumnIndex, SchemaError> {
+        let entry = self
+            .indices
+            .lookup_identifier(name)
+            .map_err(|reason| SchemaError::InvalidIdentifier {
+                input: Box::from(name),
+                reason,
+            })?;
+        lookup_result(LookupKind::Identifier, name, entry)
+    }
+
+    /// Legacy case-insensitive lookup retained temporarily while call sites migrate.
     pub fn column(&self, name: &str) -> Option<ColumnIndex> {
-        match self.indices.get(name)? {
-            LookupEntry::Unique(idx) => Some(*idx),
+        match legacy_case_insensitive_lookup(&self.columns, name)? {
+            LookupEntry::Unique(idx) => Some(idx),
             LookupEntry::Ambiguous(_) => None,
         }
     }
 
-    /// Case-insensitive lookup; returns `Err(SchemaError)` for missing/ambiguous.
+    /// Legacy case-insensitive lookup retained temporarily while call sites migrate.
     pub fn require_column(&self, name: &str) -> Result<ColumnIndex> {
-        match self.indices.get(name) {
-            Some(LookupEntry::Unique(idx)) => Ok(*idx),
+        match legacy_case_insensitive_lookup(&self.columns, name) {
+            Some(LookupEntry::Unique(idx)) => Ok(idx),
             Some(LookupEntry::Ambiguous(candidates)) => {
                 Err(Error::Schema(SchemaError::AmbiguousColumn {
+                    lookup: LookupKind::Label,
                     name: Box::from(name),
-                    candidates: candidates.clone(),
+                    candidates,
                 }))
             }
             None => Err(Error::Schema(SchemaError::MissingColumn {
+                lookup: LookupKind::Label,
                 name: Box::from(name),
             })),
         }
@@ -273,17 +339,47 @@ impl Schema {
     /// Exact (case-sensitive) lookup. Returns `Some` only if exactly one
     /// column has the given original name.
     pub fn column_exact(&self, name: &str) -> Option<ColumnIndex> {
-        let mut found: Option<ColumnIndex> = None;
-        for c in self.columns.iter() {
-            if c.name() == name {
-                if found.is_some() {
-                    return None;
-                }
-                found = Some(c.index());
-            }
+        match self.indices.lookup_label(name)? {
+            LookupEntry::Unique(idx) => Some(*idx),
+            LookupEntry::Ambiguous(_) => None,
         }
-        found
     }
+}
+
+fn lookup_result(
+    lookup: LookupKind,
+    name: &str,
+    entry: Option<&LookupEntry>,
+) -> std::result::Result<ColumnIndex, SchemaError> {
+    match entry {
+        Some(LookupEntry::Unique(idx)) => Ok(*idx),
+        Some(LookupEntry::Ambiguous(candidates)) => Err(SchemaError::AmbiguousColumn {
+            lookup,
+            name: Box::from(name),
+            candidates: candidates.clone(),
+        }),
+        None => Err(SchemaError::MissingColumn {
+            lookup,
+            name: Box::from(name),
+        }),
+    }
+}
+
+fn legacy_case_insensitive_lookup(columns: &[Column], name: &str) -> Option<LookupEntry> {
+    let mut matches = columns
+        .iter()
+        .filter(|column| column.name().eq_ignore_ascii_case(name))
+        .map(Column::index);
+    let first = matches.next()?;
+    let second = matches.next();
+    Some(match second {
+        None => LookupEntry::Unique(first),
+        Some(second) => {
+            let mut candidates = vec![first, second];
+            candidates.extend(matches);
+            LookupEntry::Ambiguous(candidates.into_boxed_slice())
+        }
+    })
 }
 
 #[cfg(test)]
