@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{mem, sync::Arc};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
@@ -10,9 +10,9 @@ use crate::result::{
         parse_timestamp_tz_with_offset,
     },
     row::RowRef,
-    schema::{ColumnType, Schema},
+    schema::{ColumnIndex, ColumnType, Schema},
 };
-use crate::{Error, Result, SchemaError};
+use crate::{Result, SchemaError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecimalValue {
@@ -73,37 +73,76 @@ pub struct DynamicRow {
 }
 
 impl DynamicRow {
+    /// Returns the shared schema metadata for this row.
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
 
+    /// Returns all decoded values in column order.
     pub fn values(&self) -> &[SnowflakeValue] {
         &self.values
     }
 
-    pub fn at(&self, index: usize) -> Option<&SnowflakeValue> {
-        self.values.get(index)
+    /// Borrows a value by resolved column index.
+    pub fn at(&self, index: ColumnIndex) -> std::result::Result<&SnowflakeValue, SchemaError> {
+        self.schema
+            .column_at(index)
+            .ok_or_else(|| SchemaError::InvalidColumnIndex {
+                index,
+                len: self.schema.len(),
+            })?;
+        Ok(&self.values[index.as_usize()])
     }
 
-    pub fn get(&self, name: &str) -> Option<&SnowflakeValue> {
+    /// Borrows a value by exact raw result label (case-sensitive).
+    pub fn get(&self, name: &str) -> std::result::Result<&SnowflakeValue, SchemaError> {
         let idx = self.schema.column(name)?;
-        self.values.get(idx.as_usize())
+        self.at(idx)
     }
 
-    pub fn get_exact(&self, name: &str) -> Option<&SnowflakeValue> {
-        let idx = self.schema.column_exact(name)?;
-        self.values.get(idx.as_usize())
+    /// Moves a decoded value out of the row by exact raw result label
+    /// (case-sensitive), replacing the slot with `Null`.
+    pub fn take(&mut self, name: &str) -> std::result::Result<SnowflakeValue, SchemaError> {
+        let idx = self.schema.column(name)?;
+        self.take_at(idx)
     }
 
-    pub fn into_json_object(self) -> Result<serde_json::Map<String, serde_json::Value>> {
+    /// Moves a decoded value out of the row by resolved column index,
+    /// replacing the slot with `Null`.
+    pub fn take_at(
+        &mut self,
+        index: ColumnIndex,
+    ) -> std::result::Result<SnowflakeValue, SchemaError> {
+        self.schema
+            .column_at(index)
+            .ok_or_else(|| SchemaError::InvalidColumnIndex {
+                index,
+                len: self.schema.len(),
+            })?;
+
+        Ok(mem::replace(
+            &mut self.values[index.as_usize()],
+            SnowflakeValue::Null,
+        ))
+    }
+
+    /// Consumes the row and returns its schema and decoded values.
+    pub fn into_parts(self) -> (Arc<Schema>, Box<[SnowflakeValue]>) {
+        (self.schema, self.values)
+    }
+
+    /// Consumes the row into a JSON object keyed by raw result labels.
+    pub fn into_json_object(
+        self,
+    ) -> std::result::Result<serde_json::Map<String, serde_json::Value>, SchemaError> {
         let DynamicRow { schema, values } = self;
 
         let mut map = serde_json::Map::new();
         for (col, value) in schema.columns().iter().zip(values.into_vec()) {
             if map.contains_key(col.name()) {
-                return Err(Error::Schema(SchemaError::DuplicateColumnName {
+                return Err(SchemaError::DuplicateColumnName {
                     name: Box::from(col.name()),
-                }));
+                });
             }
             map.insert(col.name().to_string(), value.into_json_value());
         }
@@ -295,6 +334,186 @@ mod tests {
             SnowflakeValue::Json(value) => assert_eq!(value["a"], 1),
             other => panic!("expected Json, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dynamic_row_at_rejects_invalid_indices() {
+        let row = one_cell_row(ColumnType::Text { length: None }, "value");
+        let index = ColumnIndex::new(1).unwrap();
+        assert!(matches!(
+            row.at(index),
+            Err(SchemaError::InvalidColumnIndex { index: actual, len: 1 }) if actual == index
+        ));
+    }
+
+    #[test]
+    fn dynamic_row_get_returns_exact_label_match() {
+        let schema = make_schema(vec![
+            (
+                "ID".to_string(),
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                false,
+            ),
+            (
+                "id".to_string(),
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                false,
+            ),
+        ]);
+        let table = make_result_table_from_rows(
+            schema,
+            vec![vec![Some("1".to_string()), Some("2".to_string())]],
+        )
+        .unwrap();
+        let row = table.dynamic_rows().unwrap().next().unwrap().unwrap();
+
+        assert_eq!(row.get("ID").unwrap(), &SnowflakeValue::Integer(1));
+        assert_eq!(row.get("id").unwrap(), &SnowflakeValue::Integer(2));
+    }
+
+    #[test]
+    fn dynamic_row_take_at_replaces_slots_with_null() {
+        let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
+        let index = row.schema().column("PAYLOAD").unwrap();
+
+        assert_eq!(
+            row.take_at(index).unwrap(),
+            SnowflakeValue::String("value".into())
+        );
+        assert_eq!(row.at(index).unwrap(), &SnowflakeValue::Null);
+        assert_eq!(row.take_at(index).unwrap(), SnowflakeValue::Null);
+    }
+
+    #[test]
+    fn dynamic_row_take_at_rejects_invalid_indices() {
+        let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
+        let index = ColumnIndex::new(1).unwrap();
+        assert!(matches!(
+            row.take_at(index),
+            Err(SchemaError::InvalidColumnIndex { index: actual, len: 1 }) if actual == index
+        ));
+    }
+
+    #[test]
+    fn dynamic_row_take_resolves_label_and_replaces_slot() {
+        let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
+
+        assert_eq!(
+            row.take("PAYLOAD").unwrap(),
+            SnowflakeValue::String("value".into())
+        );
+        assert_eq!(row.get("PAYLOAD").unwrap(), &SnowflakeValue::Null,);
+        assert_eq!(row.take("PAYLOAD").unwrap(), SnowflakeValue::Null);
+    }
+
+    #[test]
+    fn dynamic_row_take_reports_missing_column_for_unknown_label() {
+        let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
+        assert!(matches!(
+            row.take("missing"),
+            Err(SchemaError::MissingColumn { name }) if name.as_ref() == "missing"
+        ));
+    }
+
+    #[test]
+    fn dynamic_row_into_parts_preserves_schema_and_values() {
+        let schema = make_schema(vec![(
+            "PAYLOAD".to_string(),
+            ColumnType::Text { length: None },
+            true,
+        )]);
+        let table =
+            make_result_table_from_rows(schema, vec![vec![Some("value".to_string())]]).unwrap();
+        let row = table.dynamic_rows().unwrap().next().unwrap().unwrap();
+
+        let (schema, values) = row.into_parts();
+        assert!(ptr::eq(schema.as_ref(), table.schema()));
+        assert_eq!(
+            values.as_ref(),
+            &[SnowflakeValue::String("value".to_string())]
+        );
+    }
+
+    #[test]
+    fn dynamic_row_into_parts_supports_schema_coordinated_walk() {
+        let schema = make_schema(vec![
+            (
+                "ID".to_string(),
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                false,
+            ),
+            (
+                "PAYLOAD".to_string(),
+                ColumnType::Text { length: None },
+                true,
+            ),
+        ]);
+        let table = make_result_table_from_rows(
+            schema,
+            vec![vec![Some("1".to_string()), Some("value".to_string())]],
+        )
+        .unwrap();
+        let row = table.dynamic_rows().unwrap().next().unwrap().unwrap();
+
+        let (schema, values) = row.into_parts();
+        let walked = schema
+            .columns()
+            .iter()
+            .zip(values.into_vec())
+            .map(|(column, value)| (column.name().to_string(), value))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            walked,
+            vec![
+                ("ID".to_string(), SnowflakeValue::Integer(1)),
+                (
+                    "PAYLOAD".to_string(),
+                    SnowflakeValue::String("value".to_string())
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_row_into_json_object_rejects_duplicate_labels() {
+        let schema = make_schema(vec![
+            (
+                "id".to_string(),
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                false,
+            ),
+            (
+                "id".to_string(),
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                false,
+            ),
+        ]);
+        let table = make_result_table_from_rows(
+            schema,
+            vec![vec![Some("1".to_string()), Some("2".to_string())]],
+        )
+        .unwrap();
+        let row = table.dynamic_rows().unwrap().next().unwrap().unwrap();
+
+        assert!(matches!(
+            row.into_json_object(),
+            Err(SchemaError::DuplicateColumnName { name }) if name.as_ref() == "id"
+        ));
     }
 
     #[test]

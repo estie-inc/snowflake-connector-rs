@@ -1,7 +1,8 @@
 use super::common;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use snowflake_connector_rs::{Result, SnowflakeValue};
+
+use snowflake_connector_rs::{Result, SchemaError, SnowflakeValue};
 
 #[tokio::test]
 async fn test_decode() -> Result<()> {
@@ -27,7 +28,7 @@ async fn test_decode() -> Result<()> {
     assert_eq!(table.row_count(), 1);
 
     let row = table.dynamic_rows()?.next().unwrap()?;
-    let status = row.get("STATUS").unwrap();
+    let status = row.get("status").unwrap();
     assert_eq!(
         status,
         &SnowflakeValue::String("Table EXAMPLE successfully created.".to_owned()),
@@ -50,7 +51,7 @@ async fn test_decode() -> Result<()> {
     assert_eq!(table.row_count(), 1);
 
     let row = table.dynamic_rows()?.next().unwrap()?;
-    let number_of_rows_inserted = row.get("NUMBER OF ROWS INSERTED").unwrap();
+    let number_of_rows_inserted = row.get("number of rows inserted").unwrap();
     assert_eq!(number_of_rows_inserted, &SnowflakeValue::Integer(1));
 
     let table = session
@@ -105,6 +106,42 @@ async fn test_decode() -> Result<()> {
             .unwrap()
             .and_utc()
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_dynamic_row_get_resolves_escaped_identifiers() -> Result<()> {
+    let client = common::connect()?;
+    let session = client.create_session().await?;
+
+    let table = session
+        .query(
+            r#"SELECT
+                1 AS id,
+                2 AS "id",
+                3 AS "my column",
+                4 AS "MixedCase""#,
+        )
+        .await?
+        .collect_table()
+        .await?;
+
+    let row = table.dynamic_rows()?.next().unwrap()?;
+
+    assert_eq!(row.get("ID").unwrap(), &SnowflakeValue::Integer(1));
+    assert_eq!(row.get("id").unwrap(), &SnowflakeValue::Integer(2));
+    assert_eq!(row.get("my column").unwrap(), &SnowflakeValue::Integer(3));
+    assert_eq!(row.get("MixedCase").unwrap(), &SnowflakeValue::Integer(4));
+
+    assert!(matches!(
+        row.get("MIXEDCASE"),
+        Err(SchemaError::MissingColumn { .. })
+    ));
+    assert!(matches!(
+        row.get("MY COLUMN"),
+        Err(SchemaError::MissingColumn { .. })
+    ));
 
     Ok(())
 }

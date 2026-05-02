@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{Error, ParseError, Result, SchemaError};
 
@@ -140,14 +140,14 @@ impl ColumnType {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Column {
-    name: Box<str>,
+    name: Arc<str>,
     index: ColumnIndex,
     nullable: bool,
     ty: ColumnType,
 }
 
 impl Column {
-    pub fn new(name: impl Into<Box<str>>, index: u32, nullable: bool, ty: ColumnType) -> Self {
+    pub fn new(name: impl Into<Arc<str>>, index: u32, nullable: bool, ty: ColumnType) -> Self {
         Self {
             name: name.into(),
             index: ColumnIndex(index),
@@ -178,14 +178,14 @@ pub(crate) enum LookupEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct ColumnIndexMap {
-    map: HashMap<String, LookupEntry>,
+    map: HashMap<Arc<str>, LookupEntry>,
 }
 
 impl ColumnIndexMap {
     fn build(columns: &[Column]) -> Self {
-        let mut map: HashMap<String, Vec<ColumnIndex>> = HashMap::with_capacity(columns.len());
+        let mut map: HashMap<Arc<str>, Vec<ColumnIndex>> = HashMap::with_capacity(columns.len());
         for col in columns {
-            map.entry(col.name().to_ascii_uppercase())
+            map.entry(Arc::clone(&col.name))
                 .or_default()
                 .push(col.index());
         }
@@ -194,7 +194,7 @@ impl ColumnIndexMap {
             .into_iter()
             .map(|(k, mut v)| {
                 let entry = if v.len() == 1 {
-                    LookupEntry::Unique(v.remove(0))
+                    LookupEntry::Unique(v.pop().expect("exactly one match"))
                 } else {
                     LookupEntry::Ambiguous(v.into_boxed_slice())
                 };
@@ -206,8 +206,7 @@ impl ColumnIndexMap {
     }
 
     fn get(&self, name: &str) -> Option<&LookupEntry> {
-        let key = name.to_ascii_uppercase();
-        self.map.get(&key)
+        self.map.get(name)
     }
 }
 
@@ -242,47 +241,51 @@ impl Schema {
         self.columns.is_empty()
     }
 
+    /// Borrows column metadata by index.
     pub fn column_at(&self, index: ColumnIndex) -> Option<&Column> {
         self.columns.get(index.as_usize())
     }
 
-    /// Case-insensitive lookup. Returns `None` if missing or ambiguous.
-    pub fn column(&self, name: &str) -> Option<ColumnIndex> {
-        match self.indices.get(name)? {
-            LookupEntry::Unique(idx) => Some(*idx),
-            LookupEntry::Ambiguous(_) => None,
-        }
+    /// Resolves an exact raw result label (case-sensitive).
+    pub fn column(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
+        lookup_result(name, self.indices.get(name))
     }
 
-    /// Case-insensitive lookup; returns `Err(SchemaError)` for missing/ambiguous.
-    pub fn require_column(&self, name: &str) -> Result<ColumnIndex> {
-        match self.indices.get(name) {
-            Some(LookupEntry::Unique(idx)) => Ok(*idx),
-            Some(LookupEntry::Ambiguous(candidates)) => {
-                Err(Error::Schema(SchemaError::AmbiguousColumn {
-                    name: Box::from(name),
-                    candidates: candidates.clone(),
-                }))
+    #[doc(hidden)]
+    pub fn column_by_name_ci(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
+        let mut hits = Vec::new();
+        for col in self.columns.iter() {
+            if col.name().eq_ignore_ascii_case(name) {
+                hits.push(col.index());
             }
-            None => Err(Error::Schema(SchemaError::MissingColumn {
+        }
+
+        match hits.len() {
+            0 => Err(SchemaError::MissingColumn {
                 name: Box::from(name),
-            })),
+            }),
+            1 => Ok(hits[0]),
+            _ => Err(SchemaError::AmbiguousColumn {
+                name: Box::from(name),
+                candidates: hits.into_boxed_slice(),
+            }),
         }
     }
+}
 
-    /// Exact (case-sensitive) lookup. Returns `Some` only if exactly one
-    /// column has the given original name.
-    pub fn column_exact(&self, name: &str) -> Option<ColumnIndex> {
-        let mut found: Option<ColumnIndex> = None;
-        for c in self.columns.iter() {
-            if c.name() == name {
-                if found.is_some() {
-                    return None;
-                }
-                found = Some(c.index());
-            }
-        }
-        found
+fn lookup_result(
+    name: &str,
+    entry: Option<&LookupEntry>,
+) -> std::result::Result<ColumnIndex, SchemaError> {
+    match entry {
+        Some(LookupEntry::Unique(idx)) => Ok(*idx),
+        Some(LookupEntry::Ambiguous(candidates)) => Err(SchemaError::AmbiguousColumn {
+            name: Box::from(name),
+            candidates: candidates.clone(),
+        }),
+        None => Err(SchemaError::MissingColumn {
+            name: Box::from(name),
+        }),
     }
 }
 
@@ -291,38 +294,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schema_lookup_normalizes_case() {
+    fn schema_label_lookup_returns_exact_match() {
         let schema = Schema::from_columns(vec![
-            Column::new(
-                "id",
-                0,
-                false,
-                ColumnType::Fixed {
-                    precision: None,
-                    scale: Some(0),
-                },
-            ),
-            Column::new("Name", 1, true, ColumnType::Text { length: None }),
-        ])
-        .unwrap();
-        assert_eq!(schema.column("ID").unwrap().as_usize(), 0);
-        assert_eq!(schema.column("name").unwrap().as_usize(), 1);
-    }
-
-    #[test]
-    fn schema_ambiguous_quoted_columns() {
-        let schema = Schema::from_columns(vec![
-            Column::new(
-                "id",
-                0,
-                false,
-                ColumnType::Fixed {
-                    precision: None,
-                    scale: Some(0),
-                },
-            ),
             Column::new(
                 "ID",
+                0,
+                false,
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+            ),
+            Column::new(
+                "id",
                 1,
                 false,
                 ColumnType::Fixed {
@@ -332,14 +316,105 @@ mod tests {
             ),
         ])
         .unwrap();
-        assert!(schema.column("id").is_none());
-        let err = schema.require_column("id").unwrap_err();
+        assert_eq!(schema.column("ID").unwrap().as_usize(), 0);
+        assert_eq!(schema.column("id").unwrap().as_usize(), 1);
         assert!(matches!(
-            err,
-            crate::Error::Schema(SchemaError::AmbiguousColumn { .. })
+            schema.column("Id"),
+            Err(SchemaError::MissingColumn { name }) if name.as_ref() == "Id"
         ));
-        assert_eq!(schema.column_exact("id").unwrap().as_usize(), 0);
-        assert_eq!(schema.column_exact("ID").unwrap().as_usize(), 1);
+    }
+
+    #[test]
+    fn schema_label_lookup_reports_duplicate_raw_labels() {
+        let schema = Schema::from_columns(vec![
+            Column::new(
+                "id",
+                0,
+                false,
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+            ),
+            Column::new(
+                "id",
+                1,
+                false,
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+            ),
+        ])
+        .unwrap();
+        let err = schema.column("id").unwrap_err();
+        match err {
+            SchemaError::AmbiguousColumn { name, candidates } => {
+                assert_eq!(name.as_ref(), "id");
+                assert_eq!(
+                    candidates
+                        .iter()
+                        .map(|candidate| candidate.as_usize())
+                        .collect::<Vec<_>>(),
+                    vec![0, 1]
+                );
+            }
+            other => panic!("expected label ambiguity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn schema_name_ci_lookup_matches_lowercase_labels() {
+        let schema = Schema::from_columns(vec![Column::new(
+            "value",
+            0,
+            false,
+            ColumnType::Text { length: None },
+        )])
+        .unwrap();
+
+        assert_eq!(schema.column_by_name_ci("VALUE").unwrap().as_usize(), 0);
+        assert_eq!(schema.column_by_name_ci("value").unwrap().as_usize(), 0);
+    }
+
+    #[test]
+    fn schema_name_ci_lookup_reports_case_insensitive_ambiguity() {
+        let schema = Schema::from_columns(vec![
+            Column::new(
+                "ID",
+                0,
+                false,
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+            ),
+            Column::new(
+                "id",
+                1,
+                false,
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+            ),
+        ])
+        .unwrap();
+
+        let err = schema.column_by_name_ci("id").unwrap_err();
+        match err {
+            SchemaError::AmbiguousColumn { name, candidates } => {
+                assert_eq!(name.as_ref(), "id");
+                assert_eq!(
+                    candidates
+                        .iter()
+                        .map(|candidate| candidate.as_usize())
+                        .collect::<Vec<_>>(),
+                    vec![0, 1]
+                );
+            }
+            other => panic!("expected case-insensitive ambiguity, got {other:?}"),
+        }
     }
 
     #[test]

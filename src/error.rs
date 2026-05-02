@@ -231,3 +231,59 @@ pub enum ParseError {
     #[error("capacity overflow")]
     CapacityOverflow,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index(value: usize) -> ColumnIndex {
+        ColumnIndex::new(value).unwrap()
+    }
+
+    #[test]
+    fn schema_error_display_formats_missing_and_ambiguous_variants() {
+        assert_eq!(
+            SchemaError::MissingColumn {
+                name: Box::from("value"),
+            }
+            .to_string(),
+            "missing column: value"
+        );
+        assert_eq!(
+            SchemaError::AmbiguousColumn {
+                name: Box::from("value"),
+                candidates: vec![index(0), index(1)].into_boxed_slice(),
+            }
+            .to_string(),
+            "ambiguous column: value"
+        );
+    }
+
+    #[test]
+    fn schema_error_display_formats_remaining_variants() {
+        assert_eq!(
+            SchemaError::InvalidColumnIndex {
+                index: index(7),
+                len: 3,
+            }
+            .to_string(),
+            "invalid column index ColumnIndex(7) for schema with 3 columns"
+        );
+        assert_eq!(
+            SchemaError::DuplicateColumnName {
+                name: Box::from("id"),
+            }
+            .to_string(),
+            "duplicate column name in result: id"
+        );
+        assert_eq!(
+            SchemaError::ColumnCountMismatch {
+                expected: 4,
+                actual: 2,
+            }
+            .to_string(),
+            "column count mismatch (expected 4, actual 2)"
+        );
+        assert_eq!(SchemaError::SchemaMismatch.to_string(), "schema mismatch");
+    }
+}

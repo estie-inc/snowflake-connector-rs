@@ -50,6 +50,12 @@ struct KeywordRow {
     r#type: i64,
 }
 
+#[derive(Debug, FromRow, PartialEq)]
+struct QuotedAliasRow {
+    #[snowflake(rename = "value")]
+    v: i64,
+}
+
 #[tokio::test]
 async fn derive_named_struct_decodes_query_results() -> Result<()> {
     let client = common::connect()?;
@@ -260,9 +266,9 @@ async fn derive_raw_identifier_uses_logical_field_name() -> Result<()> {
 
 #[derive(Debug, FromRow, PartialEq)]
 struct AmbiguousIdWithDefault {
-    /// `id` resolves case-insensitively. If the result schema contains both
-    /// `id` and `"id"`, the lookup is ambiguous; `#[snowflake(default)]` must
-    /// NOT swallow that — it should surface as a `SchemaError::AmbiguousColumn`.
+    /// `id` resolves through derive's temporary case-insensitive compatibility
+    /// lookup. If the result schema contains two labels that differ only by
+    /// ASCII case, `#[snowflake(default)]` must NOT swallow that ambiguity.
     #[snowflake(default)]
     id: Option<i64>,
 }
@@ -276,11 +282,26 @@ async fn derive_default_does_not_swallow_ambiguous_column() -> Result<()> {
         .query_as::<AmbiguousIdWithDefault, _>(r#"SELECT 1 AS id, 2 AS "id""#)
         .await
         .err()
-        .expect("ambiguous case-insensitive id should not silently default");
+        .expect("ambiguous case-insensitive lookup should not silently default");
 
     match err {
         Error::Schema(SchemaError::AmbiguousColumn { .. }) => {}
         other => panic!("expected AmbiguousColumn, got: {other:?}"),
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn derive_rename_resolves_quoted_lowercase_alias() -> Result<()> {
+    let client = common::connect()?;
+    let session = client.create_session().await?;
+
+    let rows = session
+        .query_as::<QuotedAliasRow, _>(r#"SELECT 1 AS "value""#)
+        .await?
+        .collect()
+        .await?;
+
+    assert_eq!(rows, vec![QuotedAliasRow { v: 1 }]);
     Ok(())
 }
