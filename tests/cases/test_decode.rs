@@ -27,7 +27,7 @@ async fn test_decode() -> Result<()> {
     assert_eq!(table.row_count(), 1);
 
     let row = table.dynamic_rows()?.next().unwrap()?;
-    let status = row.value_by_label("STATUS").unwrap();
+    let status = row.value_by_label("status").unwrap();
     assert_eq!(
         status,
         &SnowflakeValue::String("Table EXAMPLE successfully created.".to_owned()),
@@ -50,7 +50,7 @@ async fn test_decode() -> Result<()> {
     assert_eq!(table.row_count(), 1);
 
     let row = table.dynamic_rows()?.next().unwrap()?;
-    let number_of_rows_inserted = row.value_by_label("NUMBER OF ROWS INSERTED").unwrap();
+    let number_of_rows_inserted = row.value_by_label("number of rows inserted").unwrap();
     assert_eq!(number_of_rows_inserted, &SnowflakeValue::Integer(1));
 
     let table = session

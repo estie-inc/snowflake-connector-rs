@@ -2,12 +2,7 @@ use std::collections::HashMap;
 
 use super::common;
 
-use snowflake_connector_rs::{FromRow, Result, SnowflakeValue};
-
-#[derive(Debug, FromRow, PartialEq)]
-struct ShowParameterRow {
-    value: String,
-}
+use snowflake_connector_rs::{Result, SnowflakeValue};
 
 #[tokio::test]
 async fn test_session_parameters_support_bulk_and_incremental_configuration() -> Result<()> {
@@ -41,8 +36,16 @@ async fn test_session_parameters_support_bulk_and_incremental_configuration() ->
     Ok(())
 }
 
+#[cfg(feature = "derive")]
 #[tokio::test]
 async fn derive_decodes_show_parameters_lowercase_label() -> Result<()> {
+    use snowflake_connector_rs::FromRow;
+
+    #[derive(Debug, FromRow, PartialEq)]
+    struct ShowParameterRow {
+        value: String,
+    }
+
     let client = common::connect()?;
     let session = client.create_session().await?;
 
