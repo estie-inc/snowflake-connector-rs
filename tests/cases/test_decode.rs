@@ -27,7 +27,7 @@ async fn test_decode() -> Result<()> {
     assert_eq!(table.row_count(), 1);
 
     let row = table.dynamic_rows()?.next().unwrap()?;
-    let status = row.value_by_label("status").unwrap();
+    let status = row.get("status").unwrap();
     assert_eq!(
         status,
         &SnowflakeValue::String("Table EXAMPLE successfully created.".to_owned()),
@@ -50,7 +50,7 @@ async fn test_decode() -> Result<()> {
     assert_eq!(table.row_count(), 1);
 
     let row = table.dynamic_rows()?.next().unwrap()?;
-    let number_of_rows_inserted = row.value_by_label("number of rows inserted").unwrap();
+    let number_of_rows_inserted = row.get("number of rows inserted").unwrap();
     assert_eq!(number_of_rows_inserted, &SnowflakeValue::Integer(1));
 
     let table = session
@@ -110,7 +110,7 @@ async fn test_decode() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_dynamic_row_lookup_distinguishes_label_and_identifier() -> Result<()> {
+async fn test_dynamic_row_get_distinguishes_quoted_aliases() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
@@ -121,18 +121,8 @@ async fn test_dynamic_row_lookup_distinguishes_label_and_identifier() -> Result<
         .await?;
 
     let row = table.dynamic_rows()?.next().unwrap()?;
-    assert_eq!(
-        row.value_by_label("ID").unwrap(),
-        &SnowflakeValue::Integer(1)
-    );
-    assert_eq!(
-        row.value_by_label("id").unwrap(),
-        &SnowflakeValue::Integer(2)
-    );
-    assert_eq!(
-        row.value_by_identifier("id").unwrap(),
-        &SnowflakeValue::Integer(1)
-    );
+    assert_eq!(row.get("ID").unwrap(), &SnowflakeValue::Integer(1));
+    assert_eq!(row.get("id").unwrap(), &SnowflakeValue::Integer(2));
 
     Ok(())
 }

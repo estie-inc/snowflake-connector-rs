@@ -1,6 +1,6 @@
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-use crate::{Error, IdentifierError, LookupKind, ParseError, Result, SchemaError};
+use crate::{Error, ParseError, Result, SchemaError};
 
 /// Index into a result-set column list.
 #[repr(transparent)]
@@ -208,53 +208,6 @@ impl ColumnIndexMap {
     fn lookup_label(&self, name: &str) -> Option<&LookupEntry> {
         self.map.get(name)
     }
-
-    fn lookup_identifier(
-        &self,
-        name: &str,
-    ) -> std::result::Result<Option<&LookupEntry>, IdentifierError> {
-        let canonical = canonicalize_unquoted(name)?;
-        Ok(self.map.get(canonical.as_ref()))
-    }
-}
-
-pub(crate) fn canonicalize_unquoted(
-    name: &str,
-) -> std::result::Result<Cow<'_, str>, IdentifierError> {
-    if name.is_empty() {
-        return Err(IdentifierError::Empty);
-    }
-
-    let len = name.chars().count();
-    if len > 255 {
-        return Err(IdentifierError::TooLong { len, max: 255 });
-    }
-
-    let mut canonical = None::<String>;
-    for (offset, ch) in name.char_indices() {
-        if offset == 0 {
-            if !(ch.is_ascii_alphabetic() || ch == '_') {
-                return Err(IdentifierError::InvalidStart { ch });
-            }
-        } else if !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$')) {
-            return Err(IdentifierError::InvalidChar { offset, ch });
-        }
-
-        let upper = ch.to_ascii_uppercase();
-        if let Some(buf) = &mut canonical {
-            buf.push(upper);
-        } else if upper != ch {
-            let mut buf = String::with_capacity(name.len());
-            buf.push_str(&name[..offset]);
-            buf.push(upper);
-            canonical = Some(buf);
-        }
-    }
-
-    Ok(match canonical {
-        Some(canonical) => Cow::Owned(canonical),
-        None => Cow::Borrowed(name),
-    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -293,23 +246,9 @@ impl Schema {
         self.columns.get(index.as_usize())
     }
 
-    /// Resolves an exact raw result label.
-    pub fn column_by_label(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
-        lookup_result(LookupKind::Label, name, self.indices.lookup_label(name))
-    }
-
-    /// Resolves an unquoted identifier using Snowflake's uppercase rules.
-    pub fn column_by_identifier(
-        &self,
-        name: &str,
-    ) -> std::result::Result<ColumnIndex, SchemaError> {
-        let entry = self.indices.lookup_identifier(name).map_err(|reason| {
-            SchemaError::InvalidIdentifier {
-                input: Box::from(name),
-                reason,
-            }
-        })?;
-        lookup_result(LookupKind::Identifier, name, entry)
+    /// Resolves an exact raw result label (case-sensitive).
+    pub fn column(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
+        lookup_result(name, self.indices.lookup_label(name))
     }
 
     #[doc(hidden)]
@@ -323,12 +262,10 @@ impl Schema {
 
         match hits.len() {
             0 => Err(SchemaError::MissingColumn {
-                lookup: LookupKind::Identifier,
                 name: Box::from(name),
             }),
             1 => Ok(hits[0]),
             _ => Err(SchemaError::AmbiguousColumn {
-                lookup: LookupKind::Identifier,
                 name: Box::from(name),
                 candidates: hits.into_boxed_slice(),
             }),
@@ -337,19 +274,16 @@ impl Schema {
 }
 
 fn lookup_result(
-    lookup: LookupKind,
     name: &str,
     entry: Option<&LookupEntry>,
 ) -> std::result::Result<ColumnIndex, SchemaError> {
     match entry {
         Some(LookupEntry::Unique(idx)) => Ok(*idx),
         Some(LookupEntry::Ambiguous(candidates)) => Err(SchemaError::AmbiguousColumn {
-            lookup,
             name: Box::from(name),
             candidates: candidates.clone(),
         }),
         None => Err(SchemaError::MissingColumn {
-            lookup,
             name: Box::from(name),
         }),
     }
@@ -357,61 +291,10 @@ fn lookup_result(
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
     use super::*;
 
     #[test]
-    fn canonicalize_unquoted_rejects_invalid_inputs() {
-        assert!(matches!(
-            canonicalize_unquoted(""),
-            Err(IdentifierError::Empty)
-        ));
-        assert!(matches!(
-            canonicalize_unquoted("1col"),
-            Err(IdentifierError::InvalidStart { ch: '1' })
-        ));
-
-        let input = "a".repeat(256);
-        assert!(matches!(
-            canonicalize_unquoted(&input),
-            Err(IdentifierError::TooLong { len: 256, max: 255 })
-        ));
-    }
-
-    #[test]
-    fn canonicalize_unquoted_returns_borrowed_for_canonical_inputs() {
-        assert!(matches!(
-            canonicalize_unquoted("A$1"),
-            Ok(Cow::Borrowed("A$1"))
-        ));
-        assert!(matches!(
-            canonicalize_unquoted("ID"),
-            Ok(Cow::Borrowed("ID"))
-        ));
-    }
-
-    #[test]
-    fn canonicalize_unquoted_returns_owned_for_case_changes() {
-        assert!(matches!(
-            canonicalize_unquoted("_test"),
-            Ok(Cow::Owned(ref canonical)) if canonical == "_TEST"
-        ));
-        assert!(matches!(
-            canonicalize_unquoted("id"),
-            Ok(Cow::Owned(ref canonical)) if canonical == "ID"
-        ));
-
-        let input = "a".repeat(255);
-        let expected = "A".repeat(255);
-        assert!(matches!(
-            canonicalize_unquoted(&input),
-            Ok(Cow::Owned(ref canonical)) if canonical == &expected
-        ));
-    }
-
-    #[test]
-    fn schema_label_and_identifier_lookups_are_distinct() {
+    fn schema_label_lookup_returns_exact_match() {
         let schema = Schema::from_columns(vec![
             Column::new(
                 "ID",
@@ -433,10 +316,12 @@ mod tests {
             ),
         ])
         .unwrap();
-        assert_eq!(schema.column_by_label("ID").unwrap().as_usize(), 0);
-        assert_eq!(schema.column_by_label("id").unwrap().as_usize(), 1);
-        assert_eq!(schema.column_by_identifier("id").unwrap().as_usize(), 0);
-        assert_eq!(schema.column_by_identifier("ID").unwrap().as_usize(), 0);
+        assert_eq!(schema.column("ID").unwrap().as_usize(), 0);
+        assert_eq!(schema.column("id").unwrap().as_usize(), 1);
+        assert!(matches!(
+            schema.column("Id"),
+            Err(SchemaError::MissingColumn { name }) if name.as_ref() == "Id"
+        ));
     }
 
     #[test]
@@ -462,13 +347,9 @@ mod tests {
             ),
         ])
         .unwrap();
-        let err = schema.column_by_label("id").unwrap_err();
+        let err = schema.column("id").unwrap_err();
         match err {
-            SchemaError::AmbiguousColumn {
-                lookup: LookupKind::Label,
-                name,
-                candidates,
-            } => {
+            SchemaError::AmbiguousColumn { name, candidates } => {
                 assert_eq!(name.as_ref(), "id");
                 assert_eq!(
                     candidates
@@ -480,73 +361,6 @@ mod tests {
             }
             other => panic!("expected label ambiguity, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn schema_identifier_lookup_reports_ambiguous_canonical_matches() {
-        let schema = Schema::from_columns(vec![
-            Column::new(
-                "ID",
-                0,
-                false,
-                ColumnType::Fixed {
-                    precision: None,
-                    scale: Some(0),
-                },
-            ),
-            Column::new(
-                "ID",
-                1,
-                false,
-                ColumnType::Fixed {
-                    precision: None,
-                    scale: Some(0),
-                },
-            ),
-        ])
-        .unwrap();
-        let err = schema.column_by_identifier("id").unwrap_err();
-        match err {
-            SchemaError::AmbiguousColumn {
-                lookup: LookupKind::Identifier,
-                name,
-                candidates,
-            } => {
-                assert_eq!(name.as_ref(), "id");
-                assert_eq!(
-                    candidates
-                        .iter()
-                        .map(|candidate| candidate.as_usize())
-                        .collect::<Vec<_>>(),
-                    vec![0, 1]
-                );
-            }
-            other => panic!("expected identifier ambiguity, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn schema_identifier_lookup_rejects_invalid_names() {
-        let schema = Schema::from_columns(vec![Column::new(
-            "NUMBER OF ROWS INSERTED",
-            0,
-            false,
-            ColumnType::Fixed {
-                precision: None,
-                scale: Some(0),
-            },
-        )])
-        .unwrap();
-        let err = schema
-            .column_by_identifier("NUMBER OF ROWS INSERTED")
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            SchemaError::InvalidIdentifier {
-                input,
-                reason: IdentifierError::InvalidChar { offset: 6, ch: ' ' },
-            } if input.as_ref() == "NUMBER OF ROWS INSERTED"
-        ));
     }
 
     #[test]
@@ -589,11 +403,7 @@ mod tests {
 
         let err = schema.column_by_name_ci("id").unwrap_err();
         match err {
-            SchemaError::AmbiguousColumn {
-                lookup: LookupKind::Identifier,
-                name,
-                candidates,
-            } => {
+            SchemaError::AmbiguousColumn { name, candidates } => {
                 assert_eq!(name.as_ref(), "id");
                 assert_eq!(
                     candidates

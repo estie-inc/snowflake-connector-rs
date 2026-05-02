@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{mem, sync::Arc};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
@@ -94,18 +94,9 @@ impl DynamicRow {
         Ok(&self.values[index.as_usize()])
     }
 
-    /// Resolves an exact result label and borrows the corresponding value.
-    pub fn value_by_label(&self, name: &str) -> std::result::Result<&SnowflakeValue, SchemaError> {
-        let idx = self.schema.column_by_label(name)?;
-        self.at(idx)
-    }
-
-    /// Resolves an unquoted identifier and borrows the corresponding value.
-    pub fn value_by_identifier(
-        &self,
-        name: &str,
-    ) -> std::result::Result<&SnowflakeValue, SchemaError> {
-        let idx = self.schema.column_by_identifier(name)?;
+    /// Borrows a value by exact raw result label (case-sensitive).
+    pub fn get(&self, name: &str) -> std::result::Result<&SnowflakeValue, SchemaError> {
+        let idx = self.schema.column(name)?;
         self.at(idx)
     }
 
@@ -117,7 +108,8 @@ impl DynamicRow {
                 index,
                 len: self.schema.len(),
             })?;
-        Ok(std::mem::replace(
+
+        Ok(mem::replace(
             &mut self.values[index.as_usize()],
             SnowflakeValue::Null,
         ))
@@ -317,7 +309,7 @@ mod tests {
     fn dynamic_row_keeps_text_cells_as_strings() {
         for value in [r#"{"a":1}"#, "plain text"] {
             let row = one_cell_row(ColumnType::Text { length: None }, value);
-            match row.value_by_label("PAYLOAD").unwrap() {
+            match row.get("PAYLOAD").unwrap() {
                 SnowflakeValue::String(actual) => assert_eq!(actual, value),
                 other => panic!("expected String, got {other:?}"),
             }
@@ -327,7 +319,7 @@ mod tests {
     #[test]
     fn dynamic_row_decodes_variant_cells_as_json() {
         let row = one_cell_row(ColumnType::Variant, r#"{"a":1}"#);
-        match row.value_by_label("PAYLOAD").unwrap() {
+        match row.get("PAYLOAD").unwrap() {
             SnowflakeValue::Json(value) => assert_eq!(value["a"], 1),
             other => panic!("expected Json, got {other:?}"),
         }
@@ -344,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_row_value_lookup_distinguishes_labels_and_identifiers() {
+    fn dynamic_row_get_returns_exact_label_match() {
         let schema = make_schema(vec![
             (
                 "ID".to_string(),
@@ -370,24 +362,14 @@ mod tests {
         .unwrap();
         let row = table.dynamic_rows().unwrap().next().unwrap().unwrap();
 
-        assert_eq!(
-            row.value_by_label("ID").unwrap(),
-            &SnowflakeValue::Integer(1)
-        );
-        assert_eq!(
-            row.value_by_label("id").unwrap(),
-            &SnowflakeValue::Integer(2)
-        );
-        assert_eq!(
-            row.value_by_identifier("id").unwrap(),
-            &SnowflakeValue::Integer(1)
-        );
+        assert_eq!(row.get("ID").unwrap(), &SnowflakeValue::Integer(1));
+        assert_eq!(row.get("id").unwrap(), &SnowflakeValue::Integer(2));
     }
 
     #[test]
     fn dynamic_row_take_replaces_slots_with_null() {
         let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
-        let index = row.schema().column_by_label("PAYLOAD").unwrap();
+        let index = row.schema().column("PAYLOAD").unwrap();
 
         assert_eq!(
             row.take(index).unwrap(),
@@ -404,18 +386,6 @@ mod tests {
         assert!(matches!(
             row.take(index),
             Err(SchemaError::InvalidColumnIndex { index: actual, len: 1 }) if actual == index
-        ));
-    }
-
-    #[test]
-    fn dynamic_row_value_by_identifier_propagates_invalid_identifier() {
-        let row = one_cell_row(ColumnType::Text { length: None }, "x");
-        assert!(matches!(
-            row.value_by_identifier("PAY LOAD"),
-            Err(SchemaError::InvalidIdentifier {
-                input,
-                reason: crate::IdentifierError::InvalidChar { offset: 3, ch: ' ' },
-            }) if input.as_ref() == "PAY LOAD"
         ));
     }
 
