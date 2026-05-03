@@ -37,11 +37,22 @@ use syn::{DeriveInput, parse_macro_input};
 /// provided raw label verbatim. `#[snowflake(rename_all = "none")]` keeps the
 /// logical field name unchanged.
 ///
+/// Snowflake stores and resolves unquoted aliases as uppercase. `SELECT 1 AS name`
+/// returns the raw label `NAME`, so the default `SCREAMING_SNAKE_CASE` rule keeps
+/// matching unannotated structs against typical SELECT queries.
+///
+/// `rename_all = "none"` is intended for results whose raw labels intentionally
+/// preserve case or use lowercase, such as quoted aliases (`SELECT 1 AS "name"`)
+/// or `SHOW` / `DESCRIBE` queries (whose output columns are lowercase and have to
+/// be referenced via double-quoted identifiers).
+///
 /// # Container attributes
 ///
 /// - `rename_all = "SCREAMING_SNAKE_CASE"`: compile-time field-name conversion
 ///   used by named structs. This is the default.
-/// - `rename_all = "none"`: use each logical field name as-is.
+/// - `rename_all = "none"`: use each logical field name as-is. Pair this with
+///   quoted aliases or `SHOW` / `DESCRIBE` results that intentionally keep
+///   labels in lowercase or mixed case.
 /// - `by_position`: decode every field by ordinal instead of by label on named
 ///   structs. Tuple structs already decode by position automatically.
 /// - `crate = "::path"`: override the crate path used in generated code.
@@ -78,8 +89,8 @@ use syn::{DeriveInput, parse_macro_input};
 /// # Field attributes
 ///
 /// - `rename = "..."`: use the exact raw result label for this field.
-/// - `default`: use `Default::default()` when the named lookup fails with
-///   `MissingColumn`.
+/// - `default`: use `Default::default()` when the named column is missing or the
+///   cell value is `NULL`. Cell decode errors are still propagated as-is.
 ///
 /// ```rust,ignore
 /// #[derive(snowflake_connector_rs::FromRow)]
@@ -107,14 +118,15 @@ use syn::{DeriveInput, parse_macro_input};
 /// - `ColumnCountMismatch` when required positional fields exceed the schema.
 /// - `InvalidColumnIndex` and cell decode errors from row access.
 ///
-/// `#[snowflake(default)]` only substitutes a default value for
-/// `MissingColumn`. It does not swallow `AmbiguousColumn` or row decode errors.
+/// `#[snowflake(default)]` substitutes a default value when either the column is
+/// missing (`MissingColumn`) or the cell carries a `NULL` value. It does not
+/// swallow `AmbiguousColumn` or row decode errors.
 ///
 /// # Using the macro
 ///
 /// `snowflake-connector-rs` re-exports this macro when its `derive` feature is
-/// enabled. See the base crate docs and the `derive_from_row` example for a
-/// full walkthrough of the supported attribute combinations.
+/// enabled. The repository ships a runnable walkthrough at
+/// `examples/derive_from_row.rs`.
 #[proc_macro_derive(FromRow, attributes(snowflake))]
 pub fn derive_from_row(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

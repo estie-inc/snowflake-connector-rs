@@ -149,7 +149,9 @@ async fn run_position_examples(session: &SnowflakeSession) -> Result<()> {
 }
 
 async fn run_default_example(session: &SnowflakeSession) -> Result<()> {
-    // `default` fills only when the named column is missing.
+    // `default` fills when the named column is missing OR when the cell is NULL.
+    // Here only the missing-column path is exercised; the NULL fallback follows
+    // the same `Default::default()` substitution.
     let rows = session
         .query_as::<OptionalNote, _>(r#"SELECT 1 AS id"#)
         .await?
