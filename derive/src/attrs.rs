@@ -32,7 +32,6 @@ impl Default for ContainerAttrs {
 #[derive(Default)]
 pub(crate) struct FieldAttrs {
     pub(crate) rename: Option<String>,
-    pub(crate) by_position: bool,
     pub(crate) default: bool,
 }
 
@@ -103,7 +102,6 @@ pub(crate) fn parse_container_attrs(input: &DeriveInput) -> Result<ContainerAttr
 
 pub(crate) fn parse_field_attrs(field: &Field) -> Result<FieldAttrs> {
     let mut out = FieldAttrs::default();
-    let mut by_position_seen = false;
     let mut default_seen = false;
 
     for attr in &field.attrs {
@@ -120,12 +118,9 @@ pub(crate) fn parse_field_attrs(field: &Field) -> Result<FieldAttrs> {
                 let value: LitStr = meta.value()?.parse()?;
                 out.rename = Some(value.value());
             } else if meta.path.is_ident("by_position") {
-                if by_position_seen {
-                    return Err(meta.error("duplicate `by_position`"));
-                }
-
-                by_position_seen = true;
-                out.by_position = true;
+                return Err(meta.error(
+                    "field-level `by_position` is not supported; use container-level `#[snowflake(by_position)]` instead",
+                ));
             } else if meta.path.is_ident("default") {
                 if default_seen {
                     return Err(meta.error("duplicate `default`"));

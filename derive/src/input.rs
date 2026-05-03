@@ -100,26 +100,12 @@ fn parse_named(named: &syn::FieldsNamed, container: &ContainerAttrs) -> Result<V
 
         let field_attrs = parse_field_attrs(field)?;
         let has_default = field_attrs.default;
-        let field_by_position = field_attrs.by_position;
         let field_rename = field_attrs.rename;
         let ident = field.ident.clone().expect("named");
         let plan_ident = format_ident!("__plan_{}", ident);
 
-        if field_by_position && field_rename.is_some() {
-            return Err(syn::Error::new(
-                field.span(),
-                "by_position cannot be combined with rename",
-            ));
-        }
-        if field_by_position && container.rename_all_explicit {
-            return Err(syn::Error::new(
-                field.span(),
-                "field `by_position` cannot be combined with container `rename_all`",
-            ));
-        }
-
-        let lookup = if container.by_position || field_by_position {
-            if container.by_position && field_rename.is_some() {
+        let lookup = if container.by_position {
+            if field_rename.is_some() {
                 return Err(syn::Error::new(
                     field.span(),
                     "container `by_position` cannot be combined with field `rename`",

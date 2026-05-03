@@ -1,5 +1,0 @@
-error: field `by_position` cannot be combined with container `rename_all`
- --> tests/derive_compile_fail/field_by_position_with_rename_all.rs:7:5
-  |
-7 |     #[snowflake(by_position)]
-  |     ^

@@ -28,14 +28,12 @@ struct ExactLabels {
 }
 
 #[derive(Debug, PartialEq, FromRow)]
-#[snowflake(by_position)]
 struct TupleByPosition(i64, String);
 
 #[derive(Debug, PartialEq, FromRow)]
+#[snowflake(by_position)]
 struct NamedByPosition {
-    #[snowflake(by_position)]
     id: i64,
-    #[snowflake(by_position)]
     label: String,
 }
 
@@ -122,7 +120,8 @@ async fn run_exact_rename_example(session: &SnowflakeSession) -> Result<()> {
 }
 
 async fn run_position_examples(session: &SnowflakeSession) -> Result<()> {
-    // Container-level and field-level `by_position` both decode by ordinal.
+    // Tuple structs decode by position automatically; named structs opt in with
+    // container-level `#[snowflake(by_position)]`.
     let tuple_rows = session
         .query_as::<TupleByPosition, _>(r#"SELECT 7, 'tuple row'"#)
         .await?
