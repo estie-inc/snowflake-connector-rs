@@ -193,8 +193,8 @@ impl FromRow for DynamicRow {
 
     fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
         let mut values = Vec::with_capacity(plan.len());
-        for col in plan.columns() {
-            let cell = row.cell(col.index())?;
+        for (offset, col) in plan.columns().iter().enumerate() {
+            let cell = row.cell_at_offset(col, offset);
             values.push(decode_dynamic(cell)?);
         }
 

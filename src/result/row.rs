@@ -7,7 +7,7 @@ use crate::{
         decode::{FromCell, FromRow},
         plan::RowPlanContext,
         result_table::{ResultTable, ResultTableStorage},
-        schema::{ColumnIndex, Schema},
+        schema::{Column, ColumnIndex, Schema},
     },
 };
 
@@ -41,6 +41,21 @@ impl<'a> RowRef<'a> {
             column,
             raw,
         })
+    }
+
+    // A fast path for DynamicRow.
+    // DynamicRow has columns in the correct order, so it can skip column lookups in `cell()`.
+    pub(crate) fn cell_at_offset(self, column: &'a Column, offset: usize) -> CellRef<'a> {
+        debug_assert_eq!(column.index().as_usize(), offset);
+
+        let cell = self.block.cell(self.local_row, offset);
+        let raw = self.block.cell_text(cell);
+
+        CellRef {
+            row: self.global_row,
+            column,
+            raw,
+        }
     }
 
     pub fn get<T: FromCell>(self, index: ColumnIndex) -> Result<T> {
@@ -133,7 +148,7 @@ mod tests {
 
     use crate::result::{
         ColumnType,
-        result_table::ResultTable,
+        result_table::{ResultTable, ResultTableStorage},
         test_data::{make_result_table_from_rows, make_schema},
     };
 
@@ -179,6 +194,45 @@ mod tests {
             assert_eq!(rows.len(), 2);
             rows.next().unwrap().unwrap();
             assert_eq!(rows.len(), 1);
+        }
+    }
+
+    #[test]
+    fn cell_at_offset_matches_checked_cell_path() {
+        let schema = make_schema(vec![
+            (
+                "ID".to_string(),
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                false,
+            ),
+            ("NAME".to_string(), ColumnType::Text { length: None }, true),
+        ]);
+        let table = make_result_table_from_rows(
+            schema,
+            vec![vec![Some("1".to_string()), Some("alice".to_string())]],
+        )
+        .unwrap();
+
+        let block = match table.storage() {
+            ResultTableStorage::Single(block) => block.as_ref(),
+            ResultTableStorage::Chunks(_) => panic!("expected single block"),
+        };
+        let row = super::RowRef {
+            table: &table,
+            block,
+            global_row: 0,
+            local_row: 0,
+        };
+
+        for (offset, column) in table.schema().columns().iter().enumerate() {
+            let direct = row.cell_at_offset(column, offset);
+            let checked = row.cell(column.index()).unwrap();
+            assert_eq!(direct.raw(), checked.raw());
+            assert_eq!(direct.column().name(), checked.column().name());
+            assert_eq!(direct.row(), checked.row());
         }
     }
 }
