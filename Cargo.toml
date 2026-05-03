@@ -147,3 +147,10 @@ name = "external_browser_sso_without_callback_listener"
 required-features = [
     "external-browser-sso",
 ]
+
+[[example]]
+name = "derive_from_row"
+required-features = [
+    "derive",
+    "external-browser-sso",
+]

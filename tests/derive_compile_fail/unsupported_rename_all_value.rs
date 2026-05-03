@@ -1,9 +1,9 @@
 use snowflake_connector_rs::FromRow;
 
 #[derive(FromRow)]
+#[snowflake(rename_all = "snake_case")]
 struct Bad {
-    #[snowflake(default, default)]
-    x: Option<String>,
+    value: i64,
 }
 
 fn main() {}

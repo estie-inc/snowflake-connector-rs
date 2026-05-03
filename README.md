@@ -135,6 +135,7 @@ These algorithms are considered insecure and should only be used for legacy comp
 
 - **`pkcs8-des`**: Enables DES decryption support
 - **`pkcs8-3des`**: Enables 3DES decryption support
+- **`derive`**: Re-exports the `FromRow` derive macro (enabled by default)
 - **`external-browser-sso`**: Enables external browser SSO authentication support
 
 > [!NOTE]

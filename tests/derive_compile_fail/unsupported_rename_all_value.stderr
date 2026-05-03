@@ -1,0 +1,5 @@
+error: only `rename_all = "SCREAMING_SNAKE_CASE"` or `"none"` is supported
+ --> tests/derive_compile_fail/unsupported_rename_all_value.rs:4:13
+  |
+4 | #[snowflake(rename_all = "snake_case")]
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -250,27 +250,6 @@ impl Schema {
     pub fn column(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
         lookup_result(name, self.indices.get(name))
     }
-
-    #[doc(hidden)]
-    pub fn column_by_name_ci(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
-        let mut hits = Vec::new();
-        for col in self.columns.iter() {
-            if col.name().eq_ignore_ascii_case(name) {
-                hits.push(col.index());
-            }
-        }
-
-        match hits.len() {
-            0 => Err(SchemaError::MissingColumn {
-                name: Box::from(name),
-            }),
-            1 => Ok(hits[0]),
-            _ => Err(SchemaError::AmbiguousColumn {
-                name: Box::from(name),
-                candidates: hits.into_boxed_slice(),
-            }),
-        }
-    }
 }
 
 fn lookup_result(
@@ -360,60 +339,6 @@ mod tests {
                 );
             }
             other => panic!("expected label ambiguity, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn schema_name_ci_lookup_matches_lowercase_labels() {
-        let schema = Schema::from_columns(vec![Column::new(
-            "value",
-            0,
-            false,
-            ColumnType::Text { length: None },
-        )])
-        .unwrap();
-
-        assert_eq!(schema.column_by_name_ci("VALUE").unwrap().as_usize(), 0);
-        assert_eq!(schema.column_by_name_ci("value").unwrap().as_usize(), 0);
-    }
-
-    #[test]
-    fn schema_name_ci_lookup_reports_case_insensitive_ambiguity() {
-        let schema = Schema::from_columns(vec![
-            Column::new(
-                "ID",
-                0,
-                false,
-                ColumnType::Fixed {
-                    precision: None,
-                    scale: Some(0),
-                },
-            ),
-            Column::new(
-                "id",
-                1,
-                false,
-                ColumnType::Fixed {
-                    precision: None,
-                    scale: Some(0),
-                },
-            ),
-        ])
-        .unwrap();
-
-        let err = schema.column_by_name_ci("id").unwrap_err();
-        match err {
-            SchemaError::AmbiguousColumn { name, candidates } => {
-                assert_eq!(name.as_ref(), "id");
-                assert_eq!(
-                    candidates
-                        .iter()
-                        .map(|candidate| candidate.as_usize())
-                        .collect::<Vec<_>>(),
-                    vec![0, 1]
-                );
-            }
-            other => panic!("expected case-insensitive ambiguity, got {other:?}"),
         }
     }
 

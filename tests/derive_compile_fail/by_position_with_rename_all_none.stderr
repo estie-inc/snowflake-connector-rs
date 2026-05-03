@@ -1,0 +1,5 @@
+error: `by_position` cannot be combined with `rename_all`
+ --> tests/derive_compile_fail/by_position_with_rename_all_none.rs:5:8
+  |
+5 | struct Bad(i64, String);
+  |        ^^^
