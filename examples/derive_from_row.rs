@@ -12,13 +12,7 @@ use snowflake_connector_rs::{
 struct DefaultLabels {
     id: i64,
     user_name: String,
-}
-
-#[derive(Debug, PartialEq, FromRow)]
-#[snowflake(rename_all = "none")]
-struct LowercaseLabels {
-    name: String,
-    value: String,
+    note: Option<String>,
 }
 
 #[derive(Debug, PartialEq, FromRow)]
@@ -38,10 +32,10 @@ struct NamedByPosition {
 }
 
 #[derive(Debug, PartialEq, FromRow)]
-struct OptionalNote {
-    id: i64,
-    #[snowflake(default)]
-    note: Option<String>,
+#[snowflake(rename_all = "none")]
+struct LowercaseLabels {
+    name: String,
+    value: String,
 }
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -60,7 +54,6 @@ async fn async_main() -> Result<()> {
     run_rename_all_none_example(&session).await?;
     run_exact_rename_example(&session).await?;
     run_position_examples(&session).await?;
-    run_default_example(&session).await?;
     run_streaming_example(&session).await?;
 
     Ok(())
@@ -69,7 +62,9 @@ async fn async_main() -> Result<()> {
 async fn run_default_mapping_example(session: &SnowflakeSession) -> Result<()> {
     // Default field-name mapping uses compile-time SCREAMING_SNAKE_CASE labels.
     let rows = session
-        .query_as::<DefaultLabels, _>(r#"SELECT 1 AS id, 'alice' AS user_name"#)
+        .query_as::<DefaultLabels, _>(
+            r#"SELECT 1 AS id, 'alice' AS user_name, NULL::STRING AS note"#,
+        )
         .await?
         .collect()
         .await?;
@@ -78,6 +73,7 @@ async fn run_default_mapping_example(session: &SnowflakeSession) -> Result<()> {
         vec![DefaultLabels {
             id: 1,
             user_name: "alice".to_string(),
+            note: None,
         }]
     );
     println!("default mapping: {rows:?}");
@@ -148,25 +144,14 @@ async fn run_position_examples(session: &SnowflakeSession) -> Result<()> {
     Ok(())
 }
 
-async fn run_default_example(session: &SnowflakeSession) -> Result<()> {
-    // `default` fills when the named column is missing OR when the cell is NULL.
-    // Here only the missing-column path is exercised; the NULL fallback follows
-    // the same `Default::default()` substitution.
-    let rows = session
-        .query_as::<OptionalNote, _>(r#"SELECT 1 AS id"#)
-        .await?
-        .collect()
-        .await?;
-    assert_eq!(rows, vec![OptionalNote { id: 1, note: None }]);
-    println!("default: {rows:?}");
-    Ok(())
-}
-
 async fn run_streaming_example(session: &SnowflakeSession) -> Result<()> {
     // Typed results can be streamed table by table instead of collected eagerly.
     let mut result = session
         .query_as::<DefaultLabels, _>(
-            r#"SELECT 1 AS id, 'alice' AS user_name UNION ALL SELECT 2 AS id, 'bob' AS user_name ORDER BY id"#,
+            r#"SELECT 1 AS id, 'alice' AS user_name, NULL::STRING AS note
+               UNION ALL
+               SELECT 2 AS id, 'bob' AS user_name, 'ready' AS note
+               ORDER BY id"#,
         )
         .await?;
 

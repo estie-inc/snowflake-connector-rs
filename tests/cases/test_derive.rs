@@ -10,23 +10,23 @@ struct UserRow {
     #[snowflake(rename = "USER_NAME")]
     name: String,
     is_active: bool,
-}
-
-#[derive(Debug, FromRow, PartialEq)]
-struct UserWithDefault {
-    id: i64,
-    #[snowflake(rename = "USER_NAME")]
-    name: String,
-    /// `bio` doesn't exist in the result; `default` lets it materialise as None.
-    #[snowflake(default)]
     bio: Option<String>,
 }
 
 #[derive(Debug, FromRow, PartialEq)]
-struct UserWithNullDefault {
+struct RequiredNoteRow {
     id: i64,
-    #[snowflake(default)]
-    bio: String,
+    note: String,
+}
+
+#[derive(Debug, FromRow, PartialEq)]
+struct DefaultCaseValueRow {
+    value: i64,
+}
+
+#[derive(Debug, FromRow, PartialEq)]
+struct AmbiguousIdRow {
+    id: i64,
 }
 
 #[derive(Debug, FromRow, PartialEq)]
@@ -79,9 +79,9 @@ async fn derive_named_lookup_variants_decode_expected_rows() -> Result<()> {
 
     let users = session
         .query_as::<UserRow, _>(
-            "SELECT 1 AS id, 'alice' AS user_name, TRUE AS is_active
+            "SELECT 1 AS id, 'alice' AS user_name, TRUE AS is_active, NULL::STRING AS bio
              UNION ALL
-             SELECT 2 AS id, 'bob' AS user_name, FALSE AS is_active
+             SELECT 2 AS id, 'bob' AS user_name, FALSE AS is_active, 'hello' AS bio
              ORDER BY 1",
         )
         .await?
@@ -95,11 +95,13 @@ async fn derive_named_lookup_variants_decode_expected_rows() -> Result<()> {
                 id: 1,
                 name: "alice".to_string(),
                 is_active: true,
+                bio: None,
             },
             UserRow {
                 id: 2,
                 name: "bob".to_string(),
                 is_active: false,
+                bio: Some("hello".to_string()),
             },
         ]
     );
@@ -167,57 +169,73 @@ async fn derive_named_lookup_variants_decode_expected_rows() -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, FromRow, PartialEq)]
-struct AmbiguousIdWithDefault {
-    /// `#[snowflake(default)]` must not swallow duplicate raw labels.
-    #[snowflake(default)]
-    id: Option<i64>,
-}
-
 #[tokio::test]
-async fn derive_default_behavior_distinguishes_missing_null_and_ambiguity() -> Result<()> {
+async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
-    let users = session
-        .query_as::<UserWithDefault, _>("SELECT 1 AS id, 'alice' AS user_name")
-        .await?
-        .collect()
-        .await?;
-
-    assert_eq!(
-        users,
-        vec![UserWithDefault {
-            id: 1,
-            name: "alice".to_string(),
-            bio: None,
-        }]
-    );
-
-    let users = session
-        .query_as::<UserWithNullDefault, _>("SELECT 1 AS id, NULL::STRING AS bio")
-        .await?
-        .collect()
-        .await?;
-
-    assert_eq!(
-        users,
-        vec![UserWithNullDefault {
-            id: 1,
-            bio: String::new(),
-        }]
-    );
-
     let err = session
-        .query_as::<AmbiguousIdWithDefault, _>("SELECT 1 AS id, 2 AS ID")
+        .query_as::<UserRow, _>("SELECT 1 AS id, 'alice' AS user_name, TRUE AS is_active")
         .await
         .err()
-        .expect("duplicate raw labels should not silently default");
+        .expect("missing named column should fail during plan building");
+
+    match err {
+        Error::Schema(SchemaError::MissingColumn { name }) => assert_eq!(name.as_ref(), "BIO"),
+        other => panic!("expected MissingColumn, got: {other:?}"),
+    }
+
+    let err = session
+        .query_as::<DefaultCaseValueRow, _>(r#"SELECT 1 AS "value""#)
+        .await
+        .err()
+        .expect("default lookup should not match lowercase quoted labels");
+
+    match err {
+        Error::Schema(SchemaError::MissingColumn { name }) => assert_eq!(name.as_ref(), "VALUE"),
+        other => panic!("expected MissingColumn, got: {other:?}"),
+    }
+
+    let err = session
+        .query_as::<CountAndName, _>("SELECT 42")
+        .await
+        .err()
+        .expect("short positional row should fail during plan building");
+
+    match err {
+        Error::Schema(SchemaError::ColumnCountMismatch { expected, actual }) => {
+            assert_eq!(expected, 2);
+            assert_eq!(actual, 1);
+        }
+        other => panic!("expected ColumnCountMismatch, got: {other:?}"),
+    }
+
+    let err = session
+        .query_as::<RequiredNoteRow, _>("SELECT 1 AS id, NULL::STRING AS note")
+        .await?
+        .collect()
+        .await
+        .expect_err("non-Option NULL should surface the decode error");
+
+    match err {
+        Error::Decode(err) => {
+            assert_eq!(err.column_name(), "NOTE");
+            assert_eq!(err.reason(), "value is NULL");
+        }
+        other => panic!("expected Decode error, got: {other:?}"),
+    }
+
+    let err = session
+        .query_as::<AmbiguousIdRow, _>("SELECT 1 AS id, 2 AS ID")
+        .await
+        .err()
+        .expect("duplicate raw labels should fail during plan building");
 
     match err {
         Error::Schema(SchemaError::AmbiguousColumn { .. }) => {}
         other => panic!("expected AmbiguousColumn, got: {other:?}"),
     }
+
     Ok(())
 }
 

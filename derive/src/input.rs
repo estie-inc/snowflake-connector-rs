@@ -26,7 +26,6 @@ pub(crate) struct FieldInfo {
     pub(crate) plan_ident: Ident,
     pub(crate) ty: syn::Type,
     pub(crate) lookup: FieldLookup,
-    pub(crate) has_default: bool,
 }
 
 pub(crate) fn analyze(input: DeriveInput) -> Result<FromRowDerive> {
@@ -99,7 +98,6 @@ fn parse_named(named: &syn::FieldsNamed, container: &ContainerAttrs) -> Result<V
         }
 
         let field_attrs = parse_field_attrs(field)?;
-        let has_default = field_attrs.default;
         let field_rename = field_attrs.rename;
         let ident = field.ident.clone().expect("named");
         let plan_ident = format_ident!("__plan_{}", ident);
@@ -125,7 +123,6 @@ fn parse_named(named: &syn::FieldsNamed, container: &ContainerAttrs) -> Result<V
             plan_ident,
             ty: field.ty.clone(),
             lookup,
-            has_default,
         });
     }
 
@@ -166,7 +163,6 @@ fn parse_unnamed(
             plan_ident,
             ty: field.ty.clone(),
             lookup: FieldLookup::Position(i),
-            has_default: field_attrs.default,
         });
     }
 

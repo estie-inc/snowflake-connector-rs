@@ -57,6 +57,10 @@ use syn::{DeriveInput, parse_macro_input};
 ///   structs. Tuple structs already decode by position automatically.
 /// - `crate = "::path"`: override the crate path used in generated code.
 ///
+/// `rename_all` cannot be combined with `by_position`; positional decoding does
+/// not use field names. `rename_all` also cannot be applied to tuple structs,
+/// which are implicitly positional.
+///
 /// ```rust,ignore
 /// #[derive(snowflake_connector_rs::FromRow)]
 /// #[snowflake(rename_all = "none")]
@@ -79,7 +83,7 @@ use syn::{DeriveInput, parse_macro_input};
 /// Tuple structs decode by ordinal automatically; you do not need to add
 /// `#[snowflake(by_position)]`. The container attribute remains accepted as a
 /// no-op for backward source compatibility but is not required and is omitted
-/// from the examples.
+/// from the examples. `rename_all` cannot be applied to tuple structs.
 ///
 /// ```rust,ignore
 /// #[derive(snowflake_connector_rs::FromRow)]
@@ -89,8 +93,6 @@ use syn::{DeriveInput, parse_macro_input};
 /// # Field attributes
 ///
 /// - `rename = "..."`: use the exact raw result label for this field.
-/// - `default`: use `Default::default()` when the named column is missing or the
-///   cell value is `NULL`. Cell decode errors are still propagated as-is.
 ///
 /// ```rust,ignore
 /// #[derive(snowflake_connector_rs::FromRow)]
@@ -100,27 +102,34 @@ use syn::{DeriveInput, parse_macro_input};
 /// }
 /// ```
 ///
+/// # SQL NULL
+///
+/// Use `Option<T>` when a projected column may carry SQL `NULL`. Missing columns
+/// still raise `MissingColumn`; if you need a non-`Option` default, project it
+/// explicitly in SQL.
+///
 /// ```rust,ignore
 /// #[derive(snowflake_connector_rs::FromRow)]
-/// struct PartialRow {
+/// struct NullableNote {
 ///     id: i64,
-///     #[snowflake(default)]
 ///     note: Option<String>,
 /// }
 /// ```
+///
+/// `SELECT id, NULL AS note FROM users` decodes to `note: None`, while
+/// `SELECT id, COALESCE(note, '') AS note FROM users` keeps `note` non-optional.
 ///
 /// # Error behavior
 ///
 /// The generated implementation propagates schema and row access errors:
 ///
-/// - `MissingColumn` for required named lookups.
+/// - `MissingColumn` for required named lookups, including `Option<T>` fields.
 /// - `AmbiguousColumn` when the schema contains duplicate raw labels.
 /// - `ColumnCountMismatch` when required positional fields exceed the schema.
 /// - `InvalidColumnIndex` and cell decode errors from row access.
 ///
-/// `#[snowflake(default)]` substitutes a default value when either the column is
-/// missing (`MissingColumn`) or the cell carries a `NULL` value. It does not
-/// swallow `AmbiguousColumn` or row decode errors.
+/// SQL `NULL` only maps to `None` for `Option<T>`. Other field types propagate
+/// their normal `FromCell` decode error.
 #[proc_macro_derive(FromRow, attributes(snowflake))]
 pub fn derive_from_row(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
