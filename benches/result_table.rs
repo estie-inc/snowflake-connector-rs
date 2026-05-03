@@ -14,13 +14,27 @@ use snowflake_connector_rs::bench_support::{
     decode_gzip_chunk, make_result_table_from_rows, make_schema, parse_remote_chunk_result_table,
     parse_remote_chunk_result_table_async_with_workload, parse_statement_envelope,
 };
-use snowflake_connector_rs::{ColumnType, DynamicRow, Schema};
+use snowflake_connector_rs::{ColumnType, DynamicRow, ResultTable, Schema};
 
 #[derive(snowflake_connector_rs::FromRow)]
 struct BenchRow {
     id: i64,
     name: String,
     ts: NaiveDateTime,
+}
+
+type BenchTuple = (i64, String, NaiveDateTime);
+
+fn materialize_tuple_rows(table: &ResultTable) {
+    for row in table.rows::<BenchTuple>().unwrap() {
+        black_box(row.unwrap());
+    }
+}
+
+fn materialize_dynamic_rows(table: &ResultTable) {
+    for row in table.dynamic_rows().unwrap() {
+        black_box(row.unwrap());
+    }
 }
 
 fn synthetic_chunk_bytes(row_count: usize, null_pct: u8, escaped_pct: u8) -> Bytes {
@@ -290,6 +304,24 @@ fn bench_decode_dynamic(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_decode_compare(c: &mut Criterion) {
+    let mut group = c.benchmark_group("table_rows_decode_compare");
+    let schema = build_schema();
+    for &rows in &[1_000usize, 10_000, 100_000] {
+        let bytes = synthetic_chunk_bytes(rows, 0, 0);
+        let table = parse_remote_chunk_result_table(Arc::clone(&schema), Arc::from("bench"), bytes)
+            .unwrap();
+        group.throughput(Throughput::Elements(rows as u64));
+        group.bench_with_input(BenchmarkId::new("tuple", rows), &table, |b, table| {
+            b.iter(|| materialize_tuple_rows(table))
+        });
+        group.bench_with_input(BenchmarkId::new("dynamic", rows), &table, |b, table| {
+            b.iter(|| materialize_dynamic_rows(table))
+        });
+    }
+    group.finish();
+}
+
 fn bench_make_result_table_from_rows(c: &mut Criterion) {
     let schema = build_schema();
     let rows = (0..10_000)
@@ -318,6 +350,7 @@ criterion_group!(
     bench_decode_tuple,
     bench_decode_derive,
     bench_decode_dynamic,
+    bench_decode_compare,
     bench_make_result_table_from_rows,
 );
 criterion_main!(benches);
