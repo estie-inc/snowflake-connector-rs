@@ -1,5 +1,7 @@
 use syn::Ident;
 
+use crate::attrs::RenameAll;
+
 pub(crate) fn logical_ident_name(ident: &Ident) -> String {
     let ident = ident.to_string();
     ident
@@ -22,4 +24,11 @@ pub(crate) fn screaming_snake(s: &str) -> String {
         prev_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
     }
     out
+}
+
+pub(crate) fn apply_rename_all(s: &str, rename_all: RenameAll) -> String {
+    match rename_all {
+        RenameAll::ScreamingSnake => screaming_snake(s),
+        RenameAll::None => s.to_string(),
+    }
 }

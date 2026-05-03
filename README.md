@@ -93,6 +93,11 @@ let table = result.collect_table().await?;
 assert_eq!(table.row_count(), 2);
 ```
 
+The `derive` feature is enabled by default and re-exports `#[derive(FromRow)]`.
+For the full attribute reference, see the `snowflake-connector-rs-derive`
+rustdoc and run `cargo run --example derive_from_row --features derive`
+(requires Snowflake credentials).
+
 ### Custom Endpoint
 
 To override the default Snowflake endpoint (e.g. for testing or non-default network setups):
@@ -135,6 +140,7 @@ These algorithms are considered insecure and should only be used for legacy comp
 
 - **`pkcs8-des`**: Enables DES decryption support
 - **`pkcs8-3des`**: Enables 3DES decryption support
+- **`derive`**: Re-exports the `FromRow` derive macro (enabled by default)
 - **`external-browser-sso`**: Enables external browser SSO authentication support
 
 > [!NOTE]

@@ -1,8 +1,14 @@
 use syn::{DeriveInput, Field, LitStr, Path, Result};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RenameAll {
+    ScreamingSnake,
+    None,
+}
+
 pub(crate) struct ContainerAttrs {
-    /// Effective field-name conversion. Only `SCREAMING_SNAKE_CASE` is supported.
-    pub(crate) rename_all_screaming: bool,
+    /// Effective field-name conversion.
+    pub(crate) rename_all: RenameAll,
     /// `true` only if the user wrote `#[snowflake(rename_all = "...")]`
     /// explicitly. Used to reject `by_position` + explicit `rename_all`.
     pub(crate) rename_all_explicit: bool,
@@ -14,7 +20,7 @@ pub(crate) struct ContainerAttrs {
 impl Default for ContainerAttrs {
     fn default() -> Self {
         Self {
-            rename_all_screaming: true,
+            rename_all: RenameAll::ScreamingSnake,
             rename_all_explicit: false,
             by_position: false,
             crate_path: syn::parse_str("::snowflake_connector_rs").expect("default path"),
@@ -46,13 +52,16 @@ pub(crate) fn parse_container_attrs(input: &DeriveInput) -> Result<ContainerAttr
                 }
 
                 let value: LitStr = meta.value()?.parse()?;
-                if value.value() != "SCREAMING_SNAKE_CASE" {
-                    return Err(
-                        meta.error("only `rename_all = \"SCREAMING_SNAKE_CASE\"` is supported")
-                    );
-                }
+                out.rename_all = match value.value().as_str() {
+                    "SCREAMING_SNAKE_CASE" => RenameAll::ScreamingSnake,
+                    "none" => RenameAll::None,
+                    _ => {
+                        return Err(meta.error(
+                            "only `rename_all = \"SCREAMING_SNAKE_CASE\"` or `\"none\"` is supported",
+                        ));
+                    }
+                };
 
-                out.rename_all_screaming = true;
                 out.rename_all_explicit = true;
             } else if meta.path.is_ident("by_position") {
                 if by_position_seen {

@@ -56,6 +56,13 @@ struct QuotedAliasRow {
     v: i64,
 }
 
+#[derive(Debug, FromRow, PartialEq)]
+#[snowflake(rename_all = "none")]
+struct LowercaseLabels {
+    name: String,
+    value: String,
+}
+
 #[tokio::test]
 async fn derive_named_struct_decodes_query_results() -> Result<()> {
     let client = common::connect()?;
@@ -266,9 +273,7 @@ async fn derive_raw_identifier_uses_logical_field_name() -> Result<()> {
 
 #[derive(Debug, FromRow, PartialEq)]
 struct AmbiguousIdWithDefault {
-    /// `id` resolves through derive's temporary case-insensitive compatibility
-    /// lookup. If the result schema contains two labels that differ only by
-    /// ASCII case, `#[snowflake(default)]` must NOT swallow that ambiguity.
+    /// `#[snowflake(default)]` must not swallow duplicate raw labels.
     #[snowflake(default)]
     id: Option<i64>,
 }
@@ -279,10 +284,10 @@ async fn derive_default_does_not_swallow_ambiguous_column() -> Result<()> {
     let session = client.create_session().await?;
 
     let err = session
-        .query_as::<AmbiguousIdWithDefault, _>(r#"SELECT 1 AS id, 2 AS "id""#)
+        .query_as::<AmbiguousIdWithDefault, _>("SELECT 1 AS id, 2 AS ID")
         .await
         .err()
-        .expect("ambiguous case-insensitive lookup should not silently default");
+        .expect("duplicate raw labels should not silently default");
 
     match err {
         Error::Schema(SchemaError::AmbiguousColumn { .. }) => {}
@@ -303,5 +308,26 @@ async fn derive_rename_resolves_quoted_lowercase_alias() -> Result<()> {
         .await?;
 
     assert_eq!(rows, vec![QuotedAliasRow { v: 1 }]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn derive_rename_all_none_matches_lowercase_labels() -> Result<()> {
+    let client = common::connect()?;
+    let session = client.create_session().await?;
+
+    let rows = session
+        .query_as::<LowercaseLabels, _>(r#"SELECT 'TIMEZONE' AS "name", 'Asia/Tokyo' AS "value""#)
+        .await?
+        .collect()
+        .await?;
+
+    assert_eq!(
+        rows,
+        vec![LowercaseLabels {
+            name: "TIMEZONE".to_string(),
+            value: "Asia/Tokyo".to_string(),
+        }]
+    );
     Ok(())
 }

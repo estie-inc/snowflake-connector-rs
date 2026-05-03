@@ -2,7 +2,7 @@ use quote::format_ident;
 use syn::{Data, DeriveInput, Fields, Ident, Path, Result, spanned::Spanned};
 
 use crate::attrs::{ContainerAttrs, parse_container_attrs, parse_field_attrs};
-use crate::naming::{logical_ident_name, screaming_snake};
+use crate::naming::{apply_rename_all, logical_ident_name};
 
 pub(crate) struct FromRowDerive {
     pub(crate) struct_ident: Ident,
@@ -99,24 +99,27 @@ fn parse_named(named: &syn::FieldsNamed, container: &ContainerAttrs) -> Result<V
         }
 
         let field_attrs = parse_field_attrs(field)?;
+        let has_default = field_attrs.default;
+        let field_by_position = field_attrs.by_position;
+        let field_rename = field_attrs.rename;
         let ident = field.ident.clone().expect("named");
         let plan_ident = format_ident!("__plan_{}", ident);
 
-        if field_attrs.by_position && field_attrs.rename.is_some() {
+        if field_by_position && field_rename.is_some() {
             return Err(syn::Error::new(
                 field.span(),
                 "by_position cannot be combined with rename",
             ));
         }
-        if field_attrs.by_position && container.rename_all_explicit {
+        if field_by_position && container.rename_all_explicit {
             return Err(syn::Error::new(
                 field.span(),
                 "field `by_position` cannot be combined with container `rename_all`",
             ));
         }
 
-        let lookup = if container.by_position || field_attrs.by_position {
-            if container.by_position && field_attrs.rename.is_some() {
+        let lookup = if container.by_position || field_by_position {
+            if container.by_position && field_rename.is_some() {
                 return Err(syn::Error::new(
                     field.span(),
                     "container `by_position` cannot be combined with field `rename`",
@@ -124,17 +127,10 @@ fn parse_named(named: &syn::FieldsNamed, container: &ContainerAttrs) -> Result<V
             }
             FieldLookup::Position(i)
         } else {
-            let name = match field_attrs.rename {
-                Some(s) => s,
-                None => {
-                    let raw = logical_ident_name(&ident);
-                    if container.rename_all_screaming {
-                        screaming_snake(&raw)
-                    } else {
-                        raw
-                    }
-                }
-            };
+            let name = field_rename.unwrap_or_else(|| {
+                let raw = logical_ident_name(&ident);
+                apply_rename_all(&raw, container.rename_all)
+            });
             FieldLookup::Name(name)
         };
 
@@ -143,7 +139,7 @@ fn parse_named(named: &syn::FieldsNamed, container: &ContainerAttrs) -> Result<V
             plan_ident,
             ty: field.ty.clone(),
             lookup,
-            has_default: field_attrs.default,
+            has_default,
         });
     }
 

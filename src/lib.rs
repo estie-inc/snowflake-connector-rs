@@ -2,6 +2,10 @@
 //!
 //! A Rust client for Snowflake. Query results are materialized into a
 //! [`ResultTable`] and decoded with the [`FromRow`] / [`FromCell`] traits.
+//! The `derive` feature is enabled by default and re-exports
+//! `#[derive(FromRow)]`. See the `snowflake-connector-rs-derive` rustdoc and the
+//! `derive_from_row` example for attribute details and a runnable end-to-end
+//! example.
 //!
 //! ```rust,no_run
 //! # use snowflake_connector_rs::{
