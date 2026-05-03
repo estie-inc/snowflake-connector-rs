@@ -121,12 +121,6 @@ use syn::{DeriveInput, parse_macro_input};
 /// `#[snowflake(default)]` substitutes a default value when either the column is
 /// missing (`MissingColumn`) or the cell carries a `NULL` value. It does not
 /// swallow `AmbiguousColumn` or row decode errors.
-///
-/// # Using the macro
-///
-/// `snowflake-connector-rs` re-exports this macro when its `derive` feature is
-/// enabled. The repository ships a runnable walkthrough at
-/// `examples/derive_from_row.rs`.
 #[proc_macro_derive(FromRow, attributes(snowflake))]
 pub fn derive_from_row(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
