@@ -60,12 +60,14 @@ impl StatementApiClient {
 
     pub(crate) async fn poll_async_results(
         &self,
-        poll_url: Url,
+        poll_relative_url: &str,
         timeout: Duration,
     ) -> Result<SnowflakeResponse> {
         const POLL_INTERVAL: Duration = Duration::from_secs(10);
 
+        let poll_url = self.base_url.join(poll_relative_url)?;
         let deadline = Instant::now() + timeout;
+
         loop {
             let resp = self
                 .http
@@ -98,9 +100,5 @@ impl StatementApiClient {
             }
             sleep(remaining.min(POLL_INTERVAL)).await;
         }
-    }
-
-    pub(crate) fn resolve_result_url(&self, raw: &str) -> Result<Url> {
-        Url::parse(raw).or_else(|_| self.base_url.join(raw).map_err(Into::into))
     }
 }

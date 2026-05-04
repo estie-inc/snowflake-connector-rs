@@ -62,12 +62,12 @@ impl StatementExecutor {
                     "".to_string(),
                 ));
             };
+
             match data.get_result_url {
-                Some(raw_url) => {
-                    let poll_url = self.api.resolve_result_url(&raw_url)?;
+                Some(result_url) => {
                     response = self
                         .api
-                        .poll_async_results(poll_url, self.async_completion_timeout)
+                        .poll_async_results(&result_url, self.async_completion_timeout)
                         .await?;
                 }
                 None => {
