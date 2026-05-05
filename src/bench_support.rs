@@ -12,7 +12,6 @@ use crate::{
 };
 
 pub use crate::result::test_data::{make_result_table_from_rows, make_schema};
-pub use crate::rowset::parser::inline_rows_to_result_table;
 
 #[derive(Debug, Clone)]
 pub struct StatementEnvelopeParts {
@@ -48,7 +47,15 @@ pub fn parse_inline_result_table(
 }
 
 pub fn decode_gzip_chunk(body: Bytes) -> Result<Bytes> {
-    rowset::decode_gzip_chunk(body)
+    rowset::decode_gzip_chunk(body).map_err(crate::Error::from)
+}
+
+pub fn inline_rows_to_result_table(
+    schema: Arc<Schema>,
+    query_id: Arc<str>,
+    rows: Vec<Vec<Option<String>>>,
+) -> Result<ResultTable> {
+    parser::inline_rows_to_result_table_inner(schema, query_id, rows).map_err(crate::Error::from)
 }
 
 pub fn parse_remote_chunk_result_table(
@@ -87,5 +94,7 @@ pub async fn parse_remote_chunk_result_table_async_with_workload(
             Some(uncompressed_bytes.unwrap_or(body.len()))
         },
     };
-    parser::parse_remote_chunk_result_table_async(schema, query_id, body, workload, None).await
+    parser::parse_remote_chunk_result_table_async(schema, query_id, body, workload, None)
+        .await
+        .map_err(crate::Error::from)
 }

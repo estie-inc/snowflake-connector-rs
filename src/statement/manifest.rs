@@ -3,13 +3,12 @@ use std::{collections::HashMap, sync::Arc};
 use bytes::Bytes;
 
 use crate::{
-    Error, Result,
-    error::ProtocolError,
+    error::{ProtocolError, QueryScopedError, QueryScopedResult},
     query_result::snapshot::{
         DownloadLocator, PartitionSpec, ResolvedLease, ResultIdentity, ResultSnapshot,
     },
     result::{Column, ColumnType, Schema},
-    rowset::parser::inline_rowset_has_rows,
+    rowset::parser::inline_rowset_has_rows_inner,
 };
 
 use super::response::{RawQueryResponse, resolve_download_headers};
@@ -26,9 +25,9 @@ pub(crate) struct InlineRowset {
 }
 
 impl TryFrom<RawQueryResponse> for ResultManifest {
-    type Error = Error;
+    type Error = QueryScopedError;
 
-    fn try_from(value: RawQueryResponse) -> Result<Self> {
+    fn try_from(value: RawQueryResponse) -> QueryScopedResult<Self> {
         let RawQueryResponse {
             query_id,
             returned,
@@ -43,7 +42,12 @@ impl TryFrom<RawQueryResponse> for ResultManifest {
 
         let has_inline = match row_set_bytes.as_ref() {
             None => false,
-            Some(bytes) => inline_rowset_has_rows(bytes)?,
+            Some(bytes) => match inline_rowset_has_rows_inner(bytes) {
+                Ok(has_rows) => has_rows,
+                Err(err) => {
+                    return Err(QueryScopedError::new(query_id, err));
+                }
+            },
         };
 
         let chunks = chunks.unwrap_or_default();
@@ -55,13 +59,20 @@ impl TryFrom<RawQueryResponse> for ResultManifest {
 
         if has_inline || !chunks.is_empty() {
             match row_types.as_ref() {
-                None => return Err(ProtocolError::missing_field("data.rowtype").into()),
+                None => {
+                    return Err(QueryScopedError::new(
+                        query_id,
+                        ProtocolError::missing_field("data.rowtype"),
+                    ));
+                }
                 Some(row_types) if row_types.is_empty() => {
-                    return Err(ProtocolError::invalid_field(
-                        "data.rowtype",
-                        "must not be empty when result data is present",
-                    )
-                    .into());
+                    return Err(QueryScopedError::new(
+                        query_id,
+                        ProtocolError::invalid_field(
+                            "data.rowtype",
+                            "must not be empty when result data is present",
+                        ),
+                    ));
                 }
                 Some(_) => {}
             }
@@ -81,9 +92,20 @@ impl TryFrom<RawQueryResponse> for ResultManifest {
                 Column::new(row_type.name, index as u32, row_type.nullable, ty)
             })
             .collect();
-        let schema = Arc::new(Schema::from_columns(columns)?);
+        let schema = match Schema::from_columns(columns) {
+            Ok(schema) => schema,
+            Err(err) => {
+                return Err(QueryScopedError::new(query_id, err));
+            }
+        };
+        let schema = Arc::new(schema);
 
-        let download_headers = resolve_download_headers(&qrmk, &chunk_headers)?;
+        let download_headers = match resolve_download_headers(&qrmk, &chunk_headers) {
+            Ok(headers) => headers,
+            Err(err) => {
+                return Err(QueryScopedError::new(query_id, err));
+            }
+        };
         let mut partitions = Vec::new();
         let mut locators = HashMap::new();
 
@@ -107,11 +129,8 @@ impl TryFrom<RawQueryResponse> for ResultManifest {
             );
         }
 
-        let query_id: Arc<str> = Arc::from(query_id);
         let snapshot = Arc::new(ResultSnapshot {
-            identity: ResultIdentity {
-                query_id: Arc::clone(&query_id),
-            },
+            identity: ResultIdentity { query_id },
             schema: Arc::clone(&schema),
             partitions,
         });
@@ -154,7 +173,7 @@ mod tests {
     fn manifest_requires_rowtype_when_inline_data_is_present() {
         let response = RawQueryResponse {
             parameters: None,
-            query_id: "query-id".to_string(),
+            query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: Some(1),
             total: None,
@@ -168,7 +187,7 @@ mod tests {
 
         let err = match ResultManifest::try_from(response) {
             Ok(_) => panic!("missing rowtype metadata must fail"),
-            Err(err) => err,
+            Err(err) => crate::Error::from(err),
         };
         assert_eq!(err.kind(), crate::ErrorKind::Protocol);
         assert_eq!(
@@ -181,7 +200,7 @@ mod tests {
     fn manifest_rejects_empty_rowtype_when_result_data_is_present() {
         let response = RawQueryResponse {
             parameters: None,
-            query_id: "query-id".to_string(),
+            query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: None,
             total: None,
@@ -200,7 +219,7 @@ mod tests {
 
         let err = match ResultManifest::try_from(response) {
             Ok(_) => panic!("empty rowtype metadata must fail"),
-            Err(err) => err,
+            Err(err) => crate::Error::from(err),
         };
         assert_eq!(err.kind(), crate::ErrorKind::Protocol);
         assert_eq!(
@@ -213,7 +232,7 @@ mod tests {
     fn manifest_accepts_non_empty_rowtype_when_result_data_is_present() {
         let response = RawQueryResponse {
             parameters: None,
-            query_id: "query-id".to_string(),
+            query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: Some(1),
             total: None,

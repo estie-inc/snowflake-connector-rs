@@ -3,15 +3,15 @@ use std::io::Read;
 use bytes::Bytes;
 use flate2::bufread::GzDecoder;
 
-use crate::{Result, error::ProtocolError};
+use crate::error::ProtocolError;
 
-pub(crate) fn decode_gzip_chunk(body: Bytes) -> Result<Bytes> {
+pub(crate) fn decode_gzip_chunk(body: Bytes) -> std::result::Result<Bytes, ProtocolError> {
     if body.is_empty() {
         return Ok(body);
     }
 
     if body.len() < 2 {
-        return Err(ProtocolError::chunk_format("invalid chunk format").into());
+        return Err(ProtocolError::chunk_format("invalid chunk format"));
     }
 
     if body[0] == 0x1f && body[1] == 0x8b {
@@ -31,11 +31,13 @@ mod tests {
     use std::error::Error as StdError;
 
     use super::*;
-    use crate::ErrorKind;
+    use crate::{Error, ErrorKind};
 
     #[test]
     fn malformed_gzip_is_protocol_error() {
-        let err = decode_gzip_chunk(Bytes::from_static(b"\x1f\x8bgarbage")).unwrap_err();
+        let err: Error = decode_gzip_chunk(Bytes::from_static(b"\x1f\x8bgarbage"))
+            .unwrap_err()
+            .into();
 
         assert_eq!(err.kind(), ErrorKind::Protocol);
         assert!(err.to_string().contains("gzip decompression failed"));

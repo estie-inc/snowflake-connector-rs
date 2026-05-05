@@ -54,7 +54,7 @@ pub mod test_data {
             }
             builder.finish_row()?;
         }
-        builder.finish()
+        Ok(builder.finish()?)
     }
 }
 

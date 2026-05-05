@@ -4,6 +4,7 @@ use bytes::Bytes;
 
 use crate::{
     Result,
+    error::QueryScopedResult,
     result::{DynamicRow, ResultTable, Schema},
     rowset::parser::parse_inline_result_table_async,
     runtime::QueryRuntime,
@@ -105,6 +106,10 @@ impl ResultSet {
     /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if fetching or
     /// materializing the next partition fails.
     pub async fn next_table(&mut self) -> Result<Option<ResultTable>> {
+        self.next_table_inner().await.map_err(crate::Error::from)
+    }
+
+    async fn next_table_inner(&mut self) -> QueryScopedResult<Option<ResultTable>> {
         if self.cursor.is_exhausted() {
             return Ok(None);
         }
@@ -160,7 +165,9 @@ impl ResultSet {
     /// partition fails to materialize.
     pub async fn collect_table(self) -> Result<ResultTable> {
         let policy = self.default_collect_policy;
-        self.collect_with_policy(policy).await
+        self.collect_with_policy(policy)
+            .await
+            .map_err(crate::Error::from)
     }
 
     /// Consume this result set and merge all remaining partitions into a single `ResultTable`.
@@ -176,7 +183,9 @@ impl ResultSet {
                 .prefetch_concurrency
                 .unwrap_or(self.default_collect_policy.prefetch_concurrency),
         );
-        self.collect_with_policy(policy).await
+        self.collect_with_policy(policy)
+            .await
+            .map_err(crate::Error::from)
     }
 
     /// Consume this result set and decode all rows into [`DynamicRow`].
@@ -205,7 +214,7 @@ impl ResultSet {
         table.dynamic_rows()?.collect()
     }
 
-    async fn collect_with_policy(self, policy: CollectPolicy) -> Result<ResultTable> {
+    async fn collect_with_policy(self, policy: CollectPolicy) -> QueryScopedResult<ResultTable> {
         let Self {
             snapshot,
             cursor,
@@ -241,6 +250,7 @@ impl ResultSet {
                 .as_ref()
                 .expect("limiter exists when source exists");
             let mut window = CollectWindow::new(
+                Arc::clone(&snapshot.identity.query_id),
                 first_remote_ordinal,
                 total,
                 policy.prefetch_concurrency.get(),
@@ -289,14 +299,17 @@ mod tests {
 
     use super::*;
     use crate::{
-        MissingColumnError, SchemaError,
+        CellDecodeError, ErrorKind, MissingColumnError, SchemaError,
+        error::QueryScopedRepr,
         query_result::{
             TypedResultSet,
             collect::CollectPolicy,
             partition_source::tests::{BlockingFetchProbe, FakePartitionSource, FakeResponse},
             snapshot::{PartitionCursor, PartitionSpec, ResultIdentity, ResultSnapshot},
         },
-        result::{Column, ColumnType, DynamicRow, FromRow, RowPlanContext, RowRef, Schema},
+        result::{
+            Column, ColumnIndex, ColumnType, DynamicRow, FromRow, RowPlanContext, RowRef, Schema,
+        },
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
     };
@@ -369,17 +382,34 @@ mod tests {
         })
     }
 
-    fn ok_rows(n: usize) -> crate::Result<Vec<Vec<Option<String>>>> {
+    fn ok_rows(n: usize) -> std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr> {
         Ok((0..n).map(|i| vec![Some(i.to_string())]).collect())
     }
 
-    fn fail() -> crate::Result<Vec<Vec<Option<String>>>> {
+    fn fail() -> std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr> {
         Err(crate::error::NetworkError::chunk_download(500, "simulated failure").into())
+    }
+
+    fn fail_timeout() -> std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr> {
+        Err(crate::error::TimeoutError::query().into())
+    }
+
+    fn fail_protocol() -> std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr> {
+        Err(crate::error::ProtocolError::missing_field("data").into())
+    }
+
+    async fn fail_internal() -> std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr> {
+        let handle = tokio::spawn(std::future::pending::<()>());
+        handle.abort();
+
+        Err(crate::error::InternalError::future_join(handle.await.unwrap_err()).into())
     }
 
     type FakeRows = Vec<Vec<Option<String>>>;
 
-    fn fake_source(responses: Vec<(usize, Vec<crate::Result<FakeRows>>)>) -> PartitionSource {
+    fn fake_source(
+        responses: Vec<(usize, Vec<std::result::Result<FakeRows, QueryScopedRepr>>)>,
+    ) -> PartitionSource {
         let map = responses
             .into_iter()
             .map(|(ord, results)| {
@@ -449,12 +479,42 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct DecodeErrorRow;
+
+    impl FromRow for DecodeErrorRow {
+        type Plan = ();
+
+        fn build_plan(_: RowPlanContext<'_>) -> crate::Result<Self::Plan> {
+            Ok(())
+        }
+
+        fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> crate::Result<Self> {
+            Err(CellDecodeError::new(
+                0,
+                ColumnIndex::new(0),
+                "X",
+                "text",
+                ColumnType::Fixed {
+                    precision: None,
+                    scale: Some(0),
+                },
+                Some("bad"),
+                "simulated decode failure",
+            )
+            .into())
+        }
+    }
+
     #[tokio::test]
     async fn next_table_failure_does_not_advance_cursor() {
         let snapshot = dummy_snapshot(2);
         let source = fake_source(vec![(0, vec![fail(), ok_rows(1)]), (1, vec![ok_rows(2)])]);
         let mut rs = build_result_set(snapshot, source);
-        assert!(rs.next_table().await.is_err());
+        let err = rs.next_table().await.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Network);
+        assert_eq!(err.query_id(), Some("test"));
+        assert_eq!(rs.query_id(), "test");
         assert_eq!(rs.cursor.next_ordinal, 0);
         let t = rs.next_table().await.unwrap().unwrap();
         assert_eq!(t.row_count(), 1);
@@ -472,7 +532,40 @@ mod tests {
             (2, vec![ok_rows(1)]),
         ]);
         let rs = build_result_set(snapshot, source);
-        assert!(rs.collect_table().await.is_err());
+        let err = rs.collect_table().await.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Network);
+        assert_eq!(err.query_id(), Some("test"));
+    }
+
+    #[tokio::test]
+    async fn collect_table_query_scoped_failures_preserve_query_id() {
+        let cases = vec![
+            (
+                "timeout",
+                fake_source(vec![(0, vec![fail_timeout()])]),
+                ErrorKind::Timeout,
+            ),
+            (
+                "protocol",
+                fake_source(vec![(0, vec![fail_protocol()])]),
+                ErrorKind::Protocol,
+            ),
+            (
+                "internal",
+                fake_source(vec![(0, vec![fail_internal().await])]),
+                ErrorKind::Internal,
+            ),
+        ];
+
+        for (label, source, expected_kind) in cases {
+            let err = build_result_set(dummy_snapshot(1), source)
+                .collect_table()
+                .await
+                .unwrap_err();
+
+            assert_eq!(err.kind(), expected_kind, "{label}");
+            assert_eq!(err.query_id(), Some("test"), "{label}");
+        }
     }
 
     #[tokio::test]
@@ -528,7 +621,10 @@ mod tests {
             CollectPolicy::new(NonZeroUsize::new(8).unwrap()),
         );
 
-        assert!(rs.next_table().await.is_err());
+        let err = rs.next_table().await.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Protocol);
+        assert_eq!(err.query_id(), Some("test"));
+        assert_eq!(rs.query_id(), "test");
         assert_eq!(rs.cursor.next_ordinal, 0);
         assert!(rs.inline_rowset.is_some());
 
@@ -624,6 +720,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_failure_propagates_query_id_from_consumed_result_set() {
+        let snapshot = dummy_snapshot(1);
+        let err = build_result_set(snapshot, fake_source(vec![(0, vec![fail()])]))
+            .collect()
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::Network);
+        assert_eq!(err.query_id(), Some("test"));
+    }
+
+    #[tokio::test]
+    async fn collect_table_with_options_failure_propagates_query_id_from_consumed_result_set() {
+        let snapshot = dummy_snapshot(1);
+        let err = build_result_set(snapshot, fake_source(vec![(0, vec![fail()])]))
+            .collect_table_with_options(
+                CollectOptions::default().with_prefetch_concurrency(NonZeroUsize::new(1).unwrap()),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::Network);
+        assert_eq!(err.query_id(), Some("test"));
+    }
+
+    #[tokio::test]
     async fn collect_matches_collect_table_dynamic_rows() {
         let snapshot = dummy_snapshot(2);
         let collected_table = build_result_set(
@@ -672,6 +794,97 @@ mod tests {
 
         assert_eq!(rows, vec![CountingRow, CountingRow]);
         assert_eq!(build_plan_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn typed_collect_failure_propagates_query_id_from_consumed_result_set() {
+        let snapshot = dummy_snapshot(1);
+        let err = build_typed_result_set::<CountingRow>(build_result_set(
+            snapshot,
+            fake_source(vec![(0, vec![fail()])]),
+        ))
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::Network);
+        assert_eq!(err.query_id(), Some("test"));
+    }
+
+    #[tokio::test]
+    async fn typed_collect_table_with_options_failure_propagates_query_id_from_consumed_result_set()
+    {
+        let snapshot = dummy_snapshot(1);
+        let err = match build_typed_result_set::<CountingRow>(build_result_set(
+            snapshot,
+            fake_source(vec![(0, vec![fail()])]),
+        ))
+        .unwrap()
+        .collect_table_with_options(
+            CollectOptions::default().with_prefetch_concurrency(NonZeroUsize::new(1).unwrap()),
+        )
+        .await
+        {
+            Ok(_) => panic!("typed collect_table_with_options should fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), ErrorKind::Network);
+        assert_eq!(err.query_id(), Some("test"));
+    }
+
+    #[tokio::test]
+    async fn typed_collect_decode_error_keeps_query_id_on_materialized_table() {
+        let snapshot = dummy_snapshot(1);
+        let err = build_typed_result_set::<DecodeErrorRow>(build_result_set(
+            Arc::clone(&snapshot),
+            fake_source(vec![(0, vec![ok_rows(1)])]),
+        ))
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        assert!(err.as_cell_decode_error().is_some());
+        assert_eq!(err.query_id(), None);
+
+        let table = build_typed_result_set::<DecodeErrorRow>(build_result_set(
+            snapshot,
+            fake_source(vec![(0, vec![ok_rows(1)])]),
+        ))
+        .unwrap()
+        .collect_table()
+        .await
+        .unwrap();
+        assert_eq!(table.query_id(), "test");
+
+        let err = table.rows().collect::<crate::Result<Vec<_>>>().unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        assert!(err.as_cell_decode_error().is_some());
+        assert_eq!(err.query_id(), None);
+        assert_eq!(table.query_id(), "test");
+    }
+
+    #[tokio::test]
+    async fn explicit_table_flow_preserves_query_id_for_schema_errors() {
+        let table = build_result_set(dummy_snapshot(1), fake_source(vec![(0, vec![ok_rows(1)])]))
+            .collect_table()
+            .await
+            .unwrap();
+        assert_eq!(table.query_id(), "test");
+
+        let err = match table.rows::<PlanErrorRow>() {
+            Ok(_) => panic!("schema planning should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::MissingColumn(_))
+        ));
+        assert_eq!(err.query_id(), None);
+        assert_eq!(table.query_id(), "test");
     }
 
     #[tokio::test]

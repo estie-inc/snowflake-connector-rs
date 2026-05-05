@@ -5,7 +5,7 @@ use http::{HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
-use crate::{Error, Result, error::ProtocolError};
+use crate::error::ProtocolError;
 
 pub(crate) const SESSION_EXPIRED: &str = "390112";
 pub(crate) const QUERY_IN_PROGRESS_CODE: &str = "333333";
@@ -29,7 +29,7 @@ pub(crate) struct SnowflakeResponse {
 pub(crate) struct RawQueryResponse {
     #[allow(unused)]
     pub(crate) parameters: Option<Vec<RawQueryResponseParameter>>,
-    pub(crate) query_id: String,
+    pub(crate) query_id: Arc<str>,
     pub(crate) get_result_url: Option<String>,
     #[allow(unused)]
     pub(crate) returned: Option<i64>,
@@ -80,7 +80,7 @@ struct BorrowedRawQueryResponse<'a> {
 
 /// Parse a response body, keeping the rowset as a zero-copy `Bytes` slice
 /// of the input.
-pub(crate) fn parse_response(body: Bytes) -> Result<SnowflakeResponse> {
+pub(crate) fn parse_response(body: Bytes) -> std::result::Result<SnowflakeResponse, ProtocolError> {
     let borrowed: BorrowedSnowflakeResponse<'_> =
         serde_json::from_slice(strip_utf8_bom(body.as_ref()))
             .map_err(|e| ProtocolError::json_parse(e, &body))?;
@@ -92,10 +92,11 @@ pub(crate) fn parse_response(body: Bytes) -> Result<SnowflakeResponse> {
                 .row_set
                 .map(|row_set| row_set_bytes_from_raw_value(&body, row_set))
                 .transpose()?;
-            Ok::<RawQueryResponse, Error>(RawQueryResponse {
+            Ok::<RawQueryResponse, ProtocolError>(RawQueryResponse {
                 parameters: d.parameters,
                 query_id: d
                     .query_id
+                    .map(Arc::from)
                     .ok_or_else(|| ProtocolError::missing_field("data.queryId"))?,
                 get_result_url: d.get_result_url,
                 returned: d.returned,
@@ -118,7 +119,10 @@ pub(crate) fn parse_response(body: Bytes) -> Result<SnowflakeResponse> {
     })
 }
 
-fn row_set_bytes_from_raw_value(body: &Bytes, raw: &RawValue) -> Result<Bytes> {
+fn row_set_bytes_from_raw_value(
+    body: &Bytes,
+    raw: &RawValue,
+) -> std::result::Result<Bytes, ProtocolError> {
     let raw_bytes = raw.get().as_bytes();
     // `BorrowedRawQueryResponse<'_>` uses `#[serde(borrow)] &'a RawValue`, so
     // `raw_bytes` is expected to alias the original response buffer. We rely on
@@ -141,12 +145,11 @@ fn row_set_bytes_from_raw_value(body: &Bytes, raw: &RawValue) -> Result<Bytes> {
     Ok(body.slice(start..end))
 }
 
-fn json_scan_error(body: &Bytes, message: impl Into<String>) -> Error {
+fn json_scan_error(body: &Bytes, message: impl Into<String>) -> ProtocolError {
     ProtocolError::json_parse(
         serde_json::Error::io(io::Error::new(io::ErrorKind::InvalidData, message.into())),
         body,
     )
-    .into()
 }
 
 fn strip_utf8_bom(bytes: &[u8]) -> &[u8] {
@@ -197,7 +200,7 @@ pub(crate) struct RawQueryResponseChunk {
 pub(crate) fn resolve_download_headers(
     qrmk: &Option<String>,
     chunk_headers: &Option<HashMap<String, String>>,
-) -> Result<Arc<HeaderMap>> {
+) -> std::result::Result<Arc<HeaderMap>, ProtocolError> {
     // Branch on chunk_headers presence, not emptiness: if Snowflake
     // returns `chunkHeaders: {}` that empty map is used as-is, without
     // falling back to qrmk-derived SSE-C headers.
@@ -222,6 +225,7 @@ pub(crate) fn resolve_download_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Error, ErrorKind};
 
     #[test]
     fn test_deserialize_session_expired() {
@@ -293,10 +297,8 @@ mod tests {
         let body = Bytes::from(
             r#"{"message":"\uD83D","data":{"queryId":"q1","rowset":[["ok"]],"rowtype":[],"queryResultFormat":"json"},"success":true}"#,
         );
-        assert!(matches!(
-            parse_response(body),
-            Err(err) if err.kind() == crate::ErrorKind::Protocol
-        ));
+        let err: Error = parse_response(body).unwrap_err().into();
+        assert_eq!(err.kind(), ErrorKind::Protocol);
     }
 
     #[test]
@@ -312,8 +314,8 @@ mod tests {
     fn parse_response_missing_query_id_is_protocol_error() {
         let body = Bytes::from(r#"{"data":{"rowset":null},"success":true}"#);
 
-        let err = parse_response(body).unwrap_err();
-        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
+        let err: Error = parse_response(body).unwrap_err().into();
+        assert_eq!(err.kind(), ErrorKind::Protocol);
         assert_eq!(
             err.to_string(),
             "missing required field in Snowflake response: data.queryId"
@@ -375,13 +377,17 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("x-custom".to_string(), "bad\nvalue".to_string());
 
-        let err = resolve_download_headers(&None, &Some(map)).unwrap_err();
-        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
+        let err: Error = resolve_download_headers(&None, &Some(map))
+            .unwrap_err()
+            .into();
+        assert_eq!(err.kind(), ErrorKind::Protocol);
     }
 
     #[test]
     fn resolve_headers_invalid_qrmk_is_protocol_error() {
-        let err = resolve_download_headers(&Some("bad\nvalue".into()), &None).unwrap_err();
-        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
+        let err: Error = resolve_download_headers(&Some("bad\nvalue".into()), &None)
+            .unwrap_err()
+            .into();
+        assert_eq!(err.kind(), ErrorKind::Protocol);
     }
 }

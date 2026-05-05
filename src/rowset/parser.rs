@@ -13,11 +13,12 @@ use bytes::Bytes;
 use super::{
     ParseWorkload, decode_gzip_chunk,
     json_string::{self, JsonStringFragment, JsonStringScanError},
-    workload::execute_parse_work,
+    workload::{ParseWorkError, execute_parse_work},
 };
 use crate::{
-    Error, Result,
-    error::RowsetParseError,
+    error::{
+        InternalError, QueryScopedError, QueryScopedRepr, QueryScopedResult, RowsetParseError,
+    },
     result::{RawSpan, ResultTable, ResultTableBuilder, Schema},
     runtime::BlockingParseLimiter,
 };
@@ -28,13 +29,15 @@ enum RowsetShape {
     ChunkFragmentSequence,
 }
 
+type ParseResult<T> = std::result::Result<T, RowsetParseError>;
+
 fn parse_table_with_shape(
     schema: Arc<Schema>,
     query_id: Arc<str>,
     body: Bytes,
     shape: RowsetShape,
     row_count_hint: Option<usize>,
-) -> Result<ResultTable> {
+) -> ParseResult<ResultTable> {
     let mut builder =
         ResultTableBuilder::new(schema, query_id, Some(body.clone()), row_count_hint)?;
     let mut scanner = JsonScanner::new(&body);
@@ -97,11 +100,9 @@ fn parse_table_with_shape(
     builder.finish()
 }
 
-fn checked_row_count_hint(row_count: Option<u64>) -> Result<Option<usize>> {
+fn checked_row_count_hint(row_count: Option<u64>) -> ParseResult<Option<usize>> {
     row_count
-        .map(|rows| {
-            usize::try_from(rows).map_err(|_| Error::from(RowsetParseError::CapacityOverflow))
-        })
+        .map(|rows| usize::try_from(rows).map_err(|_| RowsetParseError::CapacityOverflow))
         .transpose()
 }
 
@@ -109,7 +110,7 @@ fn checked_row_count_hint(row_count: Option<u64>) -> Result<Option<usize>> {
 ///
 /// This treats JSON-insignificant whitespace around `[` / `]` as equivalent,
 /// so `[ ]` and `[]` are both empty arrays.
-pub(crate) fn inline_rowset_has_rows(body: &[u8]) -> Result<bool> {
+pub(crate) fn inline_rowset_has_rows_inner(body: &[u8]) -> ParseResult<bool> {
     let mut scanner = JsonScanner::new(body);
     scanner.skip_ws();
     scanner.expect(b'[')?;
@@ -132,11 +133,11 @@ pub(crate) fn inline_rowset_has_rows(body: &[u8]) -> Result<bool> {
 }
 
 #[cfg(any(test, feature = "bench-internals"))]
-pub fn inline_rows_to_result_table(
+pub(crate) fn inline_rows_to_result_table_inner(
     schema: Arc<Schema>,
     query_id: Arc<str>,
     rows: Vec<Vec<Option<String>>>,
-) -> Result<ResultTable> {
+) -> ParseResult<ResultTable> {
     let mut builder = ResultTableBuilder::new(schema, query_id, None, Some(rows.len()))?;
     for row in rows {
         for cell in row {
@@ -187,7 +188,7 @@ impl<'a> JsonScanner<'a> {
         self.offset >= self.bytes.len()
     }
 
-    fn expect(&mut self, b: u8) -> Result<()> {
+    fn expect(&mut self, b: u8) -> ParseResult<()> {
         match self.peek() {
             Some(c) if c == b => {
                 self.advance();
@@ -197,24 +198,22 @@ impl<'a> JsonScanner<'a> {
         }
     }
 
-    fn err_unexpected(&self, expected: &'static str) -> Error {
+    fn err_unexpected(&self, expected: &'static str) -> RowsetParseError {
         RowsetParseError::UnexpectedToken {
             offset: self.offset,
             expected,
         }
-        .into()
     }
 
-    fn err_string(&self, reason: impl Into<Box<str>>) -> Error {
+    fn err_string(&self, reason: impl Into<Box<str>>) -> RowsetParseError {
         RowsetParseError::InvalidString {
             offset: self.offset,
             reason: reason.into(),
         }
-        .into()
     }
 
     /// Parse a row: `[` cell (`,` cell)* `]`.
-    fn parse_row(&mut self, builder: &mut ResultTableBuilder) -> Result<()> {
+    fn parse_row(&mut self, builder: &mut ResultTableBuilder) -> ParseResult<()> {
         self.expect(b'[')?;
         self.skip_ws();
         if self.peek() == Some(b']') {
@@ -243,7 +242,7 @@ impl<'a> JsonScanner<'a> {
 
     /// Parse a single JSON value as a cell. Snowflake's driver-API rowset
     /// emits each cell as either `null` or a JSON string.
-    fn parse_cell(&mut self, builder: &mut ResultTableBuilder) -> Result<()> {
+    fn parse_cell(&mut self, builder: &mut ResultTableBuilder) -> ParseResult<()> {
         match self.peek() {
             Some(b'n') => {
                 self.expect_keyword(b"null")?;
@@ -255,7 +254,7 @@ impl<'a> JsonScanner<'a> {
         }
     }
 
-    fn expect_keyword(&mut self, kw: &[u8]) -> Result<()> {
+    fn expect_keyword(&mut self, kw: &[u8]) -> ParseResult<()> {
         let start = self.offset;
         if self.bytes.len() - self.offset < kw.len() {
             return Err(self.err_unexpected(keyword_label(kw)));
@@ -269,7 +268,7 @@ impl<'a> JsonScanner<'a> {
 
     /// Parse a JSON string. Records a `RawSpan` if no escapes; otherwise
     /// unescapes once into the builder's arena.
-    fn parse_string_into_cell(&mut self, builder: &mut ResultTableBuilder) -> Result<()> {
+    fn parse_string_into_cell(&mut self, builder: &mut ResultTableBuilder) -> ParseResult<()> {
         debug_assert_eq!(self.peek(), Some(b'"'));
         self.advance(); // consume "
         let content_start = self.offset;
@@ -291,8 +290,7 @@ impl<'a> JsonScanner<'a> {
                             limit: u32::MAX as u64,
                             actual: (content_start + len) as u64,
                             scope: "wire span",
-                        }
-                        .into());
+                        });
                     }
                     builder.push_raw_text(RawSpan {
                         start: content_start as u32,
@@ -322,7 +320,7 @@ impl<'a> JsonScanner<'a> {
         prefix_start: usize,
         prefix_has_non_ascii: bool,
         builder: &mut ResultTableBuilder,
-    ) -> Result<()> {
+    ) -> ParseResult<()> {
         let prefix = &self.bytes[prefix_start..self.offset];
         if prefix_has_non_ascii {
             validate_utf8(prefix, prefix_start)?;
@@ -334,24 +332,28 @@ impl<'a> JsonScanner<'a> {
         let mut local_offset = self.offset;
         let result = builder.push_decoded_with(|buf: &mut Vec<u8>| {
             buf.extend_from_slice(prefix);
-            json_string::scan_json_string_body(bytes, &mut local_offset, |fragment| -> Result<()> {
-                match fragment {
-                    JsonStringFragment::Raw {
-                        bytes,
-                        start_offset,
-                    } => {
-                        if !bytes.is_ascii() {
-                            validate_utf8(bytes, start_offset)?;
+            json_string::scan_json_string_body(
+                bytes,
+                &mut local_offset,
+                |fragment| -> ParseResult<()> {
+                    match fragment {
+                        JsonStringFragment::Raw {
+                            bytes,
+                            start_offset,
+                        } => {
+                            if !bytes.is_ascii() {
+                                validate_utf8(bytes, start_offset)?;
+                            }
+                            buf.extend_from_slice(bytes);
                         }
-                        buf.extend_from_slice(bytes);
+                        JsonStringFragment::DecodedByte(byte) => buf.push(byte),
+                        JsonStringFragment::Codepoint(codepoint) => {
+                            json_string::push_utf8(buf, codepoint);
+                        }
                     }
-                    JsonStringFragment::DecodedByte(byte) => buf.push(byte),
-                    JsonStringFragment::Codepoint(codepoint) => {
-                        json_string::push_utf8(buf, codepoint);
-                    }
-                }
-                Ok(())
-            })
+                    Ok(())
+                },
+            )
             .map_err(map_json_string_scan_error)
         });
         self.offset = local_offset;
@@ -367,46 +369,36 @@ fn utf8_bom_prefix_len(bytes: &[u8]) -> usize {
     }
 }
 
-fn map_json_string_scan_error(err: JsonStringScanError<Error>) -> Error {
+fn map_json_string_scan_error(err: JsonStringScanError<RowsetParseError>) -> RowsetParseError {
     match err {
-        JsonStringScanError::UnterminatedString { offset } => {
-            Error::from(RowsetParseError::InvalidString {
-                offset,
-                reason: Box::from("unterminated string"),
-            })
-        }
-        JsonStringScanError::TrailingBackslash { offset } => {
-            Error::from(RowsetParseError::InvalidString {
-                offset,
-                reason: Box::from("trailing backslash"),
-            })
-        }
-        JsonStringScanError::UnknownEscape { offset, escape } => {
-            Error::from(RowsetParseError::InvalidString {
-                offset,
-                reason: format!("unknown escape: \\{}", escape as char).into_boxed_str(),
-            })
-        }
-        JsonStringScanError::ControlCharacter { offset } => {
-            Error::from(RowsetParseError::InvalidString {
-                offset,
-                reason: Box::from("control character in string"),
-            })
-        }
+        JsonStringScanError::UnterminatedString { offset } => RowsetParseError::InvalidString {
+            offset,
+            reason: Box::from("unterminated string"),
+        },
+        JsonStringScanError::TrailingBackslash { offset } => RowsetParseError::InvalidString {
+            offset,
+            reason: Box::from("trailing backslash"),
+        },
+        JsonStringScanError::UnknownEscape { offset, escape } => RowsetParseError::InvalidString {
+            offset,
+            reason: format!("unknown escape: \\{}", escape as char).into_boxed_str(),
+        },
+        JsonStringScanError::ControlCharacter { offset } => RowsetParseError::InvalidString {
+            offset,
+            reason: Box::from("control character in string"),
+        },
         JsonStringScanError::InvalidUnicodeEscape { offset }
         | JsonStringScanError::InvalidUnicodeSurrogatePair { offset } => {
-            Error::from(RowsetParseError::InvalidUnicodeEscape { offset })
+            RowsetParseError::InvalidUnicodeEscape { offset }
         }
         JsonStringScanError::Visitor(err) => err,
     }
 }
 
-fn validate_utf8(bytes: &[u8], start_offset: usize) -> Result<()> {
-    std::str::from_utf8(bytes).map_err(|err| {
-        Error::from(RowsetParseError::InvalidString {
-            offset: start_offset + err.valid_up_to(),
-            reason: Box::from("invalid UTF-8 in string"),
-        })
+fn validate_utf8(bytes: &[u8], start_offset: usize) -> ParseResult<()> {
+    std::str::from_utf8(bytes).map_err(|err| RowsetParseError::InvalidString {
+        offset: start_offset + err.valid_up_to(),
+        reason: Box::from("invalid UTF-8 in string"),
     })?;
     Ok(())
 }
@@ -433,36 +425,56 @@ fn keyword_label(kw: &[u8]) -> &'static str {
     }
 }
 
-/// Parse the inline rowset bytes (already extracted from `data.rowset`)
-/// using the span scanner. Bytes must be a `[..]` array.
 #[cfg(any(test, feature = "bench-internals"))]
 pub(crate) fn parse_inline_result_table(
     schema: Arc<Schema>,
     query_id: Arc<str>,
     body: Bytes,
-) -> Result<ResultTable> {
+) -> crate::Result<ResultTable> {
     parse_table_with_shape(schema, query_id, body, RowsetShape::InlineArray, None)
+        .map_err(crate::Error::from)
 }
 
+/// Parse the inline rowset bytes (already extracted from `data.rowset`)
+/// using the span scanner. Bytes must be a `[..]` array.
 pub(crate) async fn parse_inline_result_table_async(
     schema: Arc<Schema>,
     query_id: Arc<str>,
     body: Bytes,
     row_count: Option<u64>,
     blocking_parse_limiter: Option<BlockingParseLimiter>,
-) -> Result<ResultTable> {
+) -> QueryScopedResult<ResultTable> {
     let workload = ParseWorkload::inline_rowset(body.len(), row_count, schema.len());
-    let row_count_hint = checked_row_count_hint(row_count)?;
-    let (_, table) = execute_parse_work(workload, blocking_parse_limiter, move || {
+    let row_count_hint = match checked_row_count_hint(row_count) {
+        Ok(hint) => hint,
+        Err(err) => {
+            return Err(QueryScopedError::new(query_id, err));
+        }
+    };
+    let query_id_for_work = Arc::clone(&query_id);
+
+    let parse_work_result = execute_parse_work(workload, blocking_parse_limiter, move || {
         parse_table_with_shape(
             schema,
-            query_id,
+            query_id_for_work,
             body,
             RowsetShape::InlineArray,
             row_count_hint,
         )
     })
-    .await?;
+    .await;
+
+    let table = match parse_work_result {
+        Ok((_, table)) => table,
+        Err(ParseWorkError::Join(error)) => {
+            return Err(QueryScopedError::new(
+                query_id,
+                InternalError::future_join(error),
+            ));
+        }
+        Err(ParseWorkError::Work(error)) => return Err(QueryScopedError::new(query_id, error)),
+    };
+
     Ok(table)
 }
 
@@ -471,7 +483,7 @@ pub(crate) fn parse_remote_chunk_result_table(
     schema: Arc<Schema>,
     query_id: Arc<str>,
     body: Bytes,
-) -> Result<ResultTable> {
+) -> crate::Result<ResultTable> {
     parse_table_with_shape(
         schema,
         query_id,
@@ -479,6 +491,7 @@ pub(crate) fn parse_remote_chunk_result_table(
         RowsetShape::ChunkFragmentSequence,
         None,
     )
+    .map_err(crate::Error::from)
 }
 
 pub(crate) async fn parse_remote_chunk_result_table_async(
@@ -487,19 +500,39 @@ pub(crate) async fn parse_remote_chunk_result_table_async(
     body: Bytes,
     workload: ParseWorkload,
     blocking_parse_limiter: Option<BlockingParseLimiter>,
-) -> Result<ResultTable> {
-    let row_count_hint = checked_row_count_hint(workload.row_count)?;
-    let (_, table) = execute_parse_work(workload, blocking_parse_limiter, move || {
-        let bytes = decode_gzip_chunk(body)?;
+) -> QueryScopedResult<ResultTable> {
+    let row_count_hint = match checked_row_count_hint(workload.row_count) {
+        Ok(hint) => hint,
+        Err(err) => {
+            return Err(QueryScopedError::new(query_id, err));
+        }
+    };
+    let query_id_for_work = Arc::clone(&query_id);
+
+    let parse_work_result = execute_parse_work(workload, blocking_parse_limiter, move || {
+        let bytes = decode_gzip_chunk(body).map_err(QueryScopedRepr::from)?;
         parse_table_with_shape(
             schema,
-            query_id,
+            query_id_for_work,
             bytes,
             RowsetShape::ChunkFragmentSequence,
             row_count_hint,
         )
+        .map_err(QueryScopedRepr::from)
     })
-    .await?;
+    .await;
+
+    let table = match parse_work_result {
+        Ok((_, table)) => table,
+        Err(ParseWorkError::Join(error)) => {
+            return Err(QueryScopedError::new(
+                query_id,
+                InternalError::future_join(error),
+            ));
+        }
+        Err(ParseWorkError::Work(error)) => return Err(QueryScopedError::new(query_id, error)),
+    };
+
     Ok(table)
 }
 
@@ -523,6 +556,10 @@ mod tests {
             ParseExecution, should_spawn_blocking_parse,
         },
     };
+
+    fn inline_rowset_has_rows(body: &[u8]) -> crate::Result<bool> {
+        inline_rowset_has_rows_inner(body).map_err(crate::Error::from)
+    }
 
     fn schema(n: usize) -> Arc<Schema> {
         let cols = (0..n)
@@ -576,7 +613,7 @@ mod tests {
         let rs = t
             .rows::<(String, Option<String>)>()
             .unwrap()
-            .collect::<Result<Vec<_>>>()
+            .collect::<crate::Result<Vec<_>>>()
             .unwrap();
         let r0 = &rs[0];
         let r1 = &rs[1];
@@ -739,14 +776,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_inline_rowset_alias() {
-        let body = Bytes::from(r#"[["x"]]"#);
-        let s = schema(1);
-        let t = parse_inline_result_table(s, qid(), body).unwrap();
-        assert_eq!(t.row_count(), 1);
-    }
-
-    #[test]
     fn parse_remote_chunk_fragment_table_allows_leading_utf8_bom() {
         let body = Bytes::from_static(b"\xEF\xBB\xBF[\"a\"],[\"b\"]");
         let s = schema(1);
@@ -806,7 +835,7 @@ mod tests {
 
     fn assert_invalid_cell_token_rejected<F>(parse: F, body: String)
     where
-        F: Fn(Bytes) -> Result<ResultTable>,
+        F: Fn(Bytes) -> crate::Result<ResultTable>,
     {
         let err = parse(Bytes::from(body)).unwrap_err();
         assert!(matches!(
@@ -908,7 +937,7 @@ mod tests {
     #[tokio::test]
     async fn execute_parse_work_small_input_stays_inline() {
         let workload = ParseWorkload::inline_rowset(1024, None, 2);
-        let (path, value) = execute_parse_work(workload, None, || Ok::<_, Error>(7usize))
+        let (path, value) = execute_parse_work(workload, None, || Ok::<_, crate::Error>(7usize))
             .await
             .unwrap();
         assert_eq!(path, ParseExecution::Inline);
@@ -918,7 +947,7 @@ mod tests {
     #[tokio::test]
     async fn execute_parse_work_large_input_uses_spawn_blocking() {
         let workload = ParseWorkload::inline_rowset(BLOCKING_PARSE_BYTES, None, 2);
-        let (path, value) = execute_parse_work(workload, None, || Ok::<_, Error>(11usize))
+        let (path, value) = execute_parse_work(workload, None, || Ok::<_, crate::Error>(11usize))
             .await
             .unwrap();
         assert_eq!(path, ParseExecution::SpawnBlocking);
@@ -936,7 +965,7 @@ mod tests {
             first_probe.enter();
             std::thread::sleep(Duration::from_millis(50));
             first_probe.exit();
-            Ok::<_, Error>(())
+            Ok::<_, crate::Error>(())
         });
 
         let second_probe = Arc::clone(&probe);
@@ -944,7 +973,7 @@ mod tests {
             second_probe.enter();
             std::thread::sleep(Duration::from_millis(50));
             second_probe.exit();
-            Ok::<_, Error>(())
+            Ok::<_, crate::Error>(())
         });
 
         tokio::try_join!(first, second).unwrap();
@@ -954,11 +983,11 @@ mod tests {
     #[tokio::test]
     async fn execute_parse_work_maps_join_error() {
         let workload = ParseWorkload::inline_rowset(BLOCKING_PARSE_BYTES, None, 2);
-        let err = execute_parse_work(workload, None, || -> Result<()> {
+        let err = execute_parse_work(workload, None, || -> crate::Result<()> {
             panic!("boom");
         })
         .await
         .unwrap_err();
-        assert_eq!(err.kind(), crate::ErrorKind::Internal);
+        assert!(matches!(err, ParseWorkError::Join(_)));
     }
 }

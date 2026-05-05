@@ -15,7 +15,9 @@ mod payload;
 use crate::{
     Result,
     auth::client::AUTH_REQUEST_TIMEOUT,
-    error::{AuthError, ConfigError, NetworkError, ProtocolError, TimeoutError},
+    error::{
+        AuthError, ConfigError, NetworkError, ProtocolError, TimeoutError, classify_request_error,
+    },
 };
 
 use launcher::{BrowserLauncher, LaunchOutcome, SystemCommandRunner};
@@ -158,9 +160,9 @@ async fn request_external_browser_challenge(
         .json(&body)
         .send()
         .await
-        .map_err(NetworkError::request)?;
+        .map_err(classify_request_error)?;
     let status = resp.status();
-    let text = resp.text().await.map_err(NetworkError::request)?;
+    let text = resp.text().await.map_err(classify_request_error)?;
     if !status.is_success() {
         return Err(NetworkError::http_status(status.as_u16(), text.as_bytes()).into());
     }

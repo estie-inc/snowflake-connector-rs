@@ -1,4 +1,6 @@
-use crate::{Result, error::InternalError, runtime::BlockingParseLimiter};
+use tokio::task::JoinError;
+
+use crate::runtime::BlockingParseLimiter;
 
 // These thresholds intentionally allow modest inline parsing so callers avoid
 // paying `spawn_blocking` overhead for medium-sized rowsets, while still
@@ -73,14 +75,21 @@ pub(crate) enum ParseExecution {
     SpawnBlocking,
 }
 
-pub(crate) async fn execute_parse_work<T, F>(
+#[derive(Debug)]
+pub(crate) enum ParseWorkError<E> {
+    Join(JoinError),
+    Work(E),
+}
+
+pub(crate) async fn execute_parse_work<T, E, F>(
     workload: ParseWorkload,
     blocking_parse_limiter: Option<BlockingParseLimiter>,
     work: F,
-) -> Result<(ParseExecution, T)>
+) -> std::result::Result<(ParseExecution, T), ParseWorkError<E>>
 where
     T: Send + 'static,
-    F: FnOnce() -> Result<T> + Send + 'static,
+    E: Send + 'static,
+    F: FnOnce() -> std::result::Result<T, E> + Send + 'static,
 {
     if should_spawn_blocking_parse(&workload) {
         let permit = match blocking_parse_limiter {
@@ -93,10 +102,16 @@ where
             work()
         })
         .await
-        .map_err(InternalError::future_join)?;
+        .map_err(ParseWorkError::Join)?;
 
-        Ok((ParseExecution::SpawnBlocking, result?))
+        Ok((
+            ParseExecution::SpawnBlocking,
+            result.map_err(ParseWorkError::Work)?,
+        ))
     } else {
-        Ok((ParseExecution::Inline, work()?))
+        Ok((
+            ParseExecution::Inline,
+            work().map_err(ParseWorkError::Work)?,
+        ))
     }
 }
