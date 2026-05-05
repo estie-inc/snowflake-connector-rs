@@ -1,8 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::{
-    AmbiguousColumnError, MissingColumnError, Result, SchemaError, error::RowsetParseError,
-};
+use crate::{AmbiguousColumnError, MissingColumnError, SchemaError, error::RowsetParseError};
 
 /// Index into a result-set column list.
 #[repr(transparent)]
@@ -216,9 +214,11 @@ pub struct Schema {
 }
 
 impl Schema {
-    pub(crate) fn from_columns(columns: Vec<Column>) -> Result<Self> {
+    pub(crate) fn from_columns(
+        columns: Vec<Column>,
+    ) -> std::result::Result<Self, RowsetParseError> {
         if columns.len() > u32::MAX as usize {
-            return Err(RowsetParseError::CapacityOverflow.into());
+            return Err(RowsetParseError::CapacityOverflow);
         }
 
         let indices = ColumnIndexMap::build(&columns);

@@ -1,16 +1,18 @@
 mod decode;
 mod display;
 mod parse;
+mod query_scoped;
 mod repr;
 mod schema;
 
-use std::{error::Error as StdError, fmt};
+use std::{error::Error as StdError, fmt, sync::Arc};
 
 use reqwest::header::InvalidHeaderValue;
 use tokio::task::JoinError;
 
 pub use decode::CellDecodeError;
 pub(crate) use parse::RowsetParseError;
+pub(crate) use query_scoped::{QueryScopedError, QueryScopedRepr, QueryScopedResult};
 use repr::Repr;
 pub(crate) use repr::{
     AuthError, ConfigError, InternalError, NetworkError, ProtocolError, ServerError,
@@ -105,12 +107,12 @@ impl Error {
         match &*self.repr {
             Repr::Config(_) => ErrorKind::Config,
             Repr::Auth(_) => ErrorKind::Auth,
-            Repr::Network(_) => ErrorKind::Network,
+            Repr::Network { .. } => ErrorKind::Network,
             Repr::Server(_) => ErrorKind::Server,
             Repr::SessionExpired(_) => ErrorKind::SessionExpired,
-            Repr::Timeout(_) => ErrorKind::Timeout,
-            Repr::Protocol(_) => ErrorKind::Protocol,
-            Repr::Internal(_) => ErrorKind::Internal,
+            Repr::Timeout { .. } => ErrorKind::Timeout,
+            Repr::Protocol { .. } => ErrorKind::Protocol,
+            Repr::Internal { .. } => ErrorKind::Internal,
             Repr::Other(_) => ErrorKind::Other,
             Repr::Schema(_) | Repr::CellDecode(_) => ErrorKind::Decode,
         }
@@ -135,10 +137,24 @@ impl Error {
         }
     }
 
-    /// Returns the related Snowflake query ID when one is available.
+    /// Returns the related Snowflake query ID when the connector could extract
+    /// one from the failure path.
+    ///
+    /// `None` does not mean "Snowflake did not assign a query ID". The
+    /// accessor may return `None` when, for example, response parsing failed
+    /// before the query ID could be extracted, or when another access path
+    /// (a live `ResultSet` / `ResultTable` receiver) was available to the caller.
+    ///
+    /// If an API that reliably exposes the query ID is available (e.g.
+    /// `ResultSet::query_id`), prefer that. Use this accessor as a best-effort fallback.
     pub fn query_id(&self) -> Option<&str> {
         match &*self.repr {
+            Repr::Network { query_id, .. }
+            | Repr::Timeout { query_id, .. }
+            | Repr::Protocol { query_id, .. }
+            | Repr::Internal { query_id, .. } => query_id.as_deref(),
             Repr::Server(ServerError { query_id, .. }) => query_id.as_deref(),
+            Repr::SessionExpired(SessionExpiredError { query_id, .. }) => query_id.as_deref(),
             _ => None,
         }
     }
@@ -148,7 +164,7 @@ impl Error {
     }
 
     pub fn is_timeout(&self) -> bool {
-        matches!(&*self.repr, Repr::Timeout(_))
+        matches!(&*self.repr, Repr::Timeout { .. })
     }
 
     pub fn is_server_error(&self) -> bool {
@@ -172,17 +188,24 @@ impl Error {
     #[cfg(test)]
     pub(crate) fn as_rowset_parse_error(&self) -> Option<&RowsetParseError> {
         match &*self.repr {
-            Repr::Protocol(ProtocolError::RowsetParse(error)) => Some(error),
+            Repr::Protocol {
+                error: ProtocolError::RowsetParse(error),
+                ..
+            } => Some(error),
             _ => None,
         }
     }
 
-    pub(crate) fn session_expired(code: Option<String>, message: Option<String>) -> Self {
-        SessionExpiredError::new(code, message).into()
-    }
-
     pub fn other(message: impl Into<String>) -> Self {
         Self::new(Repr::Other(message.into().into_boxed_str()))
+    }
+}
+
+pub(crate) fn classify_request_error(source: reqwest::Error) -> Error {
+    if source.is_timeout() {
+        TimeoutError::request(source).into()
+    } else {
+        NetworkError::request(source).into()
     }
 }
 
@@ -200,7 +223,10 @@ impl From<AuthError> for Error {
 
 impl From<NetworkError> for Error {
     fn from(error: NetworkError) -> Self {
-        Self::new(Repr::Network(error))
+        Self::new(Repr::Network {
+            error,
+            query_id: None,
+        })
     }
 }
 
@@ -218,19 +244,28 @@ impl From<SessionExpiredError> for Error {
 
 impl From<TimeoutError> for Error {
     fn from(error: TimeoutError) -> Self {
-        Self::new(Repr::Timeout(error))
+        Self::new(Repr::Timeout {
+            error,
+            query_id: None,
+        })
     }
 }
 
 impl From<ProtocolError> for Error {
     fn from(error: ProtocolError) -> Self {
-        Self::new(Repr::Protocol(error))
+        Self::new(Repr::Protocol {
+            error,
+            query_id: None,
+        })
     }
 }
 
 impl From<InternalError> for Error {
     fn from(error: InternalError) -> Self {
-        Self::new(Repr::Internal(error))
+        Self::new(Repr::Internal {
+            error,
+            query_id: None,
+        })
     }
 }
 
@@ -302,16 +337,12 @@ impl AuthError {
 }
 
 impl NetworkError {
-    pub(crate) fn request(source: reqwest::Error) -> Error {
-        if source.is_timeout() {
-            TimeoutError::request(source).into()
-        } else {
-            Self::Http(source).into()
-        }
-    }
-
-    pub(crate) fn io(source: std::io::Error) -> Self {
-        Self::Io(source)
+    pub(crate) fn request(source: reqwest::Error) -> Self {
+        debug_assert!(
+            !source.is_timeout(),
+            "timeouts should be converted to TimeoutError before NetworkError",
+        );
+        Self::Http(source)
     }
 
     pub(crate) fn http_status(status: u16, body: impl AsRef<[u8]>) -> Self {
@@ -333,27 +364,36 @@ impl ServerError {
     pub(crate) fn new(
         code: Option<String>,
         message: Option<String>,
-        query_id: Option<String>,
+        query_id: Option<Arc<str>>,
     ) -> Self {
         Self {
             code: code.map(String::into_boxed_str),
             message: message.map(String::into_boxed_str),
-            query_id: query_id.map(String::into_boxed_str),
+            query_id,
         }
     }
 }
 
 impl SessionExpiredError {
-    pub(crate) fn new(code: Option<String>, message: Option<String>) -> Self {
+    pub(crate) fn new(
+        code: Option<String>,
+        message: Option<String>,
+        query_id: Option<Arc<str>>,
+    ) -> Self {
         Self {
             code: code.map(String::into_boxed_str),
             message: message.map(String::into_boxed_str),
+            query_id,
         }
     }
 }
 
 impl TimeoutError {
     pub(crate) fn request(source: reqwest::Error) -> Self {
+        debug_assert!(
+            source.is_timeout(),
+            "only timeout errors should be converted to TimeoutError::Request"
+        );
         Self::Request(source)
     }
 
@@ -494,7 +534,7 @@ mod tests {
         let err: Error = ServerError::new(
             Some("12345".to_string()),
             Some("statement failed".to_string()),
-            Some("query-id".to_string()),
+            Some(Arc::from("query-id")),
         )
         .into();
 
@@ -522,10 +562,12 @@ mod tests {
 
     #[test]
     fn session_expired_preserves_snowflake_fields() {
-        let err = Error::session_expired(
+        let err: Error = SessionExpiredError::new(
             Some("390112".to_string()),
             Some("Your session has expired. Please login again.".to_string()),
-        );
+            None,
+        )
+        .into();
 
         assert_eq!(err.kind(), ErrorKind::SessionExpired);
         assert!(err.is_session_expired());
@@ -534,7 +576,46 @@ mod tests {
             err.snowflake_message(),
             Some("Your session has expired. Please login again.")
         );
+        assert_eq!(err.query_id(), None);
         assert_eq!(err.to_string(), "session expired");
+    }
+
+    #[test]
+    fn query_scoped_error_decorates_contextual_variants() {
+        let err = Error::from(QueryScopedError::new(
+            std::sync::Arc::from("query-id"),
+            NetworkError::chunk_download(500, "boom"),
+        ));
+        assert_eq!(err.kind(), ErrorKind::Network);
+        assert_eq!(err.query_id(), Some("query-id"));
+    }
+
+    #[test]
+    fn query_scoped_error_keeps_intrinsic_server_query_id() {
+        let err = Error::from(QueryScopedError::new(
+            std::sync::Arc::from("outer-query-id"),
+            ServerError::new(
+                Some("390001".to_string()),
+                Some("server boom".to_string()),
+                Some(Arc::from("intrinsic-query-id")),
+            ),
+        ));
+
+        assert_eq!(err.kind(), ErrorKind::Server);
+        assert_eq!(err.query_id(), Some("intrinsic-query-id"));
+    }
+
+    #[test]
+    fn session_expired_query_id_is_exposed_when_present() {
+        let err: Error = SessionExpiredError::new(
+            Some("390112".to_string()),
+            Some("Your session has expired. Please login again.".to_string()),
+            Some(Arc::from("query-id")),
+        )
+        .into();
+
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert_eq!(err.query_id(), Some("query-id"));
     }
 
     #[test]
@@ -645,18 +726,6 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_errors_choose_source_over_display_duplication() {
-        let io_err = std::io::Error::other("boom");
-        let err: Error = NetworkError::io(io_err).into();
-
-        assert_eq!(err.to_string(), "io error");
-        assert_eq!(
-            StdError::source(&err).map(std::string::ToString::to_string),
-            Some("boom".to_string())
-        );
-    }
-
-    #[test]
     fn schema_decode_and_parse_errors_do_not_repeat_as_sources() {
         let schema_error: Error = SchemaError::MissingColumn(MissingColumnError::new("col")).into();
         assert!(StdError::source(&schema_error).is_none());
@@ -708,17 +777,6 @@ mod tests {
         assert!(err.as_rowset_parse_error().is_some());
     }
 
-    #[test]
-    fn debug_output_is_normalized() {
-        let err: Error = NetworkError::io(std::io::Error::other("boom")).into();
-        let rendered = format!("{err:?}");
-
-        assert!(rendered.contains("Error { kind: Network"));
-        assert!(rendered.contains("message: \"io error\""));
-        assert!(rendered.contains("source: Some(\"boom\")"));
-        assert!(!rendered.contains("repr"));
-    }
-
     #[tokio::test]
     async fn future_join_uses_internal_kind() {
         let handle = tokio::spawn(std::future::pending::<()>());
@@ -729,7 +787,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn network_request_timeout_uses_timeout_kind() {
+    async fn classify_request_error_uses_timeout_kind() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -749,7 +807,7 @@ mod tests {
 
         assert!(err.is_timeout());
 
-        let err = NetworkError::request(err);
+        let err = classify_request_error(err);
         assert_eq!(err.kind(), ErrorKind::Timeout);
         assert!(err.is_timeout());
         assert!(StdError::source(&err).is_some());

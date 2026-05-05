@@ -1,4 +1,4 @@
-use std::error::Error as StdError;
+use std::{error::Error as StdError, sync::Arc};
 
 use reqwest::header::InvalidHeaderValue;
 use tokio::task::JoinError;
@@ -9,12 +9,24 @@ use super::{CellDecodeError, RowsetParseError, SchemaError};
 pub(crate) enum Repr {
     Config(ConfigError),
     Auth(AuthError),
-    Network(NetworkError),
+    Network {
+        error: NetworkError,
+        query_id: Option<Arc<str>>,
+    },
     Server(ServerError),
     SessionExpired(SessionExpiredError),
-    Timeout(TimeoutError),
-    Protocol(ProtocolError),
-    Internal(InternalError),
+    Timeout {
+        error: TimeoutError,
+        query_id: Option<Arc<str>>,
+    },
+    Protocol {
+        error: ProtocolError,
+        query_id: Option<Arc<str>>,
+    },
+    Internal {
+        error: InternalError,
+        query_id: Option<Arc<str>>,
+    },
     Other(Box<str>),
     Schema(SchemaError),
     CellDecode(CellDecodeError),
@@ -44,7 +56,6 @@ pub(crate) enum AuthError {
 #[derive(Debug)]
 pub(crate) enum NetworkError {
     Http(reqwest::Error),
-    Io(std::io::Error),
     HttpStatus { status: u16, body: Box<str> },
     ChunkDownload { status: u16, body: Box<str> },
 }
@@ -53,13 +64,14 @@ pub(crate) enum NetworkError {
 pub(crate) struct ServerError {
     pub(crate) code: Option<Box<str>>,
     pub(crate) message: Option<Box<str>>,
-    pub(crate) query_id: Option<Box<str>>,
+    pub(crate) query_id: Option<Arc<str>>,
 }
 
 #[derive(Debug)]
 pub(crate) struct SessionExpiredError {
     pub(crate) code: Option<Box<str>>,
     pub(crate) message: Option<Box<str>>,
+    pub(crate) query_id: Option<Arc<str>>,
 }
 
 #[derive(Debug)]

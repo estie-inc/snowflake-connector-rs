@@ -2,7 +2,11 @@ use std::{collections::BTreeMap, num::NonZeroUsize, sync::Arc};
 
 use tokio::task::JoinSet;
 
-use crate::{Result, error::InternalError, result::ResultTable, runtime::BlockingParseLimiter};
+use crate::{
+    error::{InternalError, QueryScopedError, QueryScopedResult},
+    result::ResultTable,
+    runtime::BlockingParseLimiter,
+};
 
 use super::{
     partition_source::{PartitionSource, remote_fetch_context},
@@ -23,17 +27,24 @@ impl CollectPolicy {
 }
 
 pub(crate) struct CollectWindow {
+    query_id: Arc<str>,
     next_spawn_ordinal: usize,
     next_commit_ordinal: usize,
     total: usize,
     max_in_flight: usize,
-    tasks: JoinSet<(usize, Result<ResultTable>)>,
+    tasks: JoinSet<(usize, QueryScopedResult<ResultTable>)>,
     buffered: BTreeMap<usize, ResultTable>,
 }
 
 impl CollectWindow {
-    pub(crate) fn new(start_ordinal: usize, total: usize, max_in_flight: usize) -> Self {
+    pub(crate) fn new(
+        query_id: Arc<str>,
+        start_ordinal: usize,
+        total: usize,
+        max_in_flight: usize,
+    ) -> Self {
         Self {
+            query_id,
             next_spawn_ordinal: start_ordinal,
             next_commit_ordinal: start_ordinal,
             total,
@@ -66,11 +77,14 @@ impl CollectWindow {
         }
     }
 
-    pub(crate) async fn join_next(&mut self) -> Option<Result<(usize, ResultTable)>> {
+    pub(crate) async fn join_next(&mut self) -> Option<QueryScopedResult<(usize, ResultTable)>> {
         let join_result = self.tasks.join_next().await?;
         Some(match join_result {
             Ok((ordinal, result)) => result.map(|table| (ordinal, table)),
-            Err(err) => Err(InternalError::future_join(err).into()),
+            Err(err) => Err(QueryScopedError::new(
+                Arc::clone(&self.query_id),
+                InternalError::future_join(err),
+            )),
         })
     }
 

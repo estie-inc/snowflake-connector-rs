@@ -38,7 +38,7 @@ impl StringArenaBuilder {
     }
 
     #[cfg(any(test, feature = "bench-internals"))]
-    pub(crate) fn append(&mut self, s: &str) -> Result<TextSpan> {
+    pub(crate) fn append(&mut self, s: &str) -> std::result::Result<TextSpan, RowsetParseError> {
         let start = self.bytes.len();
         let len = s.len();
         self.check_capacity(len)?;
@@ -52,8 +52,8 @@ impl StringArenaBuilder {
 
     pub(crate) fn write_with(
         &mut self,
-        f: impl FnOnce(&mut Vec<u8>) -> Result<()>,
-    ) -> Result<TextSpan> {
+        f: impl FnOnce(&mut Vec<u8>) -> std::result::Result<(), RowsetParseError>,
+    ) -> std::result::Result<TextSpan, RowsetParseError> {
         let start = self.bytes.len();
         if let Err(err) = f(&mut self.bytes) {
             self.bytes.truncate(start);
@@ -68,8 +68,7 @@ impl StringArenaBuilder {
                 limit: u32::MAX as u64,
                 actual: end as u64,
                 scope: "string arena",
-            }
-            .into());
+            });
         }
 
         Ok(TextSpan {
@@ -79,7 +78,7 @@ impl StringArenaBuilder {
     }
 
     #[cfg(any(test, feature = "bench-internals"))]
-    fn check_capacity(&self, additional: usize) -> Result<()> {
+    fn check_capacity(&self, additional: usize) -> std::result::Result<(), RowsetParseError> {
         let new_len = self
             .bytes
             .len()
@@ -91,8 +90,7 @@ impl StringArenaBuilder {
                 limit: u32::MAX as u64,
                 actual: new_len as u64,
                 scope: "string arena",
-            }
-            .into());
+            });
         }
         Ok(())
     }

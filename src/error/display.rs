@@ -26,12 +26,20 @@ impl fmt::Display for Error {
             Repr::Auth(AuthError::ExternalBrowser { message, .. }) => {
                 write!(f, "external browser authentication error: {message}")
             }
-            Repr::Network(NetworkError::Http(_source)) => f.write_str("network error"),
-            Repr::Network(NetworkError::Io(_source)) => f.write_str("io error"),
-            Repr::Network(NetworkError::HttpStatus { status, body }) => {
+            Repr::Network {
+                error: NetworkError::Http(_source),
+                ..
+            } => f.write_str("network error"),
+            Repr::Network {
+                error: NetworkError::HttpStatus { status, body },
+                ..
+            } => {
                 write!(f, "HTTP {status}: {body}")
             }
-            Repr::Network(NetworkError::ChunkDownload { status, body }) => {
+            Repr::Network {
+                error: NetworkError::ChunkDownload { status, body },
+                ..
+            } => {
                 write!(f, "chunk download failed with HTTP {status}: {body}")
             }
             Repr::Server(ServerError {
@@ -53,58 +61,97 @@ impl fmt::Display for Error {
                 Ok(())
             }
             Repr::SessionExpired(_) => f.write_str("session expired"),
-            Repr::Timeout(TimeoutError::Request(_)) => f.write_str("network request timed out"),
-            Repr::Timeout(TimeoutError::Query) => {
-                f.write_str("timed out waiting for query results")
-            }
+            Repr::Timeout {
+                error: TimeoutError::Request(_),
+                ..
+            } => f.write_str("network request timed out"),
+            Repr::Timeout {
+                error: TimeoutError::Query,
+                ..
+            } => f.write_str("timed out waiting for query results"),
             #[cfg(feature = "external-browser-sso")]
-            Repr::Timeout(TimeoutError::BrowserCallback) => {
-                f.write_str("timed out waiting for external browser callback")
-            }
-            Repr::Protocol(ProtocolError::JsonParse {
-                source: _source,
-                body_preview,
-            }) => write!(f, "JSON parse error; body preview: {body_preview:?}"),
-            Repr::Protocol(ProtocolError::InvalidResponseUrl {
-                path,
-                value_preview,
-                source: _source,
-            }) => write!(
+            Repr::Timeout {
+                error: TimeoutError::BrowserCallback,
+                ..
+            } => f.write_str("timed out waiting for external browser callback"),
+            Repr::Protocol {
+                error:
+                    ProtocolError::JsonParse {
+                        source: _source,
+                        body_preview,
+                    },
+                ..
+            } => write!(f, "JSON parse error; body preview: {body_preview:?}"),
+            Repr::Protocol {
+                error:
+                    ProtocolError::InvalidResponseUrl {
+                        path,
+                        value_preview,
+                        source: _source,
+                    },
+                ..
+            } => write!(
                 f,
                 "invalid URL in Snowflake response field {path}; value: {value_preview}"
             ),
-            Repr::Protocol(ProtocolError::InvalidField { path, reason }) => {
+            Repr::Protocol {
+                error: ProtocolError::InvalidField { path, reason },
+                ..
+            } => {
                 write!(f, "invalid Snowflake response field {path}: {reason}")
             }
-            Repr::Protocol(ProtocolError::MissingField { field }) => {
+            Repr::Protocol {
+                error: ProtocolError::MissingField { field },
+                ..
+            } => {
                 write!(f, "missing required field in Snowflake response: {field}")
             }
-            Repr::Protocol(ProtocolError::HeaderConversion(_source)) => {
-                f.write_str("header conversion error")
-            }
-            Repr::Protocol(ProtocolError::InvalidResponseHeaderValue(_source)) => {
-                f.write_str("invalid header value in Snowflake response")
-            }
-            Repr::Protocol(ProtocolError::NoPollingUrlAsyncQuery) => {
-                f.write_str("async response doesn't contain a URL to poll for results")
-            }
-            Repr::Protocol(ProtocolError::UnsupportedResultFormat(message)) => {
+            Repr::Protocol {
+                error: ProtocolError::HeaderConversion(_source),
+                ..
+            } => f.write_str("header conversion error"),
+            Repr::Protocol {
+                error: ProtocolError::InvalidResponseHeaderValue(_source),
+                ..
+            } => f.write_str("invalid header value in Snowflake response"),
+            Repr::Protocol {
+                error: ProtocolError::NoPollingUrlAsyncQuery,
+                ..
+            } => f.write_str("async response doesn't contain a URL to poll for results"),
+            Repr::Protocol {
+                error: ProtocolError::UnsupportedResultFormat(message),
+                ..
+            } => {
                 write!(f, "unsupported result format: {message}")
             }
-            Repr::Protocol(ProtocolError::InvalidChunkFormat {
-                message,
-                source: Some(_source),
-            }) => {
+            Repr::Protocol {
+                error:
+                    ProtocolError::InvalidChunkFormat {
+                        message,
+                        source: Some(_source),
+                    },
+                ..
+            } => {
                 write!(f, "chunk download error: {message}")
             }
-            Repr::Protocol(ProtocolError::InvalidChunkFormat {
-                message,
-                source: None,
-            }) => {
+            Repr::Protocol {
+                error:
+                    ProtocolError::InvalidChunkFormat {
+                        message,
+                        source: None,
+                    },
+                ..
+            } => {
                 write!(f, "chunk download error: {message}")
             }
-            Repr::Protocol(ProtocolError::RowsetParse(error)) => fmt::Display::fmt(error, f),
-            Repr::Internal(InternalError::FutureJoin(_source)) => f.write_str("future join error"),
+            Repr::Protocol {
+                error: ProtocolError::RowsetParse(error),
+                ..
+            } => fmt::Display::fmt(error, f),
+            Repr::Internal {
+                error: InternalError::FutureJoin(_source),
+                ..
+            } => f.write_str("future join error"),
             Repr::Other(message) => write!(f, "snowflake connector error: {message}"),
             Repr::Schema(error) => fmt::Display::fmt(error, f),
             Repr::CellDecode(error) => fmt::Display::fmt(error, f),
@@ -124,19 +171,46 @@ impl StdError for Error {
                 source: Some(source),
                 ..
             }) => Some(source.as_ref()),
-            Repr::Timeout(TimeoutError::Request(source)) => Some(source),
-            Repr::Network(NetworkError::Http(source)) => Some(source),
-            Repr::Network(NetworkError::Io(source)) => Some(source),
-            Repr::Protocol(ProtocolError::JsonParse { source, .. }) => Some(source.as_ref()),
-            Repr::Protocol(ProtocolError::InvalidResponseUrl { source, .. }) => Some(source),
-            Repr::Protocol(ProtocolError::HeaderConversion(source)) => Some(source),
-            Repr::Protocol(ProtocolError::InvalidResponseHeaderValue(source)) => Some(source),
-            Repr::Protocol(ProtocolError::InvalidChunkFormat {
-                source: Some(source),
+            Repr::Timeout {
+                error: TimeoutError::Request(source),
                 ..
-            }) => Some(source.as_ref()),
-            Repr::Internal(InternalError::FutureJoin(source)) => Some(source),
-            Repr::Protocol(ProtocolError::RowsetParse(_)) => None,
+            } => Some(source),
+            Repr::Network {
+                error: NetworkError::Http(source),
+                ..
+            } => Some(source),
+            Repr::Protocol {
+                error: ProtocolError::JsonParse { source, .. },
+                ..
+            } => Some(source.as_ref()),
+            Repr::Protocol {
+                error: ProtocolError::InvalidResponseUrl { source, .. },
+                ..
+            } => Some(source),
+            Repr::Protocol {
+                error: ProtocolError::HeaderConversion(source),
+                ..
+            } => Some(source),
+            Repr::Protocol {
+                error: ProtocolError::InvalidResponseHeaderValue(source),
+                ..
+            } => Some(source),
+            Repr::Protocol {
+                error:
+                    ProtocolError::InvalidChunkFormat {
+                        source: Some(source),
+                        ..
+                    },
+                ..
+            } => Some(source.as_ref()),
+            Repr::Internal {
+                error: InternalError::FutureJoin(source),
+                ..
+            } => Some(source),
+            Repr::Protocol {
+                error: ProtocolError::RowsetParse(_),
+                ..
+            } => None,
             Repr::Schema(_) => None,
             Repr::CellDecode(_) => None,
             _ => None,

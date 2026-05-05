@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     Result, SnowflakeAuthMethod, SnowflakeClientConfig,
-    error::{AuthError, ConfigError, NetworkError, ProtocolError},
+    error::{AuthError, ConfigError, NetworkError, ProtocolError, classify_request_error},
 };
 
 use super::client::AUTH_REQUEST_TIMEOUT;
@@ -118,10 +118,10 @@ pub(crate) async fn login(
         );
     }
 
-    let resp = request.send().await.map_err(NetworkError::request)?;
+    let resp = request.send().await.map_err(classify_request_error)?;
 
     let status = resp.status();
-    let body = resp.text().await.map_err(NetworkError::request)?;
+    let body = resp.text().await.map_err(classify_request_error)?;
     if !status.is_success() {
         return Err(NetworkError::http_status(status.as_u16(), body.as_bytes()).into());
     }

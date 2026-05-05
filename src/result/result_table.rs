@@ -178,7 +178,7 @@ impl ResultTableBuilder {
         query_id: Arc<str>,
         wire: Option<Bytes>,
         row_count_hint: Option<usize>,
-    ) -> Result<Self> {
+    ) -> std::result::Result<Self, RowsetParseError> {
         let column_count = schema.len();
         let cap = match row_count_hint {
             Some(rows) => column_count
@@ -219,22 +219,21 @@ impl ResultTableBuilder {
 
     pub(crate) fn push_decoded_with(
         &mut self,
-        f: impl FnOnce(&mut Vec<u8>) -> Result<()>,
-    ) -> Result<()> {
+        f: impl FnOnce(&mut Vec<u8>) -> std::result::Result<(), RowsetParseError>,
+    ) -> std::result::Result<(), RowsetParseError> {
         let span = self.decoded.write_with(f)?;
         self.cells.push(Cell::DecodedText(span));
         self.current_row_cells += 1;
         Ok(())
     }
 
-    pub(crate) fn finish_row(&mut self) -> Result<()> {
+    pub(crate) fn finish_row(&mut self) -> std::result::Result<(), RowsetParseError> {
         if self.current_row_cells != self.column_count {
             return Err(RowsetParseError::RowLengthMismatch {
                 row: self.row_count,
                 expected: self.column_count,
                 actual: self.current_row_cells,
-            }
-            .into());
+            });
         }
 
         self.row_count += 1;
@@ -242,7 +241,7 @@ impl ResultTableBuilder {
         Ok(())
     }
 
-    pub(crate) fn finish(self) -> Result<ResultTable> {
+    pub(crate) fn finish(self) -> std::result::Result<ResultTable, RowsetParseError> {
         let ResultTableBuilder {
             schema,
             query_id,
@@ -258,8 +257,7 @@ impl ResultTableBuilder {
                 row: row_count,
                 expected: column_count,
                 actual: current_row_cells,
-            }
-            .into());
+            });
         }
 
         let expected = row_count
@@ -270,8 +268,7 @@ impl ResultTableBuilder {
                 row: row_count,
                 expected: column_count,
                 actual: cells.len() % column_count.max(1),
-            }
-            .into());
+            });
         }
 
         let block = CellBlock {
@@ -310,10 +307,7 @@ mod tests {
         let mut b = ResultTableBuilder::new(schema, Arc::from("test"), None, Some(2)).unwrap();
         b.push_owned_text("a".into());
         let err = b.finish_row().unwrap_err();
-        assert!(matches!(
-            err.as_rowset_parse_error(),
-            Some(RowsetParseError::RowLengthMismatch { .. })
-        ));
+        assert!(matches!(err, RowsetParseError::RowLengthMismatch { .. }));
     }
 
     #[test]
@@ -335,11 +329,7 @@ mod tests {
     fn builder_rejects_overflowing_capacity_hint() {
         let schema = dummy_schema(2);
         match ResultTableBuilder::new(schema, Arc::from("test"), None, Some(usize::MAX)) {
-            Err(err)
-                if matches!(
-                    err.as_rowset_parse_error(),
-                    Some(RowsetParseError::CapacityOverflow)
-                ) => {}
+            Err(RowsetParseError::CapacityOverflow) => {}
             Err(err) => panic!("expected CapacityOverflow, got {err:?}"),
             Ok(_) => panic!("expected CapacityOverflow"),
         }

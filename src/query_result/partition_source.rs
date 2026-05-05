@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::{
-    Result,
     chunk::ChunkDownloader,
+    error::QueryScopedResult,
     result::{ResultTable, Schema},
     runtime::BlockingParseLimiter,
 };
@@ -30,7 +30,7 @@ impl PartitionSource {
         &self,
         ctx: FetchContext,
         schema: Arc<Schema>,
-    ) -> Result<ResultTable> {
+    ) -> QueryScopedResult<ResultTable> {
         match self {
             Self::Static(s) => s.fetch(ctx, schema).await,
             #[cfg(test)]
@@ -49,7 +49,11 @@ impl StaticPartitionSource {
         Self { lease, downloader }
     }
 
-    async fn fetch(&self, ctx: FetchContext, schema: Arc<Schema>) -> Result<ResultTable> {
+    async fn fetch(
+        &self,
+        ctx: FetchContext,
+        schema: Arc<Schema>,
+    ) -> QueryScopedResult<ResultTable> {
         let locator = self
             .lease
             .locators
@@ -100,7 +104,10 @@ pub(crate) mod tests {
     use tokio::time::sleep;
 
     use super::*;
-    use crate::rowset::parser::inline_rows_to_result_table;
+    use crate::{
+        error::{QueryScopedError, QueryScopedRepr},
+        rowset::parser::inline_rows_to_result_table_inner,
+    };
 
     #[derive(Default)]
     pub(crate) struct BlockingFetchProbe {
@@ -135,16 +142,16 @@ pub(crate) mod tests {
     }
 
     pub(crate) enum FakeResponse {
-        Rows(Result<Vec<Vec<Option<String>>>>),
+        Rows(std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr>),
         BlockingRows {
-            rows: Result<Vec<Vec<Option<String>>>>,
+            rows: std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr>,
             probe: Arc<BlockingFetchProbe>,
             delay: Duration,
         },
     }
 
-    impl From<Result<Vec<Vec<Option<String>>>>> for FakeResponse {
-        fn from(rows: Result<Vec<Vec<Option<String>>>>) -> Self {
+    impl From<std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr>> for FakeResponse {
+        fn from(rows: std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr>) -> Self {
             Self::Rows(rows)
         }
     }
@@ -175,7 +182,7 @@ pub(crate) mod tests {
             &self,
             ctx: FetchContext,
             schema: Arc<Schema>,
-        ) -> Result<ResultTable> {
+        ) -> QueryScopedResult<ResultTable> {
             self.fetch_count.fetch_add(1, Ordering::SeqCst);
 
             let response = {
@@ -192,7 +199,9 @@ pub(crate) mod tests {
             };
 
             let raw = match response {
-                FakeResponse::Rows(rows) => rows?,
+                FakeResponse::Rows(rows) => {
+                    rows.map_err(|error| QueryScopedError::new(Arc::clone(&ctx.query_id), error))?
+                }
                 FakeResponse::BlockingRows { rows, probe, delay } => {
                     let _permit = match ctx.blocking_parse_limiter {
                         Some(limiter) => Some(limiter.acquire_owned().await),
@@ -201,11 +210,12 @@ pub(crate) mod tests {
                     probe.enter();
                     sleep(delay).await;
                     probe.exit();
-                    rows?
+                    rows.map_err(|error| QueryScopedError::new(Arc::clone(&ctx.query_id), error))?
                 }
             };
 
-            inline_rows_to_result_table(schema, ctx.query_id, raw)
+            inline_rows_to_result_table_inner(schema, Arc::clone(&ctx.query_id), raw)
+                .map_err(|error| QueryScopedError::new(Arc::clone(&ctx.query_id), error))
         }
     }
 }
