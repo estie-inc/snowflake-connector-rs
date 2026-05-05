@@ -1,9 +1,8 @@
 use std::{num::NonZeroUsize, time::Duration};
 
-use serde::de::Error as _;
-
 use crate::{
     chunk::ChunkDownloader,
+    error::{ProtocolError, ServerError},
     query::QueryRequest,
     query_result::{
         CollectPolicy, InlineRowset, ResultSet,
@@ -57,10 +56,7 @@ impl StatementExecutor {
             || response_code == Some(QUERY_IN_PROGRESS_CODE)
         {
             let Some(data) = response.data else {
-                return Err(Error::Json(
-                    serde_json::Error::custom("missing data field in async query response"),
-                    "".to_string(),
-                ));
+                return Err(ProtocolError::missing_field("data").into());
             };
 
             match data.get_result_url {
@@ -71,29 +67,27 @@ impl StatementExecutor {
                         .await?;
                 }
                 None => {
-                    return Err(Error::NoPollingUrlAsyncQuery);
+                    return Err(ProtocolError::no_polling_url().into());
                 }
             }
         }
 
         if let Some(SESSION_EXPIRED) = response.code.as_deref() {
-            return Err(Error::SessionExpired);
+            return Err(Error::session_expired(response.code, response.message));
         }
 
         if !response.success {
-            return Err(Error::Communication(response.message.unwrap_or_default()));
+            let query_id = response.data.as_ref().map(|data| data.query_id.clone());
+            return Err(ServerError::new(response.code, response.message, query_id).into());
         }
 
         let Some(data) = response.data else {
-            return Err(Error::Json(
-                serde_json::Error::custom("missing data field in query response"),
-                "".to_string(),
-            ));
+            return Err(ProtocolError::missing_field("data").into());
         };
 
         if let Some(ref format) = data.query_result_format {
             if format != "json" {
-                return Err(Error::UnsupportedFormat(format.clone()));
+                return Err(ProtocolError::unsupported_result_format(format.clone()).into());
             }
         }
 
@@ -126,7 +120,13 @@ impl StatementExecutor {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, time::Duration};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener as StdTcpListener,
+        num::NonZeroUsize,
+        thread,
+        time::Duration,
+    };
 
     use bytes::Bytes;
     use reqwest::{Client, Url};
@@ -135,7 +135,6 @@ mod tests {
     use super::super::client::StatementApiClient;
     use super::*;
     use crate::{
-        Error,
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
         statement::response::{RawQueryResponse, RawQueryResponseChunk, RawQueryResponseRowType},
@@ -152,6 +151,26 @@ mod tests {
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime: QueryRuntime::new(),
         }
+    }
+
+    fn spawn_single_response_server(body: &'static str) -> Url {
+        let listener = StdTcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        Url::parse(&format!("http://{addr}/")).unwrap()
     }
 
     fn chunk_only_response(row_types: Option<Vec<RawQueryResponseRowType>>) -> RawQueryResponse {
@@ -223,6 +242,113 @@ mod tests {
                 .runtime
                 .blocking_parse_limiter()
                 .ptr_eq(&runtime.blocking_parse_limiter())
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_async_response_with_invalid_polling_url_is_protocol_error() {
+        let session = SnowflakeSession {
+            http: Client::new(),
+            base_url: spawn_single_response_server(
+                r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"http://[::1"}}"#,
+            ),
+            session_token: "test-token".to_string(),
+            query: crate::SnowflakeQueryConfig::default(),
+            runtime: QueryRuntime::new(),
+        };
+
+        let err = StatementExecutor::new(&session)
+            .execute(crate::query::QueryRequest::from("select 1"))
+            .await;
+        let err = match err {
+            Ok(_) => panic!("expected invalid getResultUrl to fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
+        assert!(err.to_string().contains("data.getResultUrl"));
+    }
+
+    #[tokio::test]
+    async fn execute_async_response_with_cross_origin_polling_url_is_protocol_error() {
+        let session = SnowflakeSession {
+            http: Client::new(),
+            base_url: spawn_single_response_server(
+                r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"https://attacker.example/query"}}"#,
+            ),
+            session_token: "test-token".to_string(),
+            query: crate::SnowflakeQueryConfig::default(),
+            runtime: QueryRuntime::new(),
+        };
+
+        let err = StatementExecutor::new(&session)
+            .execute(crate::query::QueryRequest::from("select 1"))
+            .await;
+        let err = match err {
+            Ok(_) => panic!("expected cross-origin getResultUrl to fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
+        assert_eq!(
+            err.to_string(),
+            "invalid Snowflake response field data.getResultUrl: must be relative or same-origin absolute URL"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_async_response_with_empty_polling_url_is_protocol_error() {
+        let session = SnowflakeSession {
+            http: Client::new(),
+            base_url: spawn_single_response_server(
+                r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"   "}}"#,
+            ),
+            session_token: "test-token".to_string(),
+            query: crate::SnowflakeQueryConfig::default(),
+            runtime: QueryRuntime::new(),
+        };
+
+        let err = StatementExecutor::new(&session)
+            .execute(crate::query::QueryRequest::from("select 1"))
+            .await;
+        let err = match err {
+            Ok(_) => panic!("expected empty getResultUrl to fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
+        assert_eq!(
+            err.to_string(),
+            "invalid Snowflake response field data.getResultUrl: must not be empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_session_expired_preserves_snowflake_fields() {
+        let session = SnowflakeSession {
+            http: Client::new(),
+            base_url: spawn_single_response_server(
+                r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":null}"#,
+            ),
+            session_token: "test-token".to_string(),
+            query: crate::SnowflakeQueryConfig::default(),
+            runtime: QueryRuntime::new(),
+        };
+
+        let err = match StatementExecutor::new(&session)
+            .execute(crate::query::QueryRequest::from("select 1"))
+            .await
+        {
+            Ok(_) => panic!("session expired response must fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), crate::ErrorKind::SessionExpired);
+        assert!(err.is_session_expired());
+        assert_eq!(err.snowflake_code(), Some("390112"));
+        assert_eq!(
+            err.snowflake_message(),
+            Some("Your session has expired. Please login again.")
         );
     }
 
@@ -362,14 +488,22 @@ mod tests {
 
     #[test]
     fn chunk_only_results_require_rowtype_metadata_when_missing_or_empty() {
-        for (label, row_types) in [
-            ("missing", None),
-            ("empty", Some(Vec::<RawQueryResponseRowType>::new())),
+        for (label, row_types, expected) in [
+            (
+                "missing",
+                None,
+                "missing required field in Snowflake response: data.rowtype",
+            ),
+            (
+                "empty",
+                Some(Vec::<RawQueryResponseRowType>::new()),
+                "invalid Snowflake response field data.rowtype: must not be empty when result data is present",
+            ),
         ] {
             match executor().build_result_set(chunk_only_response(row_types)) {
-                Err(Error::UnsupportedFormat(message))
-                    if message == "response has result data but no rowtype metadata" => {}
-                Err(other) => panic!("expected UnsupportedFormat, got {other:?}"),
+                Err(err)
+                    if err.kind() == crate::ErrorKind::Protocol && err.to_string() == expected => {}
+                Err(other) => panic!("expected rowtype metadata error, got {other:?}"),
                 Ok(_) => {
                     panic!("expected chunk-only response with {label} rowtype metadata to fail")
                 }

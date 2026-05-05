@@ -1,6 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::{Error, ParseError, Result, SchemaError};
+use crate::{
+    AmbiguousColumnError, MissingColumnError, Result, SchemaError, error::RowsetParseError,
+};
 
 /// Index into a result-set column list.
 #[repr(transparent)]
@@ -8,11 +10,8 @@ use crate::{Error, ParseError, Result, SchemaError};
 pub struct ColumnIndex(u32);
 
 impl ColumnIndex {
-    pub fn new(index: usize) -> Result<Self> {
-        if index > u32::MAX as usize {
-            return Err(Error::Parse(ParseError::CapacityOverflow));
-        }
-        Ok(Self(index as u32))
+    pub(crate) const fn new(index: u32) -> Self {
+        Self(index)
     }
 
     pub fn as_usize(self) -> usize {
@@ -219,7 +218,7 @@ pub struct Schema {
 impl Schema {
     pub(crate) fn from_columns(columns: Vec<Column>) -> Result<Self> {
         if columns.len() > u32::MAX as usize {
-            return Err(Error::Parse(ParseError::CapacityOverflow));
+            return Err(RowsetParseError::CapacityOverflow.into());
         }
 
         let indices = ColumnIndexMap::build(&columns);
@@ -258,13 +257,10 @@ fn lookup_result(
 ) -> std::result::Result<ColumnIndex, SchemaError> {
     match entry {
         Some(LookupEntry::Unique(idx)) => Ok(*idx),
-        Some(LookupEntry::Ambiguous(candidates)) => Err(SchemaError::AmbiguousColumn {
-            name: Box::from(name),
-            candidates: candidates.clone(),
-        }),
-        None => Err(SchemaError::MissingColumn {
-            name: Box::from(name),
-        }),
+        Some(LookupEntry::Ambiguous(candidates)) => Err(SchemaError::AmbiguousColumn(
+            AmbiguousColumnError::new(name, candidates.clone()),
+        )),
+        None => Err(SchemaError::MissingColumn(MissingColumnError::new(name))),
     }
 }
 
@@ -299,7 +295,7 @@ mod tests {
         assert_eq!(schema.column("id").unwrap().as_usize(), 1);
         assert!(matches!(
             schema.column("Id"),
-            Err(SchemaError::MissingColumn { name }) if name.as_ref() == "Id"
+            Err(SchemaError::MissingColumn(error)) if error.name() == "Id"
         ));
     }
 
@@ -328,10 +324,11 @@ mod tests {
         .unwrap();
         let err = schema.column("id").unwrap_err();
         match err {
-            SchemaError::AmbiguousColumn { name, candidates } => {
-                assert_eq!(name.as_ref(), "id");
+            SchemaError::AmbiguousColumn(error) => {
+                assert_eq!(error.name(), "id");
                 assert_eq!(
-                    candidates
+                    error
+                        .candidates()
                         .iter()
                         .map(|candidate| candidate.as_usize())
                         .collect::<Vec<_>>(),

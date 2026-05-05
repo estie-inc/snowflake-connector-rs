@@ -1,6 +1,6 @@
 use chrono::NaiveDateTime;
 
-use snowflake_connector_rs::{DecimalValue, Error, FromRow, Result, SchemaError};
+use snowflake_connector_rs::{DecimalValue, FromRow, Result, SchemaError};
 
 use super::common;
 
@@ -180,8 +180,8 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
         .err()
         .expect("missing named column should fail during plan building");
 
-    match err {
-        Error::Schema(SchemaError::MissingColumn { name }) => assert_eq!(name.as_ref(), "BIO"),
+    match err.as_schema_error() {
+        Some(SchemaError::MissingColumn(error)) => assert_eq!(error.name(), "BIO"),
         other => panic!("expected MissingColumn, got: {other:?}"),
     }
 
@@ -191,8 +191,8 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
         .err()
         .expect("default lookup should not match lowercase quoted labels");
 
-    match err {
-        Error::Schema(SchemaError::MissingColumn { name }) => assert_eq!(name.as_ref(), "VALUE"),
+    match err.as_schema_error() {
+        Some(SchemaError::MissingColumn(error)) => assert_eq!(error.name(), "VALUE"),
         other => panic!("expected MissingColumn, got: {other:?}"),
     }
 
@@ -202,10 +202,10 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
         .err()
         .expect("short positional row should fail during plan building");
 
-    match err {
-        Error::Schema(SchemaError::ColumnCountMismatch { expected, actual }) => {
-            assert_eq!(expected, 2);
-            assert_eq!(actual, 1);
+    match err.as_schema_error() {
+        Some(SchemaError::ColumnCountMismatch(error)) => {
+            assert_eq!(error.expected(), 2);
+            assert_eq!(error.actual(), 1);
         }
         other => panic!("expected ColumnCountMismatch, got: {other:?}"),
     }
@@ -217,8 +217,8 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
         .await
         .expect_err("non-Option NULL should surface the decode error");
 
-    match err {
-        Error::Decode(err) => {
+    match err.as_cell_decode_error() {
+        Some(err) => {
             assert_eq!(err.column_name(), "NOTE");
             assert_eq!(err.reason(), "value is NULL");
         }
@@ -231,10 +231,10 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
         .err()
         .expect("duplicate raw labels should fail during plan building");
 
-    match err {
-        Error::Schema(SchemaError::AmbiguousColumn { .. }) => {}
-        other => panic!("expected AmbiguousColumn, got: {other:?}"),
-    }
+    assert!(matches!(
+        err.as_schema_error(),
+        Some(SchemaError::AmbiguousColumn(_))
+    ));
 
     Ok(())
 }

@@ -1,11 +1,13 @@
-use std::{io, sync::Arc, time::Duration};
+use std::{fmt, io, sync::Arc, time::Duration};
 
+use bytes::Bytes;
 use http::HeaderMap;
 use reqwest::StatusCode;
 use tokio::time::sleep;
 
 use crate::{
     Error, Result,
+    error::NetworkError,
     query_result::partition_source::FetchContext,
     result::{ResultTable, Schema},
     rowset::{ParseWorkload, parser::parse_remote_chunk_result_table_async},
@@ -31,13 +33,13 @@ impl DownloadFailure {
 
 impl From<reqwest::Error> for DownloadFailure {
     fn from(e: reqwest::Error) -> Self {
-        Self::Retryable(Error::Reqwest(e))
+        Self::Retryable(NetworkError::request(e))
     }
 }
 
 impl From<io::Error> for DownloadFailure {
     fn from(e: io::Error) -> Self {
-        Self::Retryable(Error::IO(e))
+        Self::Retryable(NetworkError::io(e).into())
     }
 }
 
@@ -85,13 +87,7 @@ impl ChunkDownloader {
         let response = self.client.get(url).headers(headers).send().await?;
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let error = Error::ChunkDownload(body);
-            return if is_retryable_status(status) {
-                Err(DownloadFailure::Retryable(error))
-            } else {
-                Err(DownloadFailure::Fatal(error))
-            };
+            return Err(classify_failed_status(status, response.bytes().await));
         }
 
         let body = response.bytes().await?;
@@ -117,6 +113,29 @@ impl ChunkDownloader {
     }
 }
 
+fn classify_failed_status<E>(
+    status: StatusCode,
+    body: std::result::Result<Bytes, E>,
+) -> DownloadFailure
+where
+    E: fmt::Display,
+{
+    let error: Error = match body {
+        Ok(body) => NetworkError::chunk_download(status.as_u16(), body).into(),
+        Err(err) => NetworkError::chunk_download(
+            status.as_u16(),
+            format!("<failed to read response body: {err}>"),
+        )
+        .into(),
+    };
+
+    if is_retryable_status(status) {
+        DownloadFailure::Retryable(error)
+    } else {
+        DownloadFailure::Fatal(error)
+    }
+}
+
 fn is_retryable_status(status: StatusCode) -> bool {
     status.is_server_error()
         || status == StatusCode::TOO_MANY_REQUESTS
@@ -131,6 +150,7 @@ fn retry_delay(retries: usize) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ErrorKind;
 
     #[test]
     fn retryable_status_codes() {
@@ -156,5 +176,54 @@ mod tests {
         assert_eq!(retry_delay(4), Duration::from_secs(16));
         assert_eq!(retry_delay(5), Duration::from_secs(16));
         assert_eq!(retry_delay(6), Duration::from_secs(16));
+    }
+
+    #[test]
+    fn body_read_failure_keeps_non_retryable_status_fatal() {
+        match classify_failed_status(StatusCode::FORBIDDEN, Err("body read failed")) {
+            DownloadFailure::Fatal(error) => {
+                assert_eq!(error.kind(), ErrorKind::Network);
+                assert_eq!(
+                    error.to_string(),
+                    "chunk download failed with HTTP 403: <failed to read response body: body read failed>"
+                );
+            }
+            DownloadFailure::Retryable(error) => {
+                panic!("expected fatal classification, got retryable: {error}")
+            }
+        }
+    }
+
+    #[test]
+    fn body_read_failure_keeps_retryable_status_retryable() {
+        match classify_failed_status(StatusCode::BAD_GATEWAY, Err("body read failed")) {
+            DownloadFailure::Retryable(error) => {
+                assert_eq!(error.kind(), ErrorKind::Network);
+                assert_eq!(
+                    error.to_string(),
+                    "chunk download failed with HTTP 502: <failed to read response body: body read failed>"
+                );
+            }
+            DownloadFailure::Fatal(error) => {
+                panic!("expected retryable classification, got fatal: {error}")
+            }
+        }
+    }
+
+    #[test]
+    fn non_utf8_body_keeps_lossy_preview() {
+        match classify_failed_status(
+            StatusCode::FORBIDDEN,
+            Ok::<Bytes, &str>(Bytes::from_static(b"\xfffoo")),
+        ) {
+            DownloadFailure::Fatal(error) => {
+                assert_eq!(error.kind(), ErrorKind::Network);
+                assert!(error.to_string().contains("foo"));
+                assert!(!error.to_string().contains("<failed to read response body"));
+            }
+            DownloadFailure::Retryable(error) => {
+                panic!("expected fatal classification, got retryable: {error}")
+            }
+        }
     }
 }

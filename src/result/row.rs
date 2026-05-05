@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use crate::{
-    Error, Result, SchemaError,
+    Error, InvalidColumnIndexError, Result, SchemaError,
     result::{
         cell::{CellBlock, CellRef},
         decode::{FromCell, FromRow},
@@ -25,12 +25,17 @@ impl<'a> RowRef<'a> {
         self.global_row
     }
 
+    /// Borrow a cell by column index.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Decode` when `index` is out of bounds for
+    /// this row's schema; inspect the detail via [`crate::Error::as_schema_error`].
     pub fn cell(self, index: ColumnIndex) -> Result<CellRef<'a>> {
         let column = self.table.schema().column_at(index).ok_or_else(|| {
-            Error::Schema(SchemaError::InvalidColumnIndex {
-                index,
-                len: self.table.schema().len(),
-            })
+            Error::from(SchemaError::InvalidColumnIndex(
+                InvalidColumnIndexError::new(index, self.table.schema().len()),
+            ))
         })?;
 
         let cell = self.block.cell(self.local_row, index.as_usize());
@@ -58,6 +63,14 @@ impl<'a> RowRef<'a> {
         }
     }
 
+    /// Decode a cell by column index.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Decode` when `index` is out of bounds for
+    /// this row's schema or when [`FromCell::from_cell`] fails for `T`. Use
+    /// [`crate::Error::as_schema_error`] to inspect schema mismatches and
+    /// [`crate::Error::as_cell_decode_error`] for conversion failures.
     pub fn get<T: FromCell>(self, index: ColumnIndex) -> Result<T> {
         T::from_cell(self.cell(index)?)
     }
@@ -185,7 +198,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         )
         .unwrap();
-        let chunked = ResultTable::concat_same_schema(vec![first, second]).unwrap();
+        let chunked = ResultTable::concat_same_schema(vec![first, second]);
 
         for table in [single, chunked] {
             let mut rows = table.rows::<(String,)>().unwrap();

@@ -12,7 +12,7 @@ use crate::result::{
     row::RowRef,
     schema::{ColumnIndex, ColumnType, Schema},
 };
-use crate::{Result, SchemaError};
+use crate::{DuplicateColumnNameError, InvalidColumnIndexError, Result, SchemaError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecimalValue {
@@ -85,12 +85,9 @@ impl DynamicRow {
 
     /// Borrows a value by resolved column index.
     pub fn at(&self, index: ColumnIndex) -> std::result::Result<&SnowflakeValue, SchemaError> {
-        self.schema
-            .column_at(index)
-            .ok_or_else(|| SchemaError::InvalidColumnIndex {
-                index,
-                len: self.schema.len(),
-            })?;
+        self.schema.column_at(index).ok_or_else(|| {
+            SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(index, self.schema.len()))
+        })?;
         Ok(&self.values[index.as_usize()])
     }
 
@@ -113,12 +110,9 @@ impl DynamicRow {
         &mut self,
         index: ColumnIndex,
     ) -> std::result::Result<SnowflakeValue, SchemaError> {
-        self.schema
-            .column_at(index)
-            .ok_or_else(|| SchemaError::InvalidColumnIndex {
-                index,
-                len: self.schema.len(),
-            })?;
+        self.schema.column_at(index).ok_or_else(|| {
+            SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(index, self.schema.len()))
+        })?;
 
         Ok(mem::replace(
             &mut self.values[index.as_usize()],
@@ -140,9 +134,9 @@ impl DynamicRow {
         let mut map = serde_json::Map::new();
         for (col, value) in schema.columns().iter().zip(values.into_vec()) {
             if map.contains_key(col.name()) {
-                return Err(SchemaError::DuplicateColumnName {
-                    name: Box::from(col.name()),
-                });
+                return Err(SchemaError::DuplicateColumnName(
+                    DuplicateColumnNameError::new(col.name()),
+                ));
             }
             map.insert(col.name().to_string(), value.into_json_value());
         }
@@ -339,10 +333,11 @@ mod tests {
     #[test]
     fn dynamic_row_at_rejects_invalid_indices() {
         let row = one_cell_row(ColumnType::Text { length: None }, "value");
-        let index = ColumnIndex::new(1).unwrap();
+        let index = ColumnIndex::new(1);
         assert!(matches!(
             row.at(index),
-            Err(SchemaError::InvalidColumnIndex { index: actual, len: 1 }) if actual == index
+            Err(SchemaError::InvalidColumnIndex(error))
+                if error.index() == index && error.len() == 1
         ));
     }
 
@@ -393,10 +388,11 @@ mod tests {
     #[test]
     fn dynamic_row_take_at_rejects_invalid_indices() {
         let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
-        let index = ColumnIndex::new(1).unwrap();
+        let index = ColumnIndex::new(1);
         assert!(matches!(
             row.take_at(index),
-            Err(SchemaError::InvalidColumnIndex { index: actual, len: 1 }) if actual == index
+            Err(SchemaError::InvalidColumnIndex(error))
+                if error.index() == index && error.len() == 1
         ));
     }
 
@@ -417,7 +413,7 @@ mod tests {
         let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
         assert!(matches!(
             row.take("missing"),
-            Err(SchemaError::MissingColumn { name }) if name.as_ref() == "missing"
+            Err(SchemaError::MissingColumn(error)) if error.name() == "missing"
         ));
     }
 
@@ -512,7 +508,7 @@ mod tests {
 
         assert!(matches!(
             row.into_json_object(),
-            Err(SchemaError::DuplicateColumnName { name }) if name.as_ref() == "id"
+            Err(SchemaError::DuplicateColumnName(error)) if error.name() == "id"
         ));
     }
 

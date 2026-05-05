@@ -35,6 +35,13 @@ impl<T: FromRow> TypedResultSet<T> {
         self.inner.is_exhausted()
     }
 
+    /// Fetch the next partition as a typed table.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
+    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if fetching or
+    /// materializing the next partition fails.
     pub async fn next_table(&mut self) -> Result<Option<TypedResultTable<T>>> {
         self.inner
             .next_table()
@@ -42,22 +49,58 @@ impl<T: FromRow> TypedResultSet<T> {
             .map(|table| table.map(|table| TypedResultTable::new(table, Arc::clone(&self.plan))))
     }
 
+    /// Consume this result set and decode all rows into `T`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`TypedResultSet::collect_table`]. Decoding
+    /// rows then propagates any error returned by [`FromRow::from_row_with_plan`]
+    /// for `T`.
+    ///
+    /// Built-in and derive-based row types typically use
+    /// `ErrorKind::Decode` for per-row conversion failures; inspect the
+    /// detail via [`crate::Error::as_cell_decode_error`].
     pub async fn collect(self) -> Result<Vec<T>> {
         let table = self.collect_table().await?;
         table.rows().collect()
     }
 
+    /// Consume this result set and decode all rows into `T`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`TypedResultSet::collect_table_with_options`].
+    /// Decoding rows then propagates any error returned by
+    /// [`FromRow::from_row_with_plan`] for `T`.
+    ///
+    /// Built-in and derive-based row types typically use
+    /// `ErrorKind::Decode` for per-row conversion failures; inspect the
+    /// detail via [`crate::Error::as_cell_decode_error`].
     pub async fn collect_with_options(self, options: CollectOptions) -> Result<Vec<T>> {
         let table = self.collect_table_with_options(options).await?;
         table.rows().collect()
     }
 
+    /// Consume this result set and collect all remaining partitions into a typed table.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
+    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
+    /// partition fails to materialize.
     pub async fn collect_table(self) -> Result<TypedResultTable<T>> {
         let Self { inner, plan, .. } = self;
         let table = inner.collect_table().await?;
         Ok(TypedResultTable::new(table, plan))
     }
 
+    /// Consume this result set and collect all remaining partitions into a typed table.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
+    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
+    /// partition fails to materialize.
     pub async fn collect_table_with_options(
         self,
         options: CollectOptions,

@@ -4,6 +4,7 @@ use bytes::Bytes;
 
 use crate::{
     Error, Result,
+    error::ProtocolError,
     query_result::snapshot::{
         DownloadLocator, PartitionSpec, ResolvedLease, ResultIdentity, ResultSnapshot,
     },
@@ -52,14 +53,18 @@ impl TryFrom<RawQueryResponse> for ResultManifest {
             returned.or(total).and_then(|v| u64::try_from(v).ok())
         };
 
-        if (has_inline || !chunks.is_empty())
-            && row_types
-                .as_ref()
-                .is_none_or(|row_types| row_types.is_empty())
-        {
-            return Err(Error::UnsupportedFormat(
-                "response has result data but no rowtype metadata".to_string(),
-            ));
+        if has_inline || !chunks.is_empty() {
+            match row_types.as_ref() {
+                None => return Err(ProtocolError::missing_field("data.rowtype").into()),
+                Some(row_types) if row_types.is_empty() => {
+                    return Err(ProtocolError::invalid_field(
+                        "data.rowtype",
+                        "must not be empty when result data is present",
+                    )
+                    .into());
+                }
+                Some(_) => {}
+            }
         }
 
         let columns = row_types
@@ -120,5 +125,112 @@ impl TryFrom<RawQueryResponse> for ResultManifest {
             lease: ResolvedLease { locators },
             snapshot,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::statement::response::{RawQueryResponseChunk, RawQueryResponseRowType};
+
+    fn text_row_type(name: &str) -> RawQueryResponseRowType {
+        RawQueryResponseRowType {
+            database: String::new(),
+            name: name.to_string(),
+            nullable: false,
+            scale: None,
+            byte_length: Some(16),
+            length: Some(16),
+            schema: String::new(),
+            table: String::new(),
+            precision: None,
+            data_type: "text".to_string(),
+        }
+    }
+
+    #[test]
+    fn manifest_requires_rowtype_when_inline_data_is_present() {
+        let response = RawQueryResponse {
+            parameters: None,
+            query_id: "query-id".to_string(),
+            get_result_url: None,
+            returned: Some(1),
+            total: None,
+            row_set_bytes: Some(Bytes::from_static(br#"[["x"]]"#)),
+            row_types: None,
+            chunk_headers: None,
+            qrmk: None,
+            chunks: None,
+            query_result_format: Some("json".to_string()),
+        };
+
+        let err = match ResultManifest::try_from(response) {
+            Ok(_) => panic!("missing rowtype metadata must fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
+        assert_eq!(
+            err.to_string(),
+            "missing required field in Snowflake response: data.rowtype"
+        );
+    }
+
+    #[test]
+    fn manifest_rejects_empty_rowtype_when_result_data_is_present() {
+        let response = RawQueryResponse {
+            parameters: None,
+            query_id: "query-id".to_string(),
+            get_result_url: None,
+            returned: None,
+            total: None,
+            row_set_bytes: None,
+            row_types: Some(Vec::new()),
+            chunk_headers: None,
+            qrmk: None,
+            chunks: Some(vec![RawQueryResponseChunk {
+                url: "https://example.com/chunk/0".to_string(),
+                row_count: 1,
+                uncompressed_size: 16,
+                compressed_size: 8,
+            }]),
+            query_result_format: Some("json".to_string()),
+        };
+
+        let err = match ResultManifest::try_from(response) {
+            Ok(_) => panic!("empty rowtype metadata must fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
+        assert_eq!(
+            err.to_string(),
+            "invalid Snowflake response field data.rowtype: must not be empty when result data is present"
+        );
+    }
+
+    #[test]
+    fn manifest_accepts_non_empty_rowtype_when_result_data_is_present() {
+        let response = RawQueryResponse {
+            parameters: None,
+            query_id: "query-id".to_string(),
+            get_result_url: None,
+            returned: Some(1),
+            total: None,
+            row_set_bytes: Some(Bytes::from_static(br#"[["x"]]"#)),
+            row_types: Some(vec![text_row_type("X")]),
+            chunk_headers: None,
+            qrmk: None,
+            chunks: None,
+            query_result_format: Some("json".to_string()),
+        };
+
+        let manifest = ResultManifest::try_from(response).unwrap();
+        assert_eq!(manifest.snapshot.schema.len(), 1);
+        assert_eq!(manifest.snapshot.partitions.len(), 1);
+        assert!(matches!(
+            manifest.snapshot.partitions.first(),
+            Some(PartitionSpec::Inline)
+        ));
     }
 }

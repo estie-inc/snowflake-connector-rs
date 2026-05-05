@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, num::NonZeroUsize, sync::Arc};
 
 use tokio::task::JoinSet;
 
-use crate::{Error, Result, result::ResultTable, runtime::BlockingParseLimiter};
+use crate::{Result, error::InternalError, result::ResultTable, runtime::BlockingParseLimiter};
 
 use super::{
     partition_source::{PartitionSource, remote_fetch_context},
@@ -68,11 +68,10 @@ impl CollectWindow {
 
     pub(crate) async fn join_next(&mut self) -> Option<Result<(usize, ResultTable)>> {
         let join_result = self.tasks.join_next().await?;
-        Some(
-            join_result
-                .map_err(Error::FutureJoin)
-                .and_then(|(ordinal, r)| r.map(|t| (ordinal, t))),
-        )
+        Some(match join_result {
+            Ok((ordinal, result)) => result.map(|table| (ordinal, table)),
+            Err(err) => Err(InternalError::future_join(err).into()),
+        })
     }
 
     pub(crate) fn commit(

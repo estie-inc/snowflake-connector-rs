@@ -3,7 +3,10 @@ use std::io::{self, Write};
 use reqwest::Url;
 
 use super::payload::{BrowserCallbackPayload, parse_token_and_consent_from_pairs};
-use crate::{Error, Result};
+use crate::{
+    Result,
+    error::{AuthError, InternalError},
+};
 
 #[cfg(unix)]
 use super::manual_input_unix;
@@ -11,7 +14,7 @@ use super::manual_input_unix;
 pub(super) async fn manual_token_flow() -> Result<BrowserCallbackPayload> {
     tokio::task::spawn_blocking(manual_token_flow_blocking)
         .await
-        .map_err(|e| Error::Communication(format!("manual input task failed: {e}")))?
+        .map_err(InternalError::future_join)?
 }
 
 fn manual_token_flow_blocking() -> Result<BrowserCallbackPayload> {
@@ -40,16 +43,14 @@ fn read_redirected_url_line() -> Result<String> {
     let mut input = String::new();
     io::stdin()
         .read_line(&mut input)
-        .map_err(|e| Error::Communication(format!("failed to read input: {e}")))?;
+        .map_err(|e| AuthError::external_browser_with_source("failed to read input", e))?;
 
     validate_redirected_url_input(input)
 }
 
 pub(super) fn validate_redirected_url_input(input: String) -> Result<String> {
     if input.trim().is_empty() {
-        return Err(Error::Communication(
-            "No redirected URL was provided".to_string(),
-        ));
+        return Err(AuthError::external_browser("No redirected URL was provided").into());
     }
     Ok(input)
 }
@@ -72,10 +73,10 @@ fn extract_payload_from_url(url: &str) -> Option<BrowserCallbackPayload> {
 
 fn payload_from_redirect_input(input: &str) -> Result<BrowserCallbackPayload> {
     extract_payload_from_url(input).ok_or_else(|| {
-        Error::Communication(
-            "Unable to extract token from redirected URL (expected query or fragment token=...)"
-                .to_string(),
+        AuthError::external_browser(
+            "Unable to extract token from redirected URL (expected query or fragment token=...)",
         )
+        .into()
     })
 }
 

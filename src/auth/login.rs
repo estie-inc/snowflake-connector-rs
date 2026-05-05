@@ -4,7 +4,10 @@ use reqwest::{Client, Url};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{Error, Result, SnowflakeAuthMethod, SnowflakeClientConfig};
+use crate::{
+    Result, SnowflakeAuthMethod, SnowflakeClientConfig,
+    error::{AuthError, ConfigError, NetworkError, ProtocolError},
+};
 
 use super::client::AUTH_REQUEST_TIMEOUT;
 #[cfg(feature = "external-browser-sso")]
@@ -29,7 +32,9 @@ pub(crate) async fn login(
     let auth = config.auth();
     let session = config.session();
 
-    let url = base_url.join("session/v1/login-request")?;
+    let url = base_url
+        .join("session/v1/login-request")
+        .map_err(|e| ConfigError::invalid_url(e.to_string()))?;
 
     let mut queries: Vec<(&str, &str)> = vec![];
     if let Some(warehouse) = session.warehouse() {
@@ -113,24 +118,32 @@ pub(crate) async fn login(
         );
     }
 
-    let resp = request.send().await?;
+    let resp = request.send().await.map_err(NetworkError::request)?;
 
     let status = resp.status();
-    let body = resp.text().await?;
+    let body = resp.text().await.map_err(NetworkError::request)?;
     if !status.is_success() {
-        return Err(Error::Communication(format!("HTTP {status}: {body}")));
+        return Err(NetworkError::http_status(status.as_u16(), body.as_bytes()).into());
     }
 
-    let parsed: Response = serde_json::from_str(&body).map_err(|e| Error::Json(e, body))?;
+    let token = parse_login_response(&body)?;
+
+    Ok(token)
+}
+
+fn parse_login_response(body: &str) -> Result<String> {
+    let parsed: Response =
+        serde_json::from_str(body).map_err(|e| ProtocolError::json_parse(e, body))?;
     if !parsed.success {
-        return Err(Error::Communication(parsed.message.unwrap_or_default()));
+        return Err(AuthError::login_rejected(parsed.message).into());
     }
 
     let data = parsed
         .data
-        .ok_or_else(|| Error::Communication("missing login-response data".to_string()))?;
+        .ok_or_else(|| ProtocolError::missing_field("data"))?;
 
-    Ok(data.token)
+    data.token
+        .ok_or_else(|| ProtocolError::missing_field("data.token").into())
 }
 
 fn login_request_data(username: &str, account: &str, auth: &SnowflakeAuthMethod) -> Result<Value> {
@@ -180,16 +193,14 @@ fn login_request_data(username: &str, account: &str, auth: &SnowflakeAuthMethod)
             "TOKEN": token
         })),
         #[cfg(feature = "external-browser-sso")]
-        SnowflakeAuthMethod::ExternalBrowser(_) => Err(Error::UnsupportedFormat(
-            "external browser flow should be handled upstream".into(),
-        )),
+        SnowflakeAuthMethod::ExternalBrowser(_) => unreachable!("handled in caller"),
     }
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LoginResponseData {
-    token: String,
+    token: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -197,4 +208,47 @@ struct Response {
     data: Option<LoginResponseData>,
     message: Option<String>,
     success: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ErrorKind;
+
+    #[test]
+    fn parse_login_response_missing_data_is_protocol_error() {
+        let err = parse_login_response(r#"{"success":true}"#).unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::Protocol);
+        assert_eq!(err.snowflake_message(), None);
+    }
+
+    #[test]
+    fn parse_login_response_missing_token_is_protocol_error() {
+        let err = parse_login_response(r#"{"success":true,"data":{}}"#).unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::Protocol);
+        assert_eq!(
+            err.to_string(),
+            "missing required field in Snowflake response: data.token"
+        );
+    }
+
+    #[test]
+    fn parse_login_response_rejected_keeps_auth_classification() {
+        let err =
+            parse_login_response(r#"{"success":false,"message":"bad credentials"}"#).unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::Auth);
+        assert_eq!(err.snowflake_message(), Some("bad credentials"));
+    }
+
+    #[test]
+    fn parse_login_response_rejected_without_message_preserves_absence() {
+        let err = parse_login_response(r#"{"success":false}"#).unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::Auth);
+        assert_eq!(err.snowflake_message(), None);
+        assert_eq!(err.to_string(), "authentication rejected");
+    }
 }

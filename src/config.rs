@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use url::Url;
 
-use crate::{Error, Result, SnowflakeAuthMethod};
+use crate::{Result, SnowflakeAuthMethod, error::ConfigError};
 
 /// Top-level configuration for a [`SnowflakeClient`](crate::SnowflakeClient).
 #[derive(Clone)]
@@ -244,9 +244,10 @@ impl SnowflakeEndpointConfig {
 
     pub(crate) fn resolve(&self, account: &str) -> Result<Url> {
         match self {
-            Self::AccountDefault => {
-                Url::parse(&format!("https://{account}.snowflakecomputing.com")).map_err(Into::into)
-            }
+            Self::AccountDefault => Ok(Url::parse(&format!(
+                "https://{account}.snowflakecomputing.com"
+            ))
+            .map_err(|e| ConfigError::invalid_url(e.to_string()))?),
             Self::CustomBaseUrl(url) => validate_custom_base_url(url.clone()),
         }
     }
@@ -256,26 +257,25 @@ const ALLOWED_ENDPOINT_SCHEMES: &[&str] = &["http", "https"];
 
 fn validate_custom_base_url(mut url: Url) -> Result<Url> {
     if !ALLOWED_ENDPOINT_SCHEMES.contains(&url.scheme()) {
-        return Err(Error::Url(format!(
+        return Err(ConfigError::invalid_url(format!(
             "unsupported custom base URL scheme '{}'; allowed: {}",
             url.scheme(),
             ALLOWED_ENDPOINT_SCHEMES.join(", "),
-        )));
+        ))
+        .into());
     }
     if url.query().is_some() || url.fragment().is_some() {
-        return Err(Error::Url(
-            "custom base URL must not contain query or fragment".to_string(),
-        ));
+        return Err(
+            ConfigError::invalid_url("custom base URL must not contain query or fragment").into(),
+        );
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(Error::Url(
-            "custom base URL must not contain credentials".to_string(),
-        ));
+        return Err(
+            ConfigError::invalid_url("custom base URL must not contain credentials").into(),
+        );
     }
     if url.path() != "/" && !url.path().is_empty() {
-        return Err(Error::Url(
-            "custom base URL must not contain a path".to_string(),
-        ));
+        return Err(ConfigError::invalid_url("custom base URL must not contain a path").into());
     }
     url.set_path("/");
     Ok(url)
@@ -310,7 +310,9 @@ impl SnowflakeTransportConfig {
             builder
         };
 
-        Ok(builder.build()?)
+        Ok(builder
+            .build()
+            .map_err(ConfigError::client_builder_failure)?)
     }
 }
 
@@ -336,7 +338,8 @@ impl SnowflakeProxyConfig {
 
     pub(crate) fn to_reqwest_proxy(&self) -> Result<reqwest::Proxy> {
         let url = validate_proxy_url(self.url.clone())?;
-        let mut proxy = reqwest::Proxy::all(url.as_str())?;
+        let mut proxy =
+            reqwest::Proxy::all(url.as_str()).map_err(ConfigError::client_builder_failure)?;
 
         if let SnowflakeProxyAuth::Basic { username, password } = &self.auth {
             proxy = proxy.basic_auth(username, password);
@@ -350,21 +353,23 @@ const ALLOWED_PROXY_SCHEMES: &[&str] = &["http", "https"];
 
 fn validate_proxy_url(url: Url) -> Result<Url> {
     if !ALLOWED_PROXY_SCHEMES.contains(&url.scheme()) {
-        return Err(Error::Url(format!(
+        return Err(ConfigError::invalid_url(format!(
             "unsupported proxy URL scheme '{}'; allowed: {}",
             url.scheme(),
             ALLOWED_PROXY_SCHEMES.join(", "),
-        )));
+        ))
+        .into());
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(Error::Url(
-            "proxy URL must not contain credentials; use SnowflakeProxyConfig::with_basic_auth() instead".to_string(),
-        ));
+        return Err(ConfigError::invalid_url(
+            "proxy URL must not contain credentials; use SnowflakeProxyConfig::with_basic_auth() instead",
+        )
+        .into());
     }
     if url.query().is_some() || url.fragment().is_some() {
-        return Err(Error::Url(
-            "proxy URL must not contain query or fragment".to_string(),
-        ));
+        return Err(
+            ConfigError::invalid_url("proxy URL must not contain query or fragment").into(),
+        );
     }
     Ok(url)
 }

@@ -136,11 +136,11 @@ async fn test_dynamic_row_get_resolves_escaped_identifiers() -> Result<()> {
 
     assert!(matches!(
         row.get("MIXEDCASE"),
-        Err(SchemaError::MissingColumn { .. })
+        Err(SchemaError::MissingColumn(_))
     ));
     assert!(matches!(
         row.get("MY COLUMN"),
-        Err(SchemaError::MissingColumn { .. })
+        Err(SchemaError::MissingColumn(_))
     ));
 
     Ok(())

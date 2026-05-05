@@ -9,13 +9,20 @@ use crate::result::{
     row::RowRef,
     schema::{ColumnIndex, ColumnType},
 };
-use crate::{Error, Result, SchemaError};
+use crate::{ColumnCountMismatchError, Error, Result, SchemaError};
 
 const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 
 /// Trait for decoding a single cell into a Rust value.
 pub trait FromCell: Sized {
     fn expected() -> Cow<'static, str>;
+
+    /// Decode a single cell into `Self`.
+    ///
+    /// # Errors
+    ///
+    /// Implementations may return any [`crate::Error`] appropriate for their
+    /// decode logic.
     fn from_cell(cell: CellRef<'_>) -> Result<Self>;
 }
 
@@ -23,7 +30,20 @@ pub trait FromCell: Sized {
 pub trait FromRow: Sized {
     type Plan: Send + Sync;
 
+    /// Build a reusable decode plan for `Self` from result-set metadata.
+    ///
+    /// # Errors
+    ///
+    /// Implementations may return any [`crate::Error`] appropriate for schema
+    /// validation or planning.
     fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan>;
+
+    /// Materialize a row using a precomputed plan.
+    ///
+    /// # Errors
+    ///
+    /// Implementations may return any [`crate::Error`] appropriate for row
+    /// conversion.
     fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self>;
 }
 
@@ -33,10 +53,10 @@ impl FromRow for () {
     fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
         let schema = ctx.schema();
         if !schema.is_empty() {
-            return Err(Error::Schema(SchemaError::ColumnCountMismatch {
-                expected: 0,
-                actual: schema.len(),
-            }));
+            return Err(
+                SchemaError::ColumnCountMismatch(ColumnCountMismatchError::new(0, schema.len()))
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -634,12 +654,12 @@ macro_rules! impl_tuple_from_row {
             fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
                 let schema = ctx.schema();
                 if schema.len() != $len {
-                    return Err(Error::Schema(SchemaError::ColumnCountMismatch {
-                        expected: $len,
-                        actual: schema.len(),
-                    }));
+                    return Err(SchemaError::ColumnCountMismatch(
+                        ColumnCountMismatchError::new($len, schema.len()),
+                    )
+                    .into());
                 }
-                Ok([$(ColumnIndex::new($idx)?),*])
+                Ok([$(ColumnIndex::new($idx as u32)),*])
             }
 
             fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
@@ -904,11 +924,9 @@ mod tests {
             Err(err) => err,
         };
         assert!(matches!(
-            err,
-            Error::Schema(SchemaError::ColumnCountMismatch {
-                expected: 0,
-                actual: 1
-            })
+            err.as_schema_error(),
+            Some(SchemaError::ColumnCountMismatch(error))
+                if error.expected() == 0 && error.actual() == 1
         ));
     }
 
@@ -940,7 +958,7 @@ mod tests {
             .next()
             .unwrap()
             .unwrap_err();
-        assert!(matches!(err, Error::Decode(_)));
+        assert!(err.as_cell_decode_error().is_some());
     }
 
     /// A `TEXT "42"` cell must NOT decode as `i64` even though the parse
@@ -949,7 +967,7 @@ mod tests {
     fn integer_rejects_text_column() {
         let t = one_cell_table(ColumnType::Text { length: None }, "42");
         let e = t.rows::<(i64,)>().unwrap().next().unwrap().unwrap_err();
-        assert!(matches!(e, Error::Decode(_)), "got {e:?}");
+        assert!(e.as_cell_decode_error().is_some(), "got {e:?}");
     }
 
     /// `BOOLEAN "1"` decoded as `i64` must fail; integers require `FIXED`.
@@ -957,7 +975,7 @@ mod tests {
     fn integer_rejects_boolean_column() {
         let t = one_cell_table(ColumnType::Boolean, "1");
         let e = t.rows::<(i64,)>().unwrap().next().unwrap().unwrap_err();
-        assert!(matches!(e, Error::Decode(_)));
+        assert!(e.as_cell_decode_error().is_some());
     }
 
     /// `FIXED(scale=2)` already had a guard; keep it locked down.
@@ -971,7 +989,7 @@ mod tests {
             "12",
         );
         let e = t.rows::<(i64,)>().unwrap().next().unwrap().unwrap_err();
-        assert!(matches!(e, Error::Decode(_)));
+        assert!(e.as_cell_decode_error().is_some());
     }
 
     /// `TEXT "true"` must NOT decode as `bool`.
@@ -979,7 +997,7 @@ mod tests {
     fn bool_rejects_text_column() {
         let t = one_cell_table(ColumnType::Text { length: None }, "true");
         let e = t.rows::<(bool,)>().unwrap().next().unwrap().unwrap_err();
-        assert!(matches!(e, Error::Decode(_)));
+        assert!(e.as_cell_decode_error().is_some());
     }
 
     #[test]
@@ -1053,7 +1071,7 @@ mod tests {
             .next()
             .unwrap()
             .unwrap_err();
-        assert!(matches!(err, Error::Decode(_)));
+        assert!(err.as_cell_decode_error().is_some());
     }
 
     /// The outer rowset parser should unescape once, leaving the inner JSON
@@ -1080,7 +1098,7 @@ mod tests {
     fn binary_rejects_text_column() {
         let t = one_cell_table(ColumnType::Text { length: None }, "48656C6C6F");
         let e = t.rows::<(Vec<u8>,)>().unwrap().next().unwrap().unwrap_err();
-        assert!(matches!(e, Error::Decode(_)));
+        assert!(e.as_cell_decode_error().is_some());
     }
 
     /// `TIMESTAMP_LTZ` must NOT decode as `NaiveDateTime` — semantics differ.
@@ -1093,7 +1111,7 @@ mod tests {
             .next()
             .unwrap()
             .unwrap_err();
-        assert!(matches!(e, Error::Decode(_)));
+        assert!(e.as_cell_decode_error().is_some());
     }
 
     #[test]

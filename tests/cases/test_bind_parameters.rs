@@ -302,7 +302,7 @@ async fn test_bind_parameters_timestamp_tz_round_trips_control_and_extreme_offse
         let rendered = render_bound_timestamp_tz(&session, offset)
             .await
             .map_err(|err| {
-                snowflake_connector_rs::Error::Communication(format!(
+                snowflake_connector_rs::Error::other(format!(
                     "{label} bind unexpectedly failed: {err}"
                 ))
             })?;

@@ -3,7 +3,6 @@ use std::io;
 use std::process::{Command, Stdio};
 
 use indexmap::IndexSet;
-use thiserror::Error;
 
 /// Result of attempting to launch a browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,11 +13,20 @@ pub(crate) enum LaunchOutcome {
     ManualOpen { url: String },
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub(crate) enum BrowserError {
-    #[error("URL must not be empty")]
     EmptyUrl,
 }
+
+impl std::fmt::Display for BrowserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyUrl => f.write_str("URL must not be empty"),
+        }
+    }
+}
+
+impl std::error::Error for BrowserError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Platform {

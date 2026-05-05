@@ -60,12 +60,12 @@ fn build_plan_line(field: &FieldInfo, crate_path: &syn::Path) -> TokenStream2 {
             let pos_lit = syn::Index::from(*pos);
             quote! {
                 if schema.len() <= #pos_lit {
-                    return ::core::result::Result::Err(#crate_path::Error::Schema(
-                        #crate_path::SchemaError::ColumnCountMismatch {
-                            expected: #pos_lit + 1,
-                            actual: schema.len(),
-                        }
-                    ));
+                    return ::core::result::Result::Err(
+                        #crate_path::SchemaError::ColumnCountMismatch(
+                            #crate_path::ColumnCountMismatchError::new(#pos_lit + 1, schema.len())
+                        )
+                        .into()
+                    );
                 }
                 let #ident = schema.columns()[#pos_lit].index();
             }
