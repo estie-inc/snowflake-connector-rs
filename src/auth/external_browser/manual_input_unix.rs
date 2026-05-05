@@ -4,7 +4,7 @@ use std::ops::ControlFlow;
 use nix::sys::termios::{self, LocalFlags, SetArg, SpecialCharacterIndices, Termios};
 
 use super::manual_redirect_input::validate_redirected_url_input;
-use crate::{Error, Result};
+use crate::{Result, error::AuthError};
 
 pub(super) fn try_read_redirected_url_line_noncanonical() -> Option<Result<String>> {
     let stdin = io::stdin();
@@ -34,7 +34,7 @@ fn read_line_noncanonical() -> Result<String> {
     loop {
         let n = handle
             .read(&mut buf)
-            .map_err(|e| Error::Communication(format!("failed to read input: {e}")))?;
+            .map_err(|e| AuthError::external_browser_with_source("failed to read input", e))?;
         if n == 0 {
             break;
         }
@@ -76,8 +76,10 @@ fn apply_chunk_to_line(initial: Vec<u8>, chunk: &[u8]) -> LineChunkState {
 }
 
 fn bytes_to_utf8(bytes: Vec<u8>) -> Result<String> {
-    String::from_utf8(bytes)
-        .map_err(|e| Error::Communication(format!("redirected URL is not valid UTF-8: {e}")))
+    String::from_utf8(bytes).map_err(|e| {
+        AuthError::external_browser_with_source("redirected URL input was not valid UTF-8", e)
+            .into()
+    })
 }
 
 struct NonCanonicalModeGuard {
@@ -112,6 +114,7 @@ fn nix_error_to_io(err: nix::errno::Errno) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ErrorKind;
 
     #[test]
     fn apply_chunk_to_line_accumulates_without_newline() {
@@ -149,6 +152,7 @@ mod tests {
     #[test]
     fn bytes_to_utf8_rejects_invalid_utf8() {
         let err = bytes_to_utf8(vec![0xff]).unwrap_err();
-        assert!(format!("{err}").contains("not valid UTF-8"));
+        assert_eq!(err.kind(), ErrorKind::Auth);
+        assert!(format!("{err}").contains("redirected URL input was not valid UTF-8"));
     }
 }

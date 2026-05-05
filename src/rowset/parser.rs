@@ -16,7 +16,8 @@ use super::{
     workload::execute_parse_work,
 };
 use crate::{
-    Error, ParseError, Result,
+    Error, Result,
+    error::RowsetParseError,
     result::{RawSpan, ResultTable, ResultTableBuilder, Schema},
     runtime::BlockingParseLimiter,
 };
@@ -98,7 +99,9 @@ fn parse_table_with_shape(
 
 fn checked_row_count_hint(row_count: Option<u64>) -> Result<Option<usize>> {
     row_count
-        .map(|rows| usize::try_from(rows).map_err(|_| Error::Parse(ParseError::CapacityOverflow)))
+        .map(|rows| {
+            usize::try_from(rows).map_err(|_| Error::from(RowsetParseError::CapacityOverflow))
+        })
         .transpose()
 }
 
@@ -195,17 +198,19 @@ impl<'a> JsonScanner<'a> {
     }
 
     fn err_unexpected(&self, expected: &'static str) -> Error {
-        Error::Parse(ParseError::UnexpectedToken {
+        RowsetParseError::UnexpectedToken {
             offset: self.offset,
             expected,
-        })
+        }
+        .into()
     }
 
     fn err_string(&self, reason: impl Into<Box<str>>) -> Error {
-        Error::Parse(ParseError::InvalidString {
+        RowsetParseError::InvalidString {
             offset: self.offset,
             reason: reason.into(),
-        })
+        }
+        .into()
     }
 
     /// Parse a row: `[` cell (`,` cell)* `]`.
@@ -282,11 +287,12 @@ impl<'a> JsonScanner<'a> {
                         validate_utf8(slice, content_start)?;
                     }
                     if (content_start as u64).saturating_add(len as u64) > u32::MAX as u64 {
-                        return Err(Error::Parse(ParseError::SpanOverflow {
+                        return Err(RowsetParseError::SpanOverflow {
                             limit: u32::MAX as u64,
                             actual: (content_start + len) as u64,
                             scope: "wire span",
-                        }));
+                        }
+                        .into());
                     }
                     builder.push_raw_text(RawSpan {
                         start: content_start as u32,
@@ -364,32 +370,32 @@ fn utf8_bom_prefix_len(bytes: &[u8]) -> usize {
 fn map_json_string_scan_error(err: JsonStringScanError<Error>) -> Error {
     match err {
         JsonStringScanError::UnterminatedString { offset } => {
-            Error::Parse(ParseError::InvalidString {
+            Error::from(RowsetParseError::InvalidString {
                 offset,
                 reason: Box::from("unterminated string"),
             })
         }
         JsonStringScanError::TrailingBackslash { offset } => {
-            Error::Parse(ParseError::InvalidString {
+            Error::from(RowsetParseError::InvalidString {
                 offset,
                 reason: Box::from("trailing backslash"),
             })
         }
         JsonStringScanError::UnknownEscape { offset, escape } => {
-            Error::Parse(ParseError::InvalidString {
+            Error::from(RowsetParseError::InvalidString {
                 offset,
                 reason: format!("unknown escape: \\{}", escape as char).into_boxed_str(),
             })
         }
         JsonStringScanError::ControlCharacter { offset } => {
-            Error::Parse(ParseError::InvalidString {
+            Error::from(RowsetParseError::InvalidString {
                 offset,
                 reason: Box::from("control character in string"),
             })
         }
         JsonStringScanError::InvalidUnicodeEscape { offset }
         | JsonStringScanError::InvalidUnicodeSurrogatePair { offset } => {
-            Error::Parse(ParseError::InvalidUnicodeEscape { offset })
+            Error::from(RowsetParseError::InvalidUnicodeEscape { offset })
         }
         JsonStringScanError::Visitor(err) => err,
     }
@@ -397,7 +403,7 @@ fn map_json_string_scan_error(err: JsonStringScanError<Error>) -> Error {
 
 fn validate_utf8(bytes: &[u8], start_offset: usize) -> Result<()> {
     std::str::from_utf8(bytes).map_err(|err| {
-        Error::Parse(ParseError::InvalidString {
+        Error::from(RowsetParseError::InvalidString {
             offset: start_offset + err.valid_up_to(),
             reason: Box::from("invalid UTF-8 in string"),
         })
@@ -629,8 +635,8 @@ mod tests {
         let s = schema(1);
         let err = parse_inline_result_table(s, qid(), body).unwrap_err();
         assert!(matches!(
-            err,
-            Error::Parse(ParseError::UnexpectedToken { expected, .. }) if expected == "end of input"
+            err.as_rowset_parse_error(),
+            Some(RowsetParseError::UnexpectedToken { expected, .. }) if *expected == "end of input"
         ));
     }
 
@@ -682,8 +688,8 @@ mod tests {
         let s = schema(1);
         let err = parse_inline_result_table(s, qid(), body).unwrap_err();
         assert!(matches!(
-            err,
-            Error::Parse(ParseError::InvalidString { .. })
+            err.as_rowset_parse_error(),
+            Some(RowsetParseError::InvalidString { .. })
         ));
     }
 
@@ -693,8 +699,8 @@ mod tests {
         let s = schema(1);
         let err = parse_inline_result_table(s, qid(), body).unwrap_err();
         assert!(matches!(
-            err,
-            Error::Parse(ParseError::InvalidString { .. })
+            err.as_rowset_parse_error(),
+            Some(RowsetParseError::InvalidString { .. })
         ));
     }
 
@@ -704,8 +710,8 @@ mod tests {
         let s = schema(1);
         let err = parse_inline_result_table(s, qid(), body).unwrap_err();
         assert!(matches!(
-            err,
-            Error::Parse(ParseError::InvalidString { .. })
+            err.as_rowset_parse_error(),
+            Some(RowsetParseError::InvalidString { .. })
         ));
     }
 
@@ -716,8 +722,8 @@ mod tests {
         let s = schema(2);
         let err = parse_inline_result_table(s, qid(), body).unwrap_err();
         assert!(matches!(
-            err,
-            Error::Parse(ParseError::RowLengthMismatch { .. })
+            err.as_rowset_parse_error(),
+            Some(RowsetParseError::RowLengthMismatch { .. })
         ));
     }
 
@@ -727,8 +733,8 @@ mod tests {
         let s = schema(1);
         let err = parse_inline_result_table(s, qid(), body).unwrap_err();
         assert!(matches!(
-            err,
-            Error::Parse(ParseError::InvalidString { .. })
+            err.as_rowset_parse_error(),
+            Some(RowsetParseError::InvalidString { .. })
         ));
     }
 
@@ -754,8 +760,8 @@ mod tests {
         let s = schema(1);
         let err = parse_inline_result_table(s, qid(), body).unwrap_err();
         assert!(matches!(
-            err,
-            Error::Parse(ParseError::UnexpectedToken { .. })
+            err.as_rowset_parse_error(),
+            Some(RowsetParseError::UnexpectedToken { .. })
         ));
     }
 
@@ -765,8 +771,8 @@ mod tests {
         let s = schema(1);
         let err = parse_remote_chunk_result_table(s, qid(), body).unwrap_err();
         assert!(matches!(
-            err,
-            Error::Parse(ParseError::UnexpectedToken { .. })
+            err.as_rowset_parse_error(),
+            Some(RowsetParseError::UnexpectedToken { .. })
         ));
     }
 
@@ -783,8 +789,8 @@ mod tests {
         let err =
             parse_remote_chunk_result_table(s, qid(), Bytes::from_static(b" \n\t")).unwrap_err();
         assert!(matches!(
-            err,
-            Error::Parse(ParseError::UnexpectedToken { expected, .. }) if expected == "'['"
+            err.as_rowset_parse_error(),
+            Some(RowsetParseError::UnexpectedToken { expected, .. }) if *expected == "'['"
         ));
     }
 
@@ -804,8 +810,8 @@ mod tests {
     {
         let err = parse(Bytes::from(body)).unwrap_err();
         assert!(matches!(
-            err,
-            Error::Parse(ParseError::UnexpectedToken { expected, .. }) if expected == "string or null"
+            err.as_rowset_parse_error(),
+            Some(RowsetParseError::UnexpectedToken { expected, .. }) if *expected == "string or null"
         ));
     }
 
@@ -953,6 +959,6 @@ mod tests {
         })
         .await
         .unwrap_err();
-        assert!(matches!(err, Error::FutureJoin(_)));
+        assert_eq!(err.kind(), crate::ErrorKind::Internal);
     }
 }

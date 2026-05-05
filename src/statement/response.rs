@@ -1,11 +1,11 @@
 use std::{collections::HashMap, io, sync::Arc};
 
 use bytes::Bytes;
-use http::HeaderMap;
+use http::{HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
-use crate::{Error, Result};
+use crate::{Error, Result, error::ProtocolError};
 
 pub(crate) const SESSION_EXPIRED: &str = "390112";
 pub(crate) const QUERY_IN_PROGRESS_CODE: &str = "333333";
@@ -61,7 +61,7 @@ struct BorrowedSnowflakeResponse<'a> {
 #[serde(rename_all = "camelCase")]
 struct BorrowedRawQueryResponse<'a> {
     parameters: Option<Vec<RawQueryResponseParameter>>,
-    query_id: String,
+    query_id: Option<String>,
     get_result_url: Option<String>,
     returned: Option<i64>,
     total: Option<i64>,
@@ -83,7 +83,7 @@ struct BorrowedRawQueryResponse<'a> {
 pub(crate) fn parse_response(body: Bytes) -> Result<SnowflakeResponse> {
     let borrowed: BorrowedSnowflakeResponse<'_> =
         serde_json::from_slice(strip_utf8_bom(body.as_ref()))
-            .map_err(|e| Error::Json(e, String::from_utf8_lossy(&body[..]).into_owned()))?;
+            .map_err(|e| ProtocolError::json_parse(e, &body))?;
 
     let data = borrowed
         .data
@@ -94,7 +94,9 @@ pub(crate) fn parse_response(body: Bytes) -> Result<SnowflakeResponse> {
                 .transpose()?;
             Ok::<RawQueryResponse, Error>(RawQueryResponse {
                 parameters: d.parameters,
-                query_id: d.query_id,
+                query_id: d
+                    .query_id
+                    .ok_or_else(|| ProtocolError::missing_field("data.queryId"))?,
                 get_result_url: d.get_result_url,
                 returned: d.returned,
                 total: d.total,
@@ -140,10 +142,11 @@ fn row_set_bytes_from_raw_value(body: &Bytes, raw: &RawValue) -> Result<Bytes> {
 }
 
 fn json_scan_error(body: &Bytes, message: impl Into<String>) -> Error {
-    Error::Json(
+    ProtocolError::json_parse(
         serde_json::Error::io(io::Error::new(io::ErrorKind::InvalidData, message.into())),
-        String::from_utf8_lossy(&body[..]).into_owned(),
+        body,
     )
+    .into()
 }
 
 fn strip_utf8_bom(bytes: &[u8]) -> &[u8] {
@@ -199,11 +202,15 @@ pub(crate) fn resolve_download_headers(
     // returns `chunkHeaders: {}` that empty map is used as-is, without
     // falling back to qrmk-derived SSE-C headers.
     let headers = match (chunk_headers, qrmk) {
-        (Some(ch), _) => HeaderMap::try_from(ch)?,
+        (Some(ch), _) => HeaderMap::try_from(ch).map_err(ProtocolError::header_conversion)?,
         (None, Some(qrmk)) => {
             let mut h = HeaderMap::with_capacity(2);
-            h.append(HEADER_SSE_C_ALGORITHM, AES256.parse()?);
-            h.append(HEADER_SSE_C_KEY, qrmk.parse()?);
+            h.append(HEADER_SSE_C_ALGORITHM, HeaderValue::from_static(AES256));
+            h.append(
+                HEADER_SSE_C_KEY,
+                qrmk.parse()
+                    .map_err(ProtocolError::invalid_response_header_value)?,
+            );
             h
         }
         _ => HeaderMap::new(),
@@ -286,7 +293,10 @@ mod tests {
         let body = Bytes::from(
             r#"{"message":"\uD83D","data":{"queryId":"q1","rowset":[["ok"]],"rowtype":[],"queryResultFormat":"json"},"success":true}"#,
         );
-        assert!(matches!(parse_response(body), Err(Error::Json(..))));
+        assert!(matches!(
+            parse_response(body),
+            Err(err) if err.kind() == crate::ErrorKind::Protocol
+        ));
     }
 
     #[test]
@@ -296,6 +306,18 @@ mod tests {
         );
         let resp = parse_response(body).unwrap();
         assert!(resp.data.expect("data").row_set_bytes.is_none());
+    }
+
+    #[test]
+    fn parse_response_missing_query_id_is_protocol_error() {
+        let body = Bytes::from(r#"{"data":{"rowset":null},"success":true}"#);
+
+        let err = parse_response(body).unwrap_err();
+        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
+        assert_eq!(
+            err.to_string(),
+            "missing required field in Snowflake response: data.queryId"
+        );
     }
 
     #[test]
@@ -346,5 +368,20 @@ mod tests {
             headers.get(HEADER_SSE_C_KEY).is_none(),
             "qrmk headers must not be present when chunkHeaders is provided"
         );
+    }
+
+    #[test]
+    fn resolve_headers_invalid_chunk_headers_are_protocol_errors() {
+        let mut map = HashMap::new();
+        map.insert("x-custom".to_string(), "bad\nvalue".to_string());
+
+        let err = resolve_download_headers(&None, &Some(map)).unwrap_err();
+        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
+    }
+
+    #[test]
+    fn resolve_headers_invalid_qrmk_is_protocol_error() {
+        let err = resolve_download_headers(&Some("bad\nvalue".into()), &None).unwrap_err();
+        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
     }
 }

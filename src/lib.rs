@@ -84,7 +84,10 @@ pub use config::{
     SnowflakeClientConfig, SnowflakeEndpointConfig, SnowflakeProxyConfig, SnowflakeQueryConfig,
     SnowflakeSessionConfig, SnowflakeTransportConfig,
 };
-pub use error::{DecodeError, Error, ParseError, Result, SchemaError};
+pub use error::{
+    AmbiguousColumnError, CellDecodeError, ColumnCountMismatchError, DuplicateColumnNameError,
+    Error, ErrorKind, InvalidColumnIndexError, MissingColumnError, Result, SchemaError,
+};
 pub use query::{Binding, BindingType, QueryRequest};
 pub use query_result::{CollectOptions, ResultSet, TypedResultSet};
 pub use result::{
@@ -170,6 +173,11 @@ pub enum SnowflakeAuthMethod {
 }
 
 impl SnowflakeClient {
+    /// Build a client from validated configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Config` when endpoint or transport configuration is invalid.
     pub fn new(config: SnowflakeClientConfig) -> Result<Self> {
         let base_url = config.endpoint().resolve(config.account())?;
         let http = config.transport().build_http_client()?;
@@ -183,6 +191,12 @@ impl SnowflakeClient {
     }
 
     /// Authenticate and create a new Snowflake session.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Config`, `ErrorKind::Auth`, `ErrorKind::Network`,
+    /// `ErrorKind::Timeout`, `ErrorKind::Protocol`, or `ErrorKind::Internal`
+    /// depending on how session establishment fails.
     pub async fn create_session(&self) -> Result<SnowflakeSession> {
         let session_token = login(&self.http, &self.config, &self.base_url).await?;
         Ok(SnowflakeSession {

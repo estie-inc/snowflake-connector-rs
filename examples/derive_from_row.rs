@@ -188,10 +188,10 @@ fn connect_with_configs(
     if let Some(host) = host {
         let scheme = protocol.unwrap_or_else(|| "https".to_string());
         let mut url = Url::parse(&format!("{scheme}://{host}"))
-            .map_err(|e| snowflake_connector_rs::Error::Url(e.to_string()))?;
+            .map_err(|e| snowflake_connector_rs::Error::other(e.to_string()))?;
         if let Some(port) = port {
             url.set_port(Some(port))
-                .map_err(|_| snowflake_connector_rs::Error::Url("invalid base url port".into()))?;
+                .map_err(|_| snowflake_connector_rs::Error::other("invalid base url port"))?;
         }
         client_config = client_config.with_endpoint(SnowflakeEndpointConfig::custom_base_url(url));
     }

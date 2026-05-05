@@ -5,7 +5,7 @@ use rsa::RsaPrivateKey;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::Result;
+use crate::{Result, error::AuthError};
 
 pub(super) fn generate_jwt_from_key_pair(
     pem: &str,
@@ -21,12 +21,12 @@ pub(super) fn generate_jwt_from_key_pair(
         .unwrap_or_default();
     let username = username.to_ascii_uppercase();
     let private = if let Some(password) = password {
-        RsaPrivateKey::from_pkcs8_encrypted_pem(pem, password)
+        RsaPrivateKey::from_pkcs8_encrypted_pem(pem, password).map_err(AuthError::key_parse)?
     } else {
-        RsaPrivateKey::from_pkcs8_pem(pem)
-    }?;
+        RsaPrivateKey::from_pkcs8_pem(pem).map_err(AuthError::key_parse)?
+    };
     let public = private.to_public_key();
-    let der = public.to_public_key_der()?;
+    let der = public.to_public_key_der().map_err(AuthError::der_parse)?;
     let mut hasher = Sha256::new();
     hasher.update(der);
     let hash = hasher.finalize();
@@ -38,7 +38,10 @@ pub(super) fn generate_jwt_from_key_pair(
         "iat": timestamp,
         "exp": timestamp + 600
     });
-    let key = EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF)?.as_bytes())?;
+    let pem = private
+        .to_pkcs8_pem(LineEnding::LF)
+        .map_err(AuthError::key_parse)?;
+    let key = EncodingKey::from_rsa_pem(pem.as_bytes()).map_err(AuthError::jwt_sign)?;
     let jwt = jsonwebtoken::encode(
         &Header {
             alg: Algorithm::RS256,
@@ -46,7 +49,8 @@ pub(super) fn generate_jwt_from_key_pair(
         },
         &payload,
         &key,
-    )?;
+    )
+    .map_err(AuthError::jwt_sign)?;
     Ok(jwt)
 }
 

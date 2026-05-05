@@ -3,7 +3,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use crate::{
-    Error, ParseError, Result, SchemaError,
+    Result,
+    error::RowsetParseError,
     result::{
         DynamicRow, FromRow,
         cell::{Cell, CellBlock, RawSpan, StringArenaBuilder},
@@ -56,10 +57,24 @@ impl ResultTable {
         self.row_count == 0
     }
 
+    /// Create a typed row iterator for this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error produced by [`FromRow::build_plan`] for `T` when
+    /// preparing to iterate this table.
+    ///
+    /// Built-in and derive-based row types typically use
+    /// `ErrorKind::Decode` when this table's schema does not match `T`;
+    /// inspect the detail via [`crate::Error::as_schema_error`].
     pub fn rows<T: FromRow>(&self) -> Result<Rows<'_, T>> {
         Rows::new(self)
     }
 
+    /// Create a dynamic row iterator for this table.
+    ///
+    /// This uses the built-in [`DynamicRow`] plan, which currently reuses the
+    /// table schema directly and therefore cannot fail.
     pub fn dynamic_rows(&self) -> Result<Rows<'_, DynamicRow>> {
         self.rows::<DynamicRow>()
     }
@@ -73,13 +88,17 @@ impl ResultTable {
     }
 
     /// Concatenate tables that share the same `Arc<Schema>`. Order is preserved.
-    pub(crate) fn concat_same_schema(tables: Vec<ResultTable>) -> Result<ResultTable> {
-        if tables.is_empty() {
-            return Err(Error::Schema(SchemaError::SchemaMismatch));
-        }
-
+    ///
+    /// Caller must guarantee `tables` is non-empty and all tables share the same
+    /// `Arc<Schema>` (i.e. they originate from the same partitioned query). These
+    /// invariants are enforced via `debug_assert!` rather than runtime errors —
+    /// a violation indicates a connector-internal bug, not a user-recoverable
+    /// condition.
+    pub(crate) fn concat_same_schema(tables: Vec<ResultTable>) -> ResultTable {
         let mut iter = tables.into_iter();
-        let first = iter.next().expect("non-empty");
+        let first = iter
+            .next()
+            .expect("concat_same_schema requires at least one table");
         let schema = Arc::clone(&first.schema);
         let query_id = Arc::clone(&first.query_id);
         let mut blocks = Vec::new();
@@ -87,10 +106,10 @@ impl ResultTable {
         push_storage(&first, &mut blocks, &mut row_count);
 
         for t in iter {
-            if !Arc::ptr_eq(&t.schema, &schema) {
-                return Err(Error::Schema(SchemaError::SchemaMismatch));
-            }
-
+            debug_assert!(
+                Arc::ptr_eq(&t.schema, &schema),
+                "concat_same_schema requires all tables to share the same Arc<Schema>"
+            );
             debug_assert_eq!(
                 t.query_id.as_ref(),
                 query_id.as_ref(),
@@ -105,12 +124,12 @@ impl ResultTable {
             ResultTableStorage::Chunks(blocks.into())
         };
 
-        Ok(ResultTable {
+        ResultTable {
             schema,
             query_id,
             storage,
             row_count,
-        })
+        }
     }
 
     pub(crate) fn empty(schema: Arc<Schema>, query_id: Arc<str>) -> Self {
@@ -164,7 +183,7 @@ impl ResultTableBuilder {
         let cap = match row_count_hint {
             Some(rows) => column_count
                 .checked_mul(rows)
-                .ok_or(Error::Parse(ParseError::CapacityOverflow))?
+                .ok_or(RowsetParseError::CapacityOverflow)?
                 .min(CAPACITY_RESERVE_CELL_LIMIT),
             None => 0,
         };
@@ -210,11 +229,12 @@ impl ResultTableBuilder {
 
     pub(crate) fn finish_row(&mut self) -> Result<()> {
         if self.current_row_cells != self.column_count {
-            return Err(Error::Parse(ParseError::RowLengthMismatch {
+            return Err(RowsetParseError::RowLengthMismatch {
                 row: self.row_count,
                 expected: self.column_count,
                 actual: self.current_row_cells,
-            }));
+            }
+            .into());
         }
 
         self.row_count += 1;
@@ -234,22 +254,24 @@ impl ResultTableBuilder {
             current_row_cells,
         } = self;
         if current_row_cells != 0 {
-            return Err(Error::Parse(ParseError::RowLengthMismatch {
+            return Err(RowsetParseError::RowLengthMismatch {
                 row: row_count,
                 expected: column_count,
                 actual: current_row_cells,
-            }));
+            }
+            .into());
         }
 
         let expected = row_count
             .checked_mul(column_count)
-            .ok_or(Error::Parse(ParseError::CapacityOverflow))?;
+            .ok_or(RowsetParseError::CapacityOverflow)?;
         if expected != cells.len() {
-            return Err(Error::Parse(ParseError::RowLengthMismatch {
+            return Err(RowsetParseError::RowLengthMismatch {
                 row: row_count,
                 expected: column_count,
                 actual: cells.len() % column_count.max(1),
-            }));
+            }
+            .into());
         }
 
         let block = CellBlock {
@@ -289,8 +311,8 @@ mod tests {
         b.push_owned_text("a".into());
         let err = b.finish_row().unwrap_err();
         assert!(matches!(
-            err,
-            Error::Parse(ParseError::RowLengthMismatch { .. })
+            err.as_rowset_parse_error(),
+            Some(RowsetParseError::RowLengthMismatch { .. })
         ));
     }
 
@@ -313,7 +335,11 @@ mod tests {
     fn builder_rejects_overflowing_capacity_hint() {
         let schema = dummy_schema(2);
         match ResultTableBuilder::new(schema, Arc::from("test"), None, Some(usize::MAX)) {
-            Err(Error::Parse(ParseError::CapacityOverflow)) => {}
+            Err(err)
+                if matches!(
+                    err.as_rowset_parse_error(),
+                    Some(RowsetParseError::CapacityOverflow)
+                ) => {}
             Err(err) => panic!("expected CapacityOverflow, got {err:?}"),
             Ok(_) => panic!("expected CapacityOverflow"),
         }

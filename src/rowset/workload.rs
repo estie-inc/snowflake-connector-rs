@@ -1,4 +1,4 @@
-use crate::{Error, Result, runtime::BlockingParseLimiter};
+use crate::{Result, error::InternalError, runtime::BlockingParseLimiter};
 
 // These thresholds intentionally allow modest inline parsing so callers avoid
 // paying `spawn_blocking` overhead for medium-sized rowsets, while still
@@ -93,7 +93,7 @@ where
             work()
         })
         .await
-        .map_err(Error::FutureJoin)?;
+        .map_err(InternalError::future_join)?;
 
         Ok((ParseExecution::SpawnBlocking, result?))
     } else {

@@ -98,6 +98,12 @@ impl ResultSet {
     }
 
     /// Fetch the next partition as a `ResultTable`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
+    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if fetching or
+    /// materializing the next partition fails.
     pub async fn next_table(&mut self) -> Result<Option<ResultTable>> {
         if self.cursor.is_exhausted() {
             return Ok(None);
@@ -146,11 +152,24 @@ impl ResultSet {
     }
 
     /// Consume this result set and merge all remaining partitions into a single `ResultTable`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
+    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
+    /// partition fails to materialize.
     pub async fn collect_table(self) -> Result<ResultTable> {
         let policy = self.default_collect_policy;
         self.collect_with_policy(policy).await
     }
 
+    /// Consume this result set and merge all remaining partitions into a single `ResultTable`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
+    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
+    /// partition fails to materialize.
     pub async fn collect_table_with_options(self, options: CollectOptions) -> Result<ResultTable> {
         let policy = CollectPolicy::new(
             options
@@ -160,11 +179,27 @@ impl ResultSet {
         self.collect_with_policy(policy).await
     }
 
+    /// Consume this result set and decode all rows into [`DynamicRow`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
+    /// `ErrorKind::Protocol`, `ErrorKind::Internal`, or
+    /// `ErrorKind::Decode`; inspect the detail via
+    /// [`crate::Error::as_cell_decode_error`].
     pub async fn collect(self) -> Result<Vec<DynamicRow>> {
         let table = self.collect_table().await?;
         table.dynamic_rows()?.collect()
     }
 
+    /// Consume this result set and decode all rows into [`DynamicRow`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
+    /// `ErrorKind::Protocol`, `ErrorKind::Internal`, or
+    /// `ErrorKind::Decode`; inspect the detail via
+    /// [`crate::Error::as_cell_decode_error`].
     pub async fn collect_with_options(self, options: CollectOptions) -> Result<Vec<DynamicRow>> {
         let table = self.collect_table_with_options(options).await?;
         table.dynamic_rows()?.collect()
@@ -190,34 +225,47 @@ impl ResultSet {
 
         let mut tables = Vec::new();
         let total = snapshot.partitions.len();
-        let mut next_remote_ordinal = cursor.next_ordinal;
+        let inline_ordinal = cursor.next_ordinal;
+        let inline_first = matches!(
+            snapshot.partitions.get(inline_ordinal),
+            Some(PartitionSpec::Inline)
+        );
+        let first_remote_ordinal = inline_ordinal + usize::from(inline_first);
 
-        if next_remote_ordinal < total {
-            if let PartitionSpec::Inline = &snapshot.partitions[next_remote_ordinal] {
-                let inline = inline_rowset
-                    .expect("inline_rowset must be Some when partition spec is Inline");
-                let table = parse_inline_result_table_async(
-                    Arc::clone(&snapshot.schema),
-                    Arc::clone(&snapshot.identity.query_id),
-                    inline.bytes,
-                    inline.row_count_hint,
-                    Some(runtime.blocking_parse_limiter()),
-                )
-                .await?;
-                tables.push(table);
-                next_remote_ordinal += 1;
-            }
-        }
-
-        if next_remote_ordinal < total {
-            let source = Arc::new(source);
-            let blocking_parse_limiter = runtime.blocking_parse_limiter();
+        // Start remote prefetch before awaiting inline parsing so network I/O can
+        // overlap any blocking-parse permit wait on the inline partition.
+        let source = (first_remote_ordinal < total).then(|| Arc::new(source));
+        let blocking_parse_limiter = source.as_ref().map(|_| runtime.blocking_parse_limiter());
+        let mut window = source.as_ref().map(|source| {
+            let blocking_parse_limiter = blocking_parse_limiter
+                .as_ref()
+                .expect("limiter exists when source exists");
             let mut window = CollectWindow::new(
-                next_remote_ordinal,
+                first_remote_ordinal,
                 total,
                 policy.prefetch_concurrency.get(),
             );
-            window.fill(&source, &snapshot, &blocking_parse_limiter);
+            window.fill(source, &snapshot, blocking_parse_limiter);
+            window
+        });
+
+        if inline_first {
+            let inline =
+                inline_rowset.expect("inline_rowset must be Some when partition spec is Inline");
+            let table = parse_inline_result_table_async(
+                Arc::clone(&snapshot.schema),
+                Arc::clone(&snapshot.identity.query_id),
+                inline.bytes,
+                inline.row_count_hint,
+                Some(runtime.blocking_parse_limiter()),
+            )
+            .await?;
+            tables.push(table);
+        }
+
+        if let (Some(source), Some(blocking_parse_limiter), Some(mut window)) =
+            (source, blocking_parse_limiter, window.take())
+        {
             while let Some(result) = window.join_next().await {
                 let (ordinal, table) = result?;
                 window.commit(ordinal, table, &mut tables);
@@ -231,7 +279,7 @@ impl ResultSet {
                 Arc::clone(&snapshot.identity.query_id),
             ));
         }
-        ResultTable::concat_same_schema(tables)
+        Ok(ResultTable::concat_same_schema(tables))
     }
 }
 
@@ -241,7 +289,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        Error, SchemaError,
+        MissingColumnError, SchemaError,
         query_result::{
             TypedResultSet,
             collect::CollectPolicy,
@@ -249,6 +297,7 @@ mod tests {
             snapshot::{PartitionCursor, PartitionSpec, ResultIdentity, ResultSnapshot},
         },
         result::{Column, ColumnType, DynamicRow, FromRow, RowPlanContext, RowRef, Schema},
+        rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
     };
 
@@ -325,7 +374,7 @@ mod tests {
     }
 
     fn fail() -> crate::Result<Vec<Vec<Option<String>>>> {
-        Err(crate::Error::ChunkDownload("simulated failure".into()))
+        Err(crate::error::NetworkError::chunk_download(500, "simulated failure").into())
     }
 
     type FakeRows = Vec<Vec<Option<String>>>;
@@ -376,9 +425,7 @@ mod tests {
         type Plan = ();
 
         fn build_plan(_: RowPlanContext<'_>) -> crate::Result<Self::Plan> {
-            Err(Error::Schema(SchemaError::MissingColumn {
-                name: Box::from("MISSING"),
-            }))
+            Err(SchemaError::MissingColumn(MissingColumnError::new("MISSING")).into())
         }
 
         fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> crate::Result<Self> {
@@ -524,6 +571,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_table_starts_remote_prefetch_while_inline_parse_waits_for_permit() {
+        let snapshot = snapshot_with_inline(1);
+        let total = snapshot.partitions.len();
+        let source = FakePartitionSource::new(
+            vec![(1, VecDeque::from(vec![FakeResponse::Rows(ok_rows(1))]))]
+                .into_iter()
+                .collect(),
+        );
+        let fetch_count = source.fetch_count();
+        let runtime = QueryRuntime::with_blocking_parse_concurrency(NonZeroUsize::new(1).unwrap());
+        let permit = runtime.blocking_parse_limiter().acquire_owned().await;
+        let rs = ResultSet::new(
+            snapshot,
+            PartitionCursor::new(total),
+            Some(inline_rowset(br#"[["10"]]"#, Some(BLOCKING_PARSE_CELLS))),
+            PartitionSource::Fake(source),
+            runtime,
+            CollectPolicy::new(NonZeroUsize::new(1).unwrap()),
+        );
+
+        let collect = rs.collect_table();
+        tokio::pin!(collect);
+
+        match tokio::time::timeout(Duration::from_millis(20), &mut collect).await {
+            Err(_) => {}
+            Ok(_) => panic!("expected collect_table to wait for the inline blocking-parse permit"),
+        }
+
+        assert_eq!(fetch_count.load(Ordering::SeqCst), 1);
+
+        drop(permit);
+
+        let table = collect.await.unwrap();
+        assert_eq!(table.row_count(), 2);
+    }
+
+    #[tokio::test]
     async fn typed_result_set_collect_builds_plan_once() {
         reset_build_plan_calls();
         let snapshot = dummy_snapshot(1);
@@ -604,8 +688,8 @@ mod tests {
         };
 
         assert!(matches!(
-            err,
-            Error::Schema(SchemaError::MissingColumn { .. })
+            err.as_schema_error(),
+            Some(SchemaError::MissingColumn(_))
         ));
         assert_eq!(fetch_count.load(Ordering::SeqCst), 0);
     }

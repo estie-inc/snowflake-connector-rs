@@ -3,8 +3,9 @@ use std::borrow::Cow;
 use bytes::Bytes;
 
 use crate::{
+    error::RowsetParseError,
     result::schema::{Column, ColumnType},
-    {DecodeError, Error, ParseError, Result},
+    {CellDecodeError, Error, Result},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -63,11 +64,12 @@ impl StringArenaBuilder {
         let len = end - start;
         if (start as u64).saturating_add(len as u64) > u32::MAX as u64 {
             self.bytes.truncate(start);
-            return Err(Error::Parse(ParseError::SpanOverflow {
+            return Err(RowsetParseError::SpanOverflow {
                 limit: u32::MAX as u64,
                 actual: end as u64,
                 scope: "string arena",
-            }));
+            }
+            .into());
         }
 
         Ok(TextSpan {
@@ -82,14 +84,15 @@ impl StringArenaBuilder {
             .bytes
             .len()
             .checked_add(additional)
-            .ok_or(Error::Parse(ParseError::CapacityOverflow))?;
+            .ok_or(RowsetParseError::CapacityOverflow)?;
 
         if new_len > u32::MAX as usize {
-            return Err(Error::Parse(ParseError::SpanOverflow {
+            return Err(RowsetParseError::SpanOverflow {
                 limit: u32::MAX as u64,
                 actual: new_len as u64,
                 scope: "string arena",
-            }));
+            }
+            .into());
         }
         Ok(())
     }
@@ -173,11 +176,16 @@ impl<'a> CellRef<'a> {
         self.row
     }
 
-    /// Convert NULL into a `DecodeError`. Otherwise return the raw text.
+    /// Convert NULL into a `CellDecodeError`. Otherwise return the raw text.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Decode` when the cell is `NULL`; inspect the
+    /// detail via [`crate::Error::as_cell_decode_error`].
     pub fn required_raw(self, expected: impl Into<Cow<'static, str>>) -> Result<&'a str> {
         match self.raw {
             Some(s) => Ok(s),
-            None => Err(Error::Decode(DecodeError::new(
+            None => Err(CellDecodeError::new(
                 self.row,
                 self.column.index(),
                 self.column.name(),
@@ -185,7 +193,8 @@ impl<'a> CellRef<'a> {
                 self.column.ty().clone(),
                 None,
                 "value is NULL",
-            ))),
+            )
+            .into()),
         }
     }
 
@@ -195,7 +204,7 @@ impl<'a> CellRef<'a> {
         expected: impl Into<Cow<'static, str>>,
         reason: impl Into<Box<str>>,
     ) -> Error {
-        Error::Decode(DecodeError::new(
+        CellDecodeError::new(
             self.row,
             self.column.index(),
             self.column.name(),
@@ -203,6 +212,7 @@ impl<'a> CellRef<'a> {
             self.column.ty().clone(),
             self.raw,
             reason,
-        ))
+        )
+        .into()
     }
 }

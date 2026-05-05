@@ -1,289 +1,761 @@
-use std::{borrow::Cow, string::FromUtf8Error};
+mod decode;
+mod display;
+mod parse;
+mod repr;
+mod schema;
+
+use std::{error::Error as StdError, fmt};
 
 use reqwest::header::InvalidHeaderValue;
 use tokio::task::JoinError;
 
-use crate::result::{ColumnIndex, ColumnType};
+pub use decode::CellDecodeError;
+pub(crate) use parse::RowsetParseError;
+use repr::Repr;
+pub(crate) use repr::{
+    AuthError, ConfigError, InternalError, NetworkError, ProtocolError, ServerError,
+    SessionExpiredError, TimeoutError,
+};
+pub use schema::{
+    AmbiguousColumnError, ColumnCountMismatchError, DuplicateColumnNameError,
+    InvalidColumnIndexError, MissingColumnError, SchemaError,
+};
+
+const VALUE_PREVIEW_MAX_CHARS: usize = 128;
+const JSON_BODY_PREVIEW_MAX_BYTES: usize = 1024;
 
 /// An error that can occur when interacting with Snowflake.
 ///
 /// Note: Errors may include sensitive information from Snowflake.
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("HTTP client error: {0}")]
-    Reqwest(#[from] reqwest::Error),
-
-    #[error("communication error: {0}")]
-    Communication(String),
-
-    #[error("invalid header value: {0}")]
-    InvalidHeader(#[from] InvalidHeaderValue),
-
-    #[error("http error: {0}")]
-    Http(#[from] http::Error),
-
-    #[error("session expired")]
-    SessionExpired,
-
-    #[error("chunk download error: {0}")]
-    ChunkDownload(String),
-
-    #[error("io error: {0}")]
-    IO(#[from] std::io::Error),
-
-    #[error("json parse error: {0} {1}")]
-    Json(serde_json::Error, String),
-
-    #[error("utf-8 error: {0}")]
-    Utf8Error(#[from] FromUtf8Error),
-
-    #[error("future join error: {0}")]
-    FutureJoin(#[from] JoinError),
-
-    #[error("decode error: {0}")]
-    Decode(DecodeError),
-
-    #[error("schema error: {0}")]
-    Schema(SchemaError),
-
-    #[error("parse error: {0}")]
-    Parse(ParseError),
-
-    #[error("decrypt error: {0}")]
-    Decryption(#[from] pkcs8::Error),
-
-    #[error("der error: {0}")]
-    Der(#[from] pkcs8::spki::Error),
-
-    #[error("jwt error: {0}")]
-    JWT(#[from] jsonwebtoken::errors::Error),
-
-    #[error("url error: {0}")]
-    Url(String),
-
-    #[error("unsupported format: {0}")]
-    UnsupportedFormat(String),
-
-    #[error("async response doesn't contain a URL to poll for results")]
-    NoPollingUrlAsyncQuery,
-
-    #[error("timed out waiting for query results")]
-    TimedOut,
+///
+/// Use [`Error::kind`] for stable categorization, and [`std::error::Error::source`]
+/// to inspect the underlying cause chain when one exists. The concrete source
+/// type returned by downcasting is not covered by semver guarantees.
+pub struct Error {
+    repr: Box<Repr>,
 }
 
-/// A `Result` alias where the `Err` case is `snowflake::Error`.
-pub type Result<T> = std::result::Result<T, Error>;
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        struct SourceDebug<'a>(Option<&'a (dyn StdError + 'static)>);
 
-impl From<url::ParseError> for Error {
-    fn from(err: url::ParseError) -> Self {
-        Error::Url(err.to_string())
+        impl fmt::Debug for SourceDebug<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                match self.0 {
+                    Some(source) => f.debug_tuple("Some").field(&source.to_string()).finish(),
+                    None => f.write_str("None"),
+                }
+            }
+        }
+
+        f.debug_struct("Error")
+            .field("kind", &self.kind())
+            .field("message", &self.to_string())
+            .field("source", &SourceDebug(StdError::source(self)))
+            .finish()
     }
 }
 
-impl From<DecodeError> for Error {
-    fn from(err: DecodeError) -> Self {
-        Error::Decode(err)
+/// Semantic categories for [`Error`].
+///
+/// Variants are partitioned by the action a caller would take, not by the
+/// internal type that produced the error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ErrorKind {
+    /// Client configuration or URL construction failed.
+    Config,
+    /// Authentication or session creation failed.
+    Auth,
+    /// HTTP or IO failures occurred while communicating with remote services.
+    Network,
+    /// Snowflake rejected the request and returned a server-side error message.
+    Server,
+    /// The current session token is no longer valid.
+    SessionExpired,
+    /// The connector timed out while waiting for a response.
+    Timeout,
+    /// The Snowflake protocol payload was malformed or unsupported.
+    ///
+    /// Includes the connector's internal `RowsetParseError` failures (chunk parser
+    /// limits, malformed payload tokens). These are surfaced as `Protocol`
+    /// rather than a separate kind because callers cannot recover from them.
+    Protocol,
+    /// Connector-internal runtime work failed, such as a cancelled or panicked task join.
+    Internal,
+    /// Caller-supplied fallback error created via [`Error::other`].
+    Other,
+    /// The result schema or a cell value did not match the caller's
+    /// expectations. Use [`Error::as_schema_error`] for column-lookup level
+    /// mismatches and [`Error::as_cell_decode_error`] for cell decoding failures.
+    Decode,
+}
+
+/// A `Result` alias where the `Err` case is [`Error`].
+pub type Result<T> = std::result::Result<T, Error>;
+
+impl Error {
+    fn new(repr: Repr) -> Self {
+        Self {
+            repr: Box::new(repr),
+        }
+    }
+
+    pub fn kind(&self) -> ErrorKind {
+        match &*self.repr {
+            Repr::Config(_) => ErrorKind::Config,
+            Repr::Auth(_) => ErrorKind::Auth,
+            Repr::Network(_) => ErrorKind::Network,
+            Repr::Server(_) => ErrorKind::Server,
+            Repr::SessionExpired(_) => ErrorKind::SessionExpired,
+            Repr::Timeout(_) => ErrorKind::Timeout,
+            Repr::Protocol(_) => ErrorKind::Protocol,
+            Repr::Internal(_) => ErrorKind::Internal,
+            Repr::Other(_) => ErrorKind::Other,
+            Repr::Schema(_) | Repr::CellDecode(_) => ErrorKind::Decode,
+        }
+    }
+
+    /// Returns the Snowflake-provided message when one is available.
+    pub fn snowflake_message(&self) -> Option<&str> {
+        match &*self.repr {
+            Repr::Auth(AuthError::LoginRejected { message }) => message.as_deref(),
+            Repr::SessionExpired(SessionExpiredError { message, .. }) => message.as_deref(),
+            Repr::Server(ServerError { message, .. }) => message.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Returns the Snowflake error code when one is available.
+    pub fn snowflake_code(&self) -> Option<&str> {
+        match &*self.repr {
+            Repr::SessionExpired(SessionExpiredError { code, .. }) => code.as_deref(),
+            Repr::Server(ServerError { code, .. }) => code.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Returns the related Snowflake query ID when one is available.
+    pub fn query_id(&self) -> Option<&str> {
+        match &*self.repr {
+            Repr::Server(ServerError { query_id, .. }) => query_id.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn is_session_expired(&self) -> bool {
+        matches!(&*self.repr, Repr::SessionExpired(_))
+    }
+
+    pub fn is_timeout(&self) -> bool {
+        matches!(&*self.repr, Repr::Timeout(_))
+    }
+
+    pub fn is_server_error(&self) -> bool {
+        matches!(&*self.repr, Repr::Server(_))
+    }
+
+    pub fn as_cell_decode_error(&self) -> Option<&CellDecodeError> {
+        match &*self.repr {
+            Repr::CellDecode(error) => Some(error),
+            _ => None,
+        }
+    }
+
+    pub fn as_schema_error(&self) -> Option<&SchemaError> {
+        match &*self.repr {
+            Repr::Schema(error) => Some(error),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn as_rowset_parse_error(&self) -> Option<&RowsetParseError> {
+        match &*self.repr {
+            Repr::Protocol(ProtocolError::RowsetParse(error)) => Some(error),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn session_expired(code: Option<String>, message: Option<String>) -> Self {
+        SessionExpiredError::new(code, message).into()
+    }
+
+    pub fn other(message: impl Into<String>) -> Self {
+        Self::new(Repr::Other(message.into().into_boxed_str()))
+    }
+}
+
+impl From<ConfigError> for Error {
+    fn from(error: ConfigError) -> Self {
+        Self::new(Repr::Config(error))
+    }
+}
+
+impl From<AuthError> for Error {
+    fn from(error: AuthError) -> Self {
+        Self::new(Repr::Auth(error))
+    }
+}
+
+impl From<NetworkError> for Error {
+    fn from(error: NetworkError) -> Self {
+        Self::new(Repr::Network(error))
+    }
+}
+
+impl From<ServerError> for Error {
+    fn from(error: ServerError) -> Self {
+        Self::new(Repr::Server(error))
+    }
+}
+
+impl From<SessionExpiredError> for Error {
+    fn from(error: SessionExpiredError) -> Self {
+        Self::new(Repr::SessionExpired(error))
+    }
+}
+
+impl From<TimeoutError> for Error {
+    fn from(error: TimeoutError) -> Self {
+        Self::new(Repr::Timeout(error))
+    }
+}
+
+impl From<ProtocolError> for Error {
+    fn from(error: ProtocolError) -> Self {
+        Self::new(Repr::Protocol(error))
+    }
+}
+
+impl From<InternalError> for Error {
+    fn from(error: InternalError) -> Self {
+        Self::new(Repr::Internal(error))
+    }
+}
+
+impl From<CellDecodeError> for Error {
+    fn from(error: CellDecodeError) -> Self {
+        Self::new(Repr::CellDecode(error))
     }
 }
 
 impl From<SchemaError> for Error {
-    fn from(err: SchemaError) -> Self {
-        Error::Schema(err)
+    fn from(error: SchemaError) -> Self {
+        Self::new(Repr::Schema(error))
     }
 }
 
-impl From<ParseError> for Error {
-    fn from(err: ParseError) -> Self {
-        Error::Parse(err)
+impl From<RowsetParseError> for Error {
+    fn from(error: RowsetParseError) -> Self {
+        ProtocolError::RowsetParse(error).into()
     }
 }
 
-const VALUE_PREVIEW_MAX_CHARS: usize = 128;
+impl ConfigError {
+    pub(crate) fn invalid_url(message: impl Into<String>) -> Self {
+        Self::InvalidUrl(message.into().into_boxed_str())
+    }
 
-/// Cell decode failure with row/column context.
-#[derive(Debug, Clone)]
-pub struct DecodeError {
-    row: usize,
-    column: ColumnIndex,
-    column_name: Box<str>,
-    expected: Cow<'static, str>,
-    actual: ColumnType,
-    value_preview: Option<Box<str>>,
-    reason: Box<str>,
+    pub(crate) fn client_builder_failure(source: reqwest::Error) -> Self {
+        Self::HttpClientBuild(source)
+    }
 }
 
-impl DecodeError {
-    #[allow(clippy::too_many_arguments)]
+impl AuthError {
+    pub(crate) fn login_rejected(message: Option<String>) -> Self {
+        Self::LoginRejected {
+            message: message.map(String::into_boxed_str),
+        }
+    }
+
+    pub(crate) fn key_parse(source: pkcs8::Error) -> Self {
+        Self::KeyParse(Box::new(source))
+    }
+
+    pub(crate) fn der_parse(source: pkcs8::spki::Error) -> Self {
+        Self::DerParse(Box::new(source))
+    }
+
+    pub(crate) fn jwt_sign(source: jsonwebtoken::errors::Error) -> Self {
+        Self::JwtSign(Box::new(source))
+    }
+
+    #[cfg(feature = "external-browser-sso")]
+    pub(crate) fn external_browser(message: impl Into<String>) -> Self {
+        Self::ExternalBrowser {
+            message: message.into().into_boxed_str(),
+            source: None,
+        }
+    }
+
+    #[cfg(feature = "external-browser-sso")]
+    pub(crate) fn external_browser_with_source(
+        message: impl Into<String>,
+        source: impl Into<Box<dyn StdError + Send + Sync>>,
+    ) -> Self {
+        Self::ExternalBrowser {
+            message: message.into().into_boxed_str(),
+            source: Some(source.into()),
+        }
+    }
+}
+
+impl NetworkError {
+    pub(crate) fn request(source: reqwest::Error) -> Error {
+        if source.is_timeout() {
+            TimeoutError::request(source).into()
+        } else {
+            Self::Http(source).into()
+        }
+    }
+
+    pub(crate) fn io(source: std::io::Error) -> Self {
+        Self::Io(source)
+    }
+
+    pub(crate) fn http_status(status: u16, body: impl AsRef<[u8]>) -> Self {
+        Self::HttpStatus {
+            status,
+            body: truncate_preview_lossy_bytes(body.as_ref(), JSON_BODY_PREVIEW_MAX_BYTES),
+        }
+    }
+
+    pub(crate) fn chunk_download(status: u16, body: impl AsRef<[u8]>) -> Self {
+        Self::ChunkDownload {
+            status,
+            body: truncate_preview_lossy_bytes(body.as_ref(), JSON_BODY_PREVIEW_MAX_BYTES),
+        }
+    }
+}
+
+impl ServerError {
     pub(crate) fn new(
-        row: usize,
-        column: ColumnIndex,
-        column_name: impl Into<Box<str>>,
-        expected: impl Into<Cow<'static, str>>,
-        actual: ColumnType,
-        value_preview: Option<&str>,
-        reason: impl Into<Box<str>>,
+        code: Option<String>,
+        message: Option<String>,
+        query_id: Option<String>,
     ) -> Self {
         Self {
-            row,
-            column,
-            column_name: column_name.into(),
-            expected: expected.into(),
-            actual,
-            value_preview: value_preview.map(truncate_preview),
-            reason: reason.into(),
+            code: code.map(String::into_boxed_str),
+            message: message.map(String::into_boxed_str),
+            query_id: query_id.map(String::into_boxed_str),
         }
-    }
-
-    pub fn row(&self) -> usize {
-        self.row
-    }
-    pub fn column(&self) -> ColumnIndex {
-        self.column
-    }
-    pub fn column_name(&self) -> &str {
-        &self.column_name
-    }
-    pub fn expected(&self) -> &str {
-        &self.expected
-    }
-    pub fn actual(&self) -> &ColumnType {
-        &self.actual
-    }
-    pub fn value_preview(&self) -> Option<&str> {
-        self.value_preview.as_deref()
-    }
-    pub fn reason(&self) -> &str {
-        &self.reason
     }
 }
 
-impl std::fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "row {} column {:?} ({}): expected {}, found {:?}",
-            self.row, self.column, self.column_name, self.expected, self.actual
-        )?;
-        if let Some(p) = &self.value_preview {
-            write!(f, ", value: {p:?}")?;
+impl SessionExpiredError {
+    pub(crate) fn new(code: Option<String>, message: Option<String>) -> Self {
+        Self {
+            code: code.map(String::into_boxed_str),
+            message: message.map(String::into_boxed_str),
         }
-        if !self.reason.is_empty() {
-            write!(f, " ({})", self.reason)?;
-        }
-        Ok(())
     }
 }
 
-fn truncate_preview(s: &str) -> Box<str> {
-    if s.chars().count() <= VALUE_PREVIEW_MAX_CHARS {
-        return Box::from(s);
+impl TimeoutError {
+    pub(crate) fn request(source: reqwest::Error) -> Self {
+        Self::Request(source)
     }
-    let mut out = String::with_capacity(VALUE_PREVIEW_MAX_CHARS * 4 + 3);
-    for ch in s.chars().take(VALUE_PREVIEW_MAX_CHARS) {
-        out.push(ch);
+
+    pub(crate) fn query() -> Self {
+        Self::Query
     }
+
+    #[cfg(feature = "external-browser-sso")]
+    pub(crate) fn browser_callback() -> Self {
+        Self::BrowserCallback
+    }
+}
+
+impl ProtocolError {
+    pub(crate) fn json_parse(source: serde_json::Error, body: impl AsRef<[u8]>) -> Self {
+        Self::JsonParse {
+            source: Box::new(source),
+            body_preview: truncate_preview_lossy_bytes(body.as_ref(), JSON_BODY_PREVIEW_MAX_BYTES),
+        }
+    }
+
+    pub(crate) fn invalid_response_url(
+        path: &'static str,
+        value: impl AsRef<str>,
+        source: url::ParseError,
+    ) -> Self {
+        Self::InvalidResponseUrl {
+            path,
+            value_preview: truncate_preview_bytes(value.as_ref(), JSON_BODY_PREVIEW_MAX_BYTES),
+            source,
+        }
+    }
+
+    pub(crate) fn invalid_field(path: &'static str, reason: impl Into<String>) -> Self {
+        Self::InvalidField {
+            path,
+            reason: reason.into().into_boxed_str(),
+        }
+    }
+
+    pub(crate) fn missing_field(field: &'static str) -> Self {
+        Self::MissingField { field }
+    }
+
+    pub(crate) fn header_conversion(source: http::Error) -> Self {
+        Self::HeaderConversion(source)
+    }
+
+    pub(crate) fn invalid_response_header_value(source: InvalidHeaderValue) -> Self {
+        Self::InvalidResponseHeaderValue(source)
+    }
+
+    pub(crate) fn no_polling_url() -> Self {
+        Self::NoPollingUrlAsyncQuery
+    }
+
+    pub(crate) fn unsupported_result_format(message: impl Into<String>) -> Self {
+        Self::UnsupportedResultFormat(message.into().into_boxed_str())
+    }
+
+    pub(crate) fn chunk_format(message: impl Into<String>) -> Self {
+        Self::InvalidChunkFormat {
+            message: message.into().into_boxed_str(),
+            source: None,
+        }
+    }
+
+    pub(crate) fn gzip_decode(source: std::io::Error) -> Self {
+        Self::InvalidChunkFormat {
+            message: Box::from("gzip decompression failed"),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+impl InternalError {
+    pub(crate) fn future_join(source: JoinError) -> Self {
+        Self::FutureJoin(source)
+    }
+}
+
+pub(crate) fn truncate_preview_chars(input: &str, max_chars: usize) -> Box<str> {
+    match input.char_indices().nth(max_chars) {
+        Some((end, _)) => truncate_preview_at_byte(input, end),
+        None => Box::from(input),
+    }
+}
+
+fn truncate_preview_bytes(input: &str, max_bytes: usize) -> Box<str> {
+    if input.len() <= max_bytes {
+        return Box::from(input);
+    }
+
+    let mut end = max_bytes;
+    while !input.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    truncate_preview_at_byte(input, end)
+}
+
+fn truncate_preview_at_byte(input: &str, end: usize) -> Box<str> {
+    let mut out = String::with_capacity(end.saturating_add(3));
+    out.push_str(&input[..end]);
     out.push_str("...");
     out.into_boxed_str()
 }
 
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum SchemaError {
-    #[error("missing column: {name}")]
-    MissingColumn { name: Box<str> },
-    #[error("ambiguous column: {name}")]
-    AmbiguousColumn {
-        name: Box<str>,
-        candidates: Box<[ColumnIndex]>,
-    },
-    #[error("invalid column index {index:?} for schema with {len} columns")]
-    InvalidColumnIndex { index: ColumnIndex, len: usize },
-    #[error("duplicate column name in result: {name}")]
-    DuplicateColumnName { name: Box<str> },
-    #[error("column count mismatch (expected {expected}, actual {actual})")]
-    ColumnCountMismatch { expected: usize, actual: usize },
-    #[error("schema mismatch")]
-    SchemaMismatch,
+fn truncate_preview_lossy_bytes(input: &[u8], max_bytes: usize) -> Box<str> {
+    if input.len() <= max_bytes {
+        return String::from_utf8_lossy(input).into_owned().into_boxed_str();
+    }
+
+    let mut out = String::from_utf8_lossy(&input[..max_bytes]).into_owned();
+    out.push_str("...");
+    out.into_boxed_str()
 }
 
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum ParseError {
-    #[error("unexpected token at offset {offset}: expected {expected}")]
-    UnexpectedToken {
-        offset: usize,
-        expected: &'static str,
-    },
-    #[error("invalid string at offset {offset}: {reason}")]
-    InvalidString { offset: usize, reason: Box<str> },
-    #[error("invalid unicode escape at offset {offset}")]
-    InvalidUnicodeEscape { offset: usize },
-    #[error("row length mismatch at row {row} (expected {expected}, actual {actual})")]
-    RowLengthMismatch {
-        row: usize,
-        expected: usize,
-        actual: usize,
-    },
-    #[error("span overflow: {scope} exceeded {limit} bytes (actual {actual})")]
-    SpanOverflow {
-        limit: u64,
-        actual: u64,
-        scope: &'static str,
-    },
-    #[error("capacity overflow")]
-    CapacityOverflow,
-}
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync + 'static>() {}
+    assert_send_sync::<Error>();
+    assert_send_sync::<CellDecodeError>();
+    assert_send_sync::<SchemaError>();
+};
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use tokio::net::TcpListener;
+
+    use crate::result::{ColumnIndex, ColumnType};
+
     use super::*;
 
-    fn index(value: usize) -> ColumnIndex {
-        ColumnIndex::new(value).unwrap()
+    #[test]
+    fn error_accessors_expose_structured_details() {
+        let err: Error = ServerError::new(
+            Some("12345".to_string()),
+            Some("statement failed".to_string()),
+            Some("query-id".to_string()),
+        )
+        .into();
+
+        assert_eq!(err.kind(), ErrorKind::Server);
+        assert_eq!(err.snowflake_code(), Some("12345"));
+        assert_eq!(err.snowflake_message(), Some("statement failed"));
+        assert_eq!(err.query_id(), Some("query-id"));
+        assert!(err.is_server_error());
+        assert!(!err.is_timeout());
     }
 
     #[test]
-    fn schema_error_display_formats_missing_and_ambiguous_variants() {
-        assert_eq!(
-            SchemaError::MissingColumn {
-                name: Box::from("value"),
-            }
-            .to_string(),
-            "missing column: value"
+    fn error_accessors_preserve_missing_message_fields() {
+        let auth_err: Error = AuthError::login_rejected(None).into();
+        assert_eq!(auth_err.kind(), ErrorKind::Auth);
+        assert_eq!(auth_err.snowflake_message(), None);
+        assert_eq!(auth_err.to_string(), "authentication rejected");
+
+        let server_err: Error = ServerError::new(Some("390100".to_string()), None, None).into();
+        assert_eq!(server_err.kind(), ErrorKind::Server);
+        assert_eq!(server_err.snowflake_code(), Some("390100"));
+        assert_eq!(server_err.snowflake_message(), None);
+        assert_eq!(server_err.to_string(), "Snowflake server error 390100");
+    }
+
+    #[test]
+    fn session_expired_preserves_snowflake_fields() {
+        let err = Error::session_expired(
+            Some("390112".to_string()),
+            Some("Your session has expired. Please login again.".to_string()),
         );
+
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert!(err.is_session_expired());
+        assert_eq!(err.snowflake_code(), Some("390112"));
         assert_eq!(
-            SchemaError::AmbiguousColumn {
-                name: Box::from("value"),
-                candidates: vec![index(0), index(1)].into_boxed_slice(),
-            }
-            .to_string(),
-            "ambiguous column: value"
+            err.snowflake_message(),
+            Some("Your session has expired. Please login again.")
+        );
+        assert_eq!(err.to_string(), "session expired");
+    }
+
+    #[test]
+    fn json_parse_truncates_large_body_preview() {
+        let body = "x".repeat(JSON_BODY_PREVIEW_MAX_BYTES + 10);
+        let err: Error = ProtocolError::json_parse(
+            serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+            body.as_bytes(),
+        )
+        .into();
+
+        let rendered = err.to_string();
+        assert!(rendered.contains("JSON parse error"));
+        assert!(rendered.contains("..."));
+    }
+
+    #[test]
+    fn bytes_preview_truncates_large_http_and_json_bodies_without_full_string_input() {
+        let body = vec![b'x'; JSON_BODY_PREVIEW_MAX_BYTES + 10];
+
+        let json_err: Error = ProtocolError::json_parse(
+            serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+            &body,
+        )
+        .into();
+        assert!(json_err.to_string().contains("..."));
+
+        let http_err: Error = NetworkError::http_status(500, &body).into();
+        assert!(http_err.to_string().contains("..."));
+
+        let chunk_err: Error = NetworkError::chunk_download(500, &body).into();
+        assert!(chunk_err.to_string().contains("..."));
+    }
+
+    #[test]
+    fn chunk_download_preview_handles_non_utf8_body_bytes() {
+        let err: Error = NetworkError::chunk_download(500, [0xff, b'x']).into();
+
+        assert_eq!(err.kind(), ErrorKind::Network);
+        assert!(err.to_string().contains("x"));
+        assert!(!err.to_string().contains("<failed to read response body"));
+    }
+
+    #[test]
+    fn body_preview_truncates_by_bytes_on_utf8_boundary() {
+        let body = "あ".repeat(JSON_BODY_PREVIEW_MAX_BYTES);
+        let preview = truncate_preview_bytes(&body, JSON_BODY_PREVIEW_MAX_BYTES);
+        let prefix = preview.strip_suffix("...").expect("truncated preview");
+
+        assert_eq!(
+            prefix.len(),
+            JSON_BODY_PREVIEW_MAX_BYTES - (JSON_BODY_PREVIEW_MAX_BYTES % 'あ'.len_utf8())
+        );
+        assert!(preview.ends_with("..."));
+    }
+
+    #[test]
+    fn other_errors_use_dedicated_kind_and_display_prefix() {
+        let err = Error::other("boom");
+
+        assert_eq!(err.kind(), ErrorKind::Other);
+        assert_eq!(err.to_string(), "snowflake connector error: boom");
+    }
+
+    #[test]
+    fn chunk_format_is_protocol_kind() {
+        let err: Error = ProtocolError::chunk_format("invalid chunk format").into();
+
+        assert_eq!(err.kind(), ErrorKind::Protocol);
+        assert_eq!(
+            err.to_string(),
+            "chunk download error: invalid chunk format"
         );
     }
 
     #[test]
-    fn schema_error_display_formats_remaining_variants() {
+    fn invalid_response_header_value_is_protocol_kind() {
+        let source = "bad\nvalue"
+            .parse::<reqwest::header::HeaderValue>()
+            .unwrap_err();
+        let err: Error = ProtocolError::invalid_response_header_value(source).into();
+
+        assert_eq!(err.kind(), ErrorKind::Protocol);
+        assert!(StdError::source(&err).is_some());
+    }
+
+    #[test]
+    fn invalid_response_url_preview_is_truncated() {
+        let source = url::Url::parse("http://[::1").unwrap_err();
+        let value = "x".repeat(JSON_BODY_PREVIEW_MAX_BYTES + 10);
+        let err: Error =
+            ProtocolError::invalid_response_url("data.getResultUrl", &value, source).into();
+
+        let rendered = err.to_string();
+        assert!(rendered.contains("data.getResultUrl"));
+        assert!(rendered.contains("..."));
+    }
+
+    #[test]
+    fn invalid_field_is_protocol_kind() {
+        let err: Error = ProtocolError::invalid_field("data.ssoUrl", "must not be empty").into();
+
+        assert_eq!(err.kind(), ErrorKind::Protocol);
         assert_eq!(
-            SchemaError::InvalidColumnIndex {
-                index: index(7),
-                len: 3,
-            }
-            .to_string(),
-            "invalid column index ColumnIndex(7) for schema with 3 columns"
+            err.to_string(),
+            "invalid Snowflake response field data.ssoUrl: must not be empty"
         );
+    }
+
+    #[test]
+    fn wrapped_errors_choose_source_over_display_duplication() {
+        let io_err = std::io::Error::other("boom");
+        let err: Error = NetworkError::io(io_err).into();
+
+        assert_eq!(err.to_string(), "io error");
         assert_eq!(
-            SchemaError::DuplicateColumnName {
-                name: Box::from("id"),
-            }
-            .to_string(),
-            "duplicate column name in result: id"
+            StdError::source(&err).map(std::string::ToString::to_string),
+            Some("boom".to_string())
         );
-        assert_eq!(
-            SchemaError::ColumnCountMismatch {
-                expected: 4,
-                actual: 2,
-            }
-            .to_string(),
-            "column count mismatch (expected 4, actual 2)"
-        );
-        assert_eq!(SchemaError::SchemaMismatch.to_string(), "schema mismatch");
+    }
+
+    #[test]
+    fn schema_decode_and_parse_errors_do_not_repeat_as_sources() {
+        let schema_error: Error = SchemaError::MissingColumn(MissingColumnError::new("col")).into();
+        assert!(StdError::source(&schema_error).is_none());
+
+        let decode_error: Error = CellDecodeError::new(
+            0,
+            ColumnIndex::new(0),
+            "COL",
+            "integer",
+            ColumnType::Text { length: None },
+            Some("x"),
+            "bad value",
+        )
+        .into();
+        assert!(StdError::source(&decode_error).is_none());
+
+        let parse_error: Error = RowsetParseError::CapacityOverflow.into();
+        assert_eq!(parse_error.kind(), ErrorKind::Protocol);
+        assert!(StdError::source(&parse_error).is_none());
+    }
+
+    #[test]
+    fn schema_and_cell_decode_share_decode_kind() {
+        let schema_error: Error = SchemaError::MissingColumn(MissingColumnError::new("col")).into();
+        assert_eq!(schema_error.kind(), ErrorKind::Decode);
+        assert!(schema_error.as_schema_error().is_some());
+        assert!(schema_error.as_cell_decode_error().is_none());
+
+        let decode_error: Error = CellDecodeError::new(
+            0,
+            ColumnIndex::new(0),
+            "COL",
+            "integer",
+            ColumnType::Text { length: None },
+            Some("x"),
+            "bad value",
+        )
+        .into();
+        assert_eq!(decode_error.kind(), ErrorKind::Decode);
+        assert!(decode_error.as_cell_decode_error().is_some());
+        assert!(decode_error.as_schema_error().is_none());
+    }
+
+    #[test]
+    fn parse_error_is_classified_as_protocol() {
+        let err: Error = RowsetParseError::CapacityOverflow.into();
+
+        assert_eq!(err.kind(), ErrorKind::Protocol);
+        assert!(err.as_rowset_parse_error().is_some());
+    }
+
+    #[test]
+    fn debug_output_is_normalized() {
+        let err: Error = NetworkError::io(std::io::Error::other("boom")).into();
+        let rendered = format!("{err:?}");
+
+        assert!(rendered.contains("Error { kind: Network"));
+        assert!(rendered.contains("message: \"io error\""));
+        assert!(rendered.contains("source: Some(\"boom\")"));
+        assert!(!rendered.contains("repr"));
+    }
+
+    #[tokio::test]
+    async fn future_join_uses_internal_kind() {
+        let handle = tokio::spawn(std::future::pending::<()>());
+        handle.abort();
+
+        let err: Error = InternalError::future_join(handle.await.unwrap_err()).into();
+        assert_eq!(err.kind(), ErrorKind::Internal);
+    }
+
+    #[tokio::test]
+    async fn network_request_timeout_uses_timeout_kind() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(50))
+            .build()
+            .unwrap();
+        let err = client
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(err.is_timeout());
+
+        let err = NetworkError::request(err);
+        assert_eq!(err.kind(), ErrorKind::Timeout);
+        assert!(err.is_timeout());
+        assert!(StdError::source(&err).is_some());
+        assert_eq!(err.to_string(), "network request timed out");
+
+        server.abort();
+        let _ = server.await;
     }
 }
