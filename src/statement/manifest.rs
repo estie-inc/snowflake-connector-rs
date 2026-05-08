@@ -11,7 +11,7 @@ use crate::{
     rowset::parser::inline_rowset_has_rows_inner,
 };
 
-use super::response::{RawQueryResponse, resolve_download_headers};
+use super::wire::response::{RawQueryResponse, resolve_download_headers};
 
 pub(crate) struct ResultManifest {
     pub(crate) snapshot: Arc<ResultSnapshot>,
@@ -152,7 +152,46 @@ mod tests {
     use bytes::Bytes;
 
     use super::*;
-    use crate::statement::response::{RawQueryResponseChunk, RawQueryResponseRowType};
+    use crate::{
+        ErrorKind,
+        statement::wire::response::{RawQueryResponseChunk, RawQueryResponseRowType},
+    };
+
+    fn response_with_result_data(
+        row_set_bytes: Option<Bytes>,
+        row_types: Option<Vec<RawQueryResponseRowType>>,
+        chunks: Option<Vec<RawQueryResponseChunk>>,
+    ) -> RawQueryResponse {
+        RawQueryResponse {
+            parameters: None,
+            query_id: Arc::from("query-id"),
+            get_result_url: None,
+            returned: Some(1),
+            total: None,
+            row_set_bytes,
+            row_types,
+            chunk_headers: None,
+            qrmk: None,
+            chunks,
+            query_result_format: Some("json".to_string()),
+        }
+    }
+
+    fn chunk() -> RawQueryResponseChunk {
+        RawQueryResponseChunk {
+            url: "https://example.com/chunk/0".to_string(),
+            row_count: 1,
+            uncompressed_size: 16,
+            compressed_size: 8,
+        }
+    }
+
+    fn manifest_protocol_error(response: RawQueryResponse) -> crate::Error {
+        match ResultManifest::try_from(response) {
+            Ok(_) => panic!("result data without valid rowtype metadata must fail"),
+            Err(err) => crate::Error::from(err),
+        }
+    }
 
     fn text_row_type(name: &str) -> RawQueryResponseRowType {
         RawQueryResponseRowType {
@@ -170,79 +209,46 @@ mod tests {
     }
 
     #[test]
-    fn manifest_requires_rowtype_when_inline_data_is_present() {
-        let response = RawQueryResponse {
-            parameters: None,
-            query_id: Arc::from("query-id"),
-            get_result_url: None,
-            returned: Some(1),
-            total: None,
-            row_set_bytes: Some(Bytes::from_static(br#"[["x"]]"#)),
-            row_types: None,
-            chunk_headers: None,
-            qrmk: None,
-            chunks: None,
-            query_result_format: Some("json".to_string()),
-        };
-
-        let err = match ResultManifest::try_from(response) {
-            Ok(_) => panic!("missing rowtype metadata must fail"),
-            Err(err) => crate::Error::from(err),
-        };
-        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
-        assert_eq!(
-            err.to_string(),
-            "missing required field in Snowflake response: data.rowtype"
-        );
-    }
-
-    #[test]
-    fn manifest_rejects_empty_rowtype_when_result_data_is_present() {
-        let response = RawQueryResponse {
-            parameters: None,
-            query_id: Arc::from("query-id"),
-            get_result_url: None,
-            returned: None,
-            total: None,
-            row_set_bytes: None,
-            row_types: Some(Vec::new()),
-            chunk_headers: None,
-            qrmk: None,
-            chunks: Some(vec![RawQueryResponseChunk {
-                url: "https://example.com/chunk/0".to_string(),
-                row_count: 1,
-                uncompressed_size: 16,
-                compressed_size: 8,
-            }]),
-            query_result_format: Some("json".to_string()),
-        };
-
-        let err = match ResultManifest::try_from(response) {
-            Ok(_) => panic!("empty rowtype metadata must fail"),
-            Err(err) => crate::Error::from(err),
-        };
-        assert_eq!(err.kind(), crate::ErrorKind::Protocol);
-        assert_eq!(
-            err.to_string(),
-            "invalid Snowflake response field data.rowtype: must not be empty when result data is present"
-        );
+    fn manifest_requires_non_empty_rowtype_when_result_data_is_present() {
+        for (label, response, expected_message) in [
+            (
+                "inline missing",
+                response_with_result_data(Some(Bytes::from_static(br#"[["x"]]"#)), None, None),
+                "missing required field in Snowflake response: data.rowtype",
+            ),
+            (
+                "inline empty",
+                response_with_result_data(
+                    Some(Bytes::from_static(br#"[["x"]]"#)),
+                    Some(Vec::new()),
+                    None,
+                ),
+                "invalid Snowflake response field data.rowtype: must not be empty when result data is present",
+            ),
+            (
+                "chunk missing",
+                response_with_result_data(None, None, Some(vec![chunk()])),
+                "missing required field in Snowflake response: data.rowtype",
+            ),
+            (
+                "chunk empty",
+                response_with_result_data(None, Some(Vec::new()), Some(vec![chunk()])),
+                "invalid Snowflake response field data.rowtype: must not be empty when result data is present",
+            ),
+        ] {
+            let err = manifest_protocol_error(response);
+            assert_eq!(err.kind(), ErrorKind::Protocol, "{label}");
+            assert_eq!(err.to_string(), expected_message, "{label}");
+        }
     }
 
     #[test]
     fn manifest_accepts_non_empty_rowtype_when_result_data_is_present() {
-        let response = RawQueryResponse {
-            parameters: None,
-            query_id: Arc::from("query-id"),
-            get_result_url: None,
-            returned: Some(1),
-            total: None,
-            row_set_bytes: Some(Bytes::from_static(br#"[["x"]]"#)),
-            row_types: Some(vec![text_row_type("X")]),
-            chunk_headers: None,
-            qrmk: None,
-            chunks: None,
-            query_result_format: Some("json".to_string()),
-        };
+        let response = response_with_result_data(
+            Some(Bytes::from_static(br#"[["x"]]"#)),
+            Some(vec![text_row_type("X")]),
+            None,
+        );
 
         let manifest = ResultManifest::try_from(response).unwrap();
         assert_eq!(manifest.snapshot.schema.len(), 1);

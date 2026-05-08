@@ -1,13 +1,12 @@
 use url::Url;
 
 use crate::{
-    Result,
+    IntoStatement, Result,
     config::SnowflakeQueryConfig,
-    query::QueryRequest,
     query_result::{ResultSet, TypedResultSet},
     result::{FromRow, RowPlanContext},
     runtime::QueryRuntime,
-    statement::StatementExecutor,
+    statement::{StatementExecutor, builder::into_statement_parts},
 };
 
 pub struct SnowflakeSession {
@@ -23,30 +22,32 @@ impl SnowflakeSession {
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Network`, `ErrorKind::Server`, `ErrorKind::SessionExpired`,
+    /// Returns `ErrorKind::BindEncode`, `ErrorKind::Network`,
+    /// `ErrorKind::Server`, `ErrorKind::SessionExpired`,
     /// `ErrorKind::Timeout`, or `ErrorKind::Protocol`.
-    pub async fn query<Q: Into<QueryRequest>>(&self, request: Q) -> Result<ResultSet> {
+    pub async fn query<S: IntoStatement>(&self, statement: S) -> Result<ResultSet> {
         let executor = StatementExecutor::new(self);
-        executor.execute(request.into()).await
+        executor.execute(into_statement_parts(statement)).await
     }
 
     /// Submit a statement and return a typed `ResultSet` for streaming partition access.
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`SnowflakeSession::query`]. After the
-    /// statement succeeds, this also propagates any error returned by
-    /// [`FromRow::build_plan`] for `T`.
+    /// Returns the same errors as [`SnowflakeSession::query`], including
+    /// `ErrorKind::BindEncode` when bind values cannot be encoded or validated
+    /// before the request is sent. After the statement succeeds, this also
+    /// propagates any error returned by [`FromRow::build_plan`] for `T`.
     ///
     /// Built-in and derive-based row types typically use
     /// `ErrorKind::Decode` when the result schema does not match `T`;
-    /// inspect the detail via [`crate::Error::as_schema_error`].
-    pub async fn query_as<T, Q>(&self, request: Q) -> Result<TypedResultSet<T>>
+    /// inspect the detail via [`Error::as_schema_error`](crate::Error::as_schema_error).
+    pub async fn query_as<T, S>(&self, statement: S) -> Result<TypedResultSet<T>>
     where
         T: FromRow,
-        Q: Into<QueryRequest>,
+        S: IntoStatement,
     {
-        let result = self.query(request).await?;
+        let result = self.query(statement).await?;
         let plan = T::build_plan(RowPlanContext::new(result.schema_arc()))?;
         Ok(TypedResultSet::new(result, plan))
     }

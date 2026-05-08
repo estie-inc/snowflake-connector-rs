@@ -31,6 +31,7 @@ chrono = { version = "0.4", default-features = false, features = [
 ] }
 flate2 = "1.1"
 http = "1.4"
+indexmap = "2.14"
 jsonwebtoken = { version = "10.3.0", features = [
     "rust_crypto",
 ] }
@@ -73,7 +74,6 @@ hyper-util = { version = "0.1", features = [
     "server",
     "tokio",
 ], optional = true }
-indexmap = { version = "2.14", optional = true }
 nix = { version = "0.31", optional = true, features = [
     "term",
 ] }
@@ -93,7 +93,6 @@ external-browser-sso = [
     "dep:http-body-util",
     "dep:hyper",
     "dep:hyper-util",
-    "dep:indexmap",
     "dep:nix",
     "dep:shell-words",
     "dep:socket2",
@@ -151,5 +150,11 @@ required-features = [
 name = "derive_from_row"
 required-features = [
     "derive",
+    "external-browser-sso",
+]
+
+[[example]]
+name = "statement_bind"
+required-features = [
     "external-browser-sso",
 ]

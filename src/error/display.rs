@@ -152,6 +152,7 @@ impl fmt::Display for Error {
                 error: InternalError::FutureJoin(_source),
                 ..
             } => f.write_str("future join error"),
+            Repr::BindEncode { message, .. } => write!(f, "bind encode error: {message}"),
             Repr::Other(message) => write!(f, "snowflake connector error: {message}"),
             Repr::Schema(error) => fmt::Display::fmt(error, f),
             Repr::CellDecode(error) => fmt::Display::fmt(error, f),
@@ -207,6 +208,10 @@ impl StdError for Error {
                 error: InternalError::FutureJoin(source),
                 ..
             } => Some(source),
+            Repr::BindEncode {
+                source: Some(source),
+                ..
+            } => Some(source.as_ref()),
             Repr::Protocol {
                 error: ProtocolError::RowsetParse(_),
                 ..
