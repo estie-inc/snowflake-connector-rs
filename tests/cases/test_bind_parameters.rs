@@ -1,5 +1,11 @@
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use snowflake_connector_rs::{Binding, BindingType, QueryRequest, Result};
+
+use snowflake_connector_rs::{
+    Result, Statement,
+    bind::{
+        Binary, Integer, RawBind, SnowflakeBindType, Time, TimestampLtz, TimestampNtz, TimestampTz,
+    },
+};
 
 use super::common;
 
@@ -14,6 +20,9 @@ struct BindingRoundTripCase {
     ts_ltz_utc: NaiveDateTime,
     nullable_text: Option<&'static str>,
     bigint: i64,
+    wide_integer: Integer,
+    expected_wide_integer: &'static str,
+    decfloat: &'static str,
     binary: &'static [u8],
     expected_hex: &'static str,
 }
@@ -25,7 +34,8 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
 
     session
         .query(
-            "CREATE TEMPORARY TABLE bind_round_trip (
+            "
+            CREATE TEMPORARY TABLE bind_round_trip (
                 id NUMBER,
                 text_val STRING,
                 flag BOOLEAN,
@@ -36,8 +46,11 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
                 ts_ltz TIMESTAMP_LTZ,
                 nullable_text STRING,
                 bigint_val NUMBER(18,0),
+                wide_integer_val NUMBER(38,0),
+                decfloat_val DECFLOAT,
                 binary_val BINARY
-            )",
+            )
+            ",
         )
         .await?;
 
@@ -59,6 +72,9 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
                 .unwrap(),
             nullable_text: None,
             bigint: 9_999_999_999_999_999,
+            wide_integer: Integer::try_from(12_345_678_901_234_567_890_i128).unwrap(),
+            expected_wide_integer: "12345678901234567890",
+            decfloat: "1.23e-40",
             binary: b"Hello",
             expected_hex: "48656C6C6F",
         },
@@ -79,14 +95,18 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
                 .unwrap(),
             nullable_text: Some("emoji: 🚀✨"),
             bigint: 9_999_999_999_999_998,
+            wide_integer: Integer::try_from(-12_345_678_901_234_567_890_i128).unwrap(),
+            expected_wide_integer: "-12345678901234567890",
+            decfloat: "-4.56e+20",
             binary: b"Rust",
             expected_hex: "52757374",
         },
     ];
 
     for case in &cases {
-        let insert = QueryRequest::with_bindings(
-            "INSERT INTO bind_round_trip (
+        let insert = Statement::new(
+            "
+            INSERT INTO bind_round_trip (
                 id,
                 text_val,
                 flag,
@@ -97,25 +117,25 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
                 ts_ltz,
                 nullable_text,
                 bigint_val,
+                wide_integer_val,
+                decfloat_val,
                 binary_val
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            vec![
-                Binding::fixed(case.id),
-                Binding::text(case.text),
-                Binding::boolean(case.flag),
-                Binding::real(case.real),
-                Binding::date(case.date),
-                Binding::time(case.time),
-                Binding::timestamp_ntz(case.ts_ntz),
-                Binding::timestamp_ltz(case.ts_ltz_utc.and_utc()),
-                match case.nullable_text {
-                    Some(value) => Binding::text(value),
-                    None => Binding::null(BindingType::Text),
-                },
-                Binding::fixed(case.bigint),
-                Binding::binary(case.binary),
-            ],
-        );
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ",
+        )
+        .bind(case.id)
+        .bind(case.text)
+        .bind(case.flag)
+        .bind(case.real)
+        .bind(case.date)
+        .bind(Time::try_from(case.time)?)
+        .bind(TimestampNtz::try_from(case.ts_ntz)?)
+        .bind(TimestampLtz::try_from(case.ts_ltz_utc.and_utc())?)
+        .bind(case.nullable_text)
+        .bind(case.bigint)
+        .bind(case.wide_integer)
+        .bind(RawBind::new(SnowflakeBindType::DecFloat, case.decfloat))
+        .bind(Binary::new(case.binary));
         session.query(insert).await?;
     }
 
@@ -132,8 +152,10 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
             Option<String>,
             i64,
             String,
+            String,
         ), _>(
-            "SELECT
+            "
+            SELECT
                 id,
                 text_val,
                 flag,
@@ -144,11 +166,13 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
                 ts_ltz,
                 nullable_text,
                 bigint_val,
+                TO_VARCHAR(wide_integer_val) AS wide_integer_val,
                 binary_val
             FROM
                 bind_round_trip
             ORDER BY
-                id",
+                id
+            ",
         )
         .await?
         .collect()
@@ -172,14 +196,15 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
         assert_eq!(row.7, case.ts_ltz_utc.and_utc());
         assert_eq!(row.8.as_deref(), case.nullable_text);
         assert_eq!(row.9, case.bigint);
-        assert_eq!(row.10, case.expected_hex);
+        assert_eq!(row.10, case.expected_wide_integer);
+        assert_eq!(row.11, case.expected_hex);
     }
 
     let filtered = session
-        .query_as::<(String, Option<String>), _>(QueryRequest::with_bindings(
-            "SELECT text_val, nullable_text FROM bind_round_trip WHERE id = ?",
-            vec![Binding::fixed(2_i64)],
-        ))
+        .query_as::<(String, Option<String>), _>(
+            Statement::new("SELECT text_val, nullable_text FROM bind_round_trip WHERE id = ?")
+                .bind(2_i64),
+        )
         .await?
         .collect()
         .await?;
@@ -187,6 +212,43 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
         filtered,
         vec![("日本語テスト".to_string(), Some("emoji: 🚀✨".to_string()))]
     );
+
+    for case in &cases {
+        let matched = session
+            .query_as::<(i64,), _>(
+                Statement::new(
+                    "
+                    SELECT
+                        id
+                    FROM
+                        bind_round_trip
+                    WHERE
+                        id = ?
+                        AND wide_integer_val = ?
+                        AND decfloat_val = ?::DECFLOAT
+                    ",
+                )
+                .bind(case.id)
+                .bind(case.wide_integer)
+                .bind(case.decfloat),
+            )
+            .await?
+            .collect()
+            .await?;
+        assert_eq!(matched, vec![(case.id,)]);
+    }
+
+    let named_filtered = session
+        .query_as::<(i64,), _>(
+            Statement::new("SELECT id FROM bind_round_trip WHERE id = :id OR id = :1 ORDER BY id")
+                .bind_named("id", 0_i64)
+                .bind_named("id", 2_i64)
+                .bind_named("1", 1_i64),
+        )
+        .await?
+        .collect()
+        .await?;
+    assert_eq!(named_filtered, vec![(1_i64,), (2_i64,)]);
 
     Ok(())
 }
@@ -205,10 +267,9 @@ async fn render_bound_timestamp_tz(
     offset: FixedOffset,
 ) -> Result<String> {
     let dt = timestamp_tz_probe_value(offset);
-    let query = QueryRequest::with_bindings(
-        "SELECT TO_CHAR(?::TIMESTAMP_TZ, 'YYYY-MM-DD HH24:MI:SS TZHTZM') AS ts_str",
-        vec![Binding::timestamp_tz(dt)],
-    );
+    let query =
+        Statement::new("SELECT TO_CHAR(?::TIMESTAMP_TZ, 'YYYY-MM-DD HH24:MI:SS TZHTZM') AS ts_str")
+            .bind(TimestampTz::try_from(dt)?);
     let rows = session
         .query_as::<(String,), _>(query)
         .await?
@@ -242,10 +303,9 @@ async fn test_bind_parameters_timestamp_tz_round_trips_control_and_extreme_offse
         .unwrap()
         .and_local_timezone(control_offset)
         .unwrap();
-    let insert = QueryRequest::with_bindings(
-        "INSERT INTO bind_ts_tz (id, ts) VALUES (?, ?)",
-        vec![Binding::fixed(1), Binding::timestamp_tz(control_insert)],
-    );
+    let insert = Statement::new("INSERT INTO bind_ts_tz (id, ts) VALUES (?, ?)")
+        .bind(1_i64)
+        .bind(TimestampTz::try_from(control_insert)?);
     session.query(insert).await?;
     session
         .query("INSERT INTO bind_ts_tz VALUES (2, '2024-06-15 21:30:45 +09:00'::TIMESTAMP_TZ)")
@@ -253,12 +313,14 @@ async fn test_bind_parameters_timestamp_tz_round_trips_control_and_extreme_offse
 
     let inserted_rows = session
         .query_as::<(String,), _>(
-            "SELECT
+            "
+            SELECT
                 TO_CHAR(ts, 'YYYY-MM-DD HH24:MI:SS TZHTZM') AS ts_str
             FROM
                 bind_ts_tz
             ORDER BY
-                id",
+                id
+            ",
         )
         .await?
         .collect()

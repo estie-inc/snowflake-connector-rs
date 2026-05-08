@@ -14,11 +14,17 @@ use crate::{
         ConfigError, NetworkError, ProtocolError, QueryScopedError, QueryScopedResult,
         TimeoutError, classify_request_error,
     },
-    query::QueryRequest,
-};
-
-use super::response::{
-    QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, SnowflakeResponse, parse_response,
+    statement::{
+        StatementParts,
+        builder::StatementPartsRepr,
+        wire::{
+            request::WireQueryBody,
+            response::{
+                QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, SnowflakeResponse,
+                parse_response,
+            },
+        },
+    },
 };
 
 pub(crate) struct StatementApiClient {
@@ -40,7 +46,9 @@ impl StatementApiClient {
         self.http.clone()
     }
 
-    pub(crate) async fn submit(&self, request: &QueryRequest) -> Result<SnowflakeResponse> {
+    pub(crate) async fn submit(&self, parts: &StatementParts) -> Result<SnowflakeResponse> {
+        validate_statement_parts_for_wire(parts)?;
+
         let request_id = Uuid::new_v4();
         let mut url = self
             .base_url
@@ -57,7 +65,7 @@ impl StatementApiClient {
                 AUTHORIZATION,
                 format!(r#"Snowflake Token="{}""#, self.session_token),
             )
-            .json(request)
+            .json(&WireQueryBody::from_statement_parts(parts))
             .send()
             .await
             .map_err(classify_request_error)?;
@@ -201,6 +209,17 @@ fn validate_same_origin_absolute_url(
     Ok(())
 }
 
+fn validate_statement_parts_for_wire(parts: &StatementParts) -> crate::Result<()> {
+    if let StatementPartsRepr::Named { bindings, .. } = parts.repr() {
+        for name in bindings.keys() {
+            if name.is_empty() {
+                return Err(crate::Error::bind_encode("bind name must not be empty"));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -208,7 +227,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
-    use crate::ErrorKind;
+    use crate::{ErrorKind, Statement, statement::builder::into_statement_parts};
 
     #[test]
     fn resolve_poll_url_accepts_relative_and_same_origin_absolute_urls() {
@@ -273,15 +292,25 @@ mod tests {
             "test-token".to_string(),
         );
 
-        let err = client
-            .submit(&crate::query::QueryRequest::from("select 1"))
-            .await
-            .unwrap_err();
+        let parts = into_statement_parts(Statement::from("select 1"));
+        let err = client.submit(&parts).await.unwrap_err();
 
         assert_eq!(err.kind(), ErrorKind::Timeout);
         assert!(err.is_timeout());
 
         server.abort();
         let _ = server.await;
+    }
+
+    #[test]
+    fn validate_wire_rejects_empty_named_bind_keys() {
+        let parts = into_statement_parts(Statement::new("SELECT :id").bind_named("", 1_i64));
+
+        let err = validate_statement_parts_for_wire(&parts).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::BindEncode);
+        assert_eq!(
+            err.to_string(),
+            "bind encode error: bind name must not be empty"
+        );
     }
 }

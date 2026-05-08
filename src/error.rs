@@ -85,6 +85,8 @@ pub enum ErrorKind {
     Protocol,
     /// Connector-internal runtime work failed, such as a cancelled or panicked task join.
     Internal,
+    /// Client-side bind encoding or validation failed before the request was sent.
+    BindEncode,
     /// Caller-supplied fallback error created via [`Error::other`].
     Other,
     /// The result schema or a cell value did not match the caller's
@@ -113,6 +115,7 @@ impl Error {
             Repr::Timeout { .. } => ErrorKind::Timeout,
             Repr::Protocol { .. } => ErrorKind::Protocol,
             Repr::Internal { .. } => ErrorKind::Internal,
+            Repr::BindEncode { .. } => ErrorKind::BindEncode,
             Repr::Other(_) => ErrorKind::Other,
             Repr::Schema(_) | Repr::CellDecode(_) => ErrorKind::Decode,
         }
@@ -198,6 +201,24 @@ impl Error {
 
     pub fn other(message: impl Into<String>) -> Self {
         Self::new(Repr::Other(message.into().into_boxed_str()))
+    }
+
+    pub(crate) fn bind_encode(message: impl Into<String>) -> Self {
+        Self::new(Repr::BindEncode {
+            message: message.into().into_boxed_str(),
+            source: None,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bind_encode_with_source(
+        message: impl Into<String>,
+        source: impl Into<Box<dyn StdError + Send + Sync>>,
+    ) -> Self {
+        Self::new(Repr::BindEncode {
+            message: message.into().into_boxed_str(),
+            source: Some(source.into()),
+        })
     }
 }
 
@@ -678,6 +699,19 @@ mod tests {
 
         assert_eq!(err.kind(), ErrorKind::Other);
         assert_eq!(err.to_string(), "snowflake connector error: boom");
+    }
+
+    #[test]
+    fn bind_encode_errors_have_dedicated_kind_display_and_optional_source() {
+        let err = Error::bind_encode("bad bind");
+        assert_eq!(err.kind(), ErrorKind::BindEncode);
+        assert_eq!(err.to_string(), "bind encode error: bad bind");
+        assert!(StdError::source(&err).is_none());
+
+        let err = Error::bind_encode_with_source("bad bind", std::io::Error::other("boom"));
+        assert_eq!(err.kind(), ErrorKind::BindEncode);
+        assert_eq!(err.to_string(), "bind encode error: bad bind");
+        assert!(StdError::source(&err).is_some());
     }
 
     #[test]

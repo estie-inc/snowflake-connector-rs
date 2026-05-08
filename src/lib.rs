@@ -64,10 +64,10 @@
 //! ```
 
 mod auth;
+pub mod bind;
 mod chunk;
 mod config;
 mod error;
-mod query;
 mod query_result;
 mod result;
 mod rowset;
@@ -88,13 +88,13 @@ pub use error::{
     AmbiguousColumnError, CellDecodeError, ColumnCountMismatchError, DuplicateColumnNameError,
     Error, ErrorKind, InvalidColumnIndexError, MissingColumnError, Result, SchemaError,
 };
-pub use query::{Binding, BindingType, QueryRequest};
 pub use query_result::{CollectOptions, ResultSet, TypedResultSet};
 pub use result::{
     CellRef, Column, ColumnIndex, ColumnType, DecimalValue, DynamicRow, FromCell, FromRow,
     ResultTable, RowPlanContext, RowRef, Rows, Schema, SnowflakeValue, TypedResultTable,
 };
 pub use session::SnowflakeSession;
+pub use statement::builder::{IntoStatement, NamedBinds, PositionalBinds, Statement, UnboundBinds};
 
 #[cfg(feature = "derive")]
 pub use snowflake_connector_rs_derive::FromRow;

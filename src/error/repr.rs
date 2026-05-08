@@ -27,6 +27,10 @@ pub(crate) enum Repr {
         error: InternalError,
         query_id: Option<Arc<str>>,
     },
+    BindEncode {
+        message: Box<str>,
+        source: Option<Box<dyn StdError + Send + Sync>>,
+    },
     Other(Box<str>),
     Schema(SchemaError),
     CellDecode(CellDecodeError),

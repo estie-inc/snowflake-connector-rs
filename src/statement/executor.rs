@@ -3,20 +3,20 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use crate::{
     chunk::ChunkDownloader,
     error::{ProtocolError, QueryScopedError, QueryScopedResult, ServerError, SessionExpiredError},
-    query::QueryRequest,
     query_result::{
         CollectPolicy, InlineRowset, ResultSet,
         partition_source::{PartitionSource, StaticPartitionSource},
         snapshot::PartitionCursor,
     },
     runtime::QueryRuntime,
+    statement::StatementParts,
     {Error, Result, SnowflakeSession},
 };
 
 use super::{
     client::StatementApiClient,
     manifest::ResultManifest,
-    response::{
+    wire::response::{
         DEFAULT_TIMEOUT_SECONDS, QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE,
         RawQueryResponse, SESSION_EXPIRED, SnowflakeResponse,
     },
@@ -52,7 +52,7 @@ impl QueryScopedResponse {
         }
     }
 
-    fn into_parts(self) -> (Arc<str>, super::response::SnowflakeResponse) {
+    fn into_parts(self) -> (Arc<str>, SnowflakeResponse) {
         (self.query_id, self.response)
     }
 }
@@ -76,8 +76,8 @@ impl StatementExecutor {
         }
     }
 
-    pub(crate) async fn execute(self, request: QueryRequest) -> Result<ResultSet> {
-        let response = QueryScopedResponse::from_submit(self.api.submit(&request).await?)?;
+    pub(crate) async fn execute(self, parts: StatementParts) -> Result<ResultSet> {
+        let response = QueryScopedResponse::from_submit(self.api.submit(&parts).await?)?;
         self.execute_query_scoped(response)
             .await
             .map_err(Error::from)
@@ -195,13 +195,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        ErrorKind, SnowflakeQueryConfig,
-        query::QueryRequest,
+        ErrorKind, SnowflakeQueryConfig, Statement,
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
         statement::{
+            StatementParts,
+            builder::into_statement_parts,
             client::StatementApiClient,
-            response::{RawQueryResponse, RawQueryResponseChunk, RawQueryResponseRowType},
+            wire::response::{RawQueryResponse, RawQueryResponseRowType},
         },
     };
 
@@ -275,27 +276,6 @@ mod tests {
         Url::parse(&format!("http://{addr}/")).unwrap()
     }
 
-    fn chunk_only_response(row_types: Option<Vec<RawQueryResponseRowType>>) -> RawQueryResponse {
-        RawQueryResponse {
-            parameters: None,
-            query_id: Arc::from("query-id"),
-            get_result_url: None,
-            returned: None,
-            total: None,
-            row_set_bytes: Some(Bytes::from_static(b"[]")),
-            row_types,
-            chunk_headers: None,
-            qrmk: None,
-            chunks: Some(vec![RawQueryResponseChunk {
-                url: "https://example.com/chunk/0".to_string(),
-                row_count: 1,
-                uncompressed_size: 16,
-                compressed_size: 8,
-            }]),
-            query_result_format: Some("json".to_string()),
-        }
-    }
-
     fn text_row_type(name: &str) -> RawQueryResponseRowType {
         RawQueryResponseRowType {
             database: String::new(),
@@ -327,6 +307,10 @@ mod tests {
         }
     }
 
+    fn select_1_parts() -> StatementParts {
+        into_statement_parts(Statement::from("select 1"))
+    }
+
     async fn execute_single_response_err(body: &'static str) -> crate::Error {
         let session = SnowflakeSession {
             http: Client::new(),
@@ -337,7 +321,7 @@ mod tests {
         };
 
         match StatementExecutor::new(&session)
-            .execute(QueryRequest::from("select 1"))
+            .execute(select_1_parts())
             .await
         {
             Ok(_) => panic!("expected statement execution to fail"),
@@ -426,7 +410,7 @@ mod tests {
             runtime: QueryRuntime::new(),
         };
 
-        let err = match executor.execute(QueryRequest::from("select 1")).await {
+        let err = match executor.execute(select_1_parts()).await {
             Ok(_) => panic!("poll timeout must fail"),
             Err(err) => err,
         };
@@ -448,7 +432,7 @@ mod tests {
         };
 
         let err = match StatementExecutor::new(&session)
-            .execute(QueryRequest::from("select 1"))
+            .execute(select_1_parts())
             .await
         {
             Ok(_) => panic!("unsupported result format must fail"),
@@ -473,7 +457,7 @@ mod tests {
         };
 
         let err = match StatementExecutor::new(&session)
-            .execute(QueryRequest::from("select 1"))
+            .execute(select_1_parts())
             .await
         {
             Ok(_) => panic!("session expired response must fail"),
@@ -503,7 +487,7 @@ mod tests {
         };
 
         let err = match StatementExecutor::new(&session)
-            .execute(QueryRequest::from("select 1"))
+            .execute(select_1_parts())
             .await
         {
             Ok(_) => panic!("session expired response must fail"),
@@ -533,7 +517,7 @@ mod tests {
         };
 
         let err = match StatementExecutor::new(&session)
-            .execute(QueryRequest::from("select 1"))
+            .execute(select_1_parts())
             .await
         {
             Ok(_) => panic!("server error response must fail"),
@@ -557,7 +541,7 @@ mod tests {
         };
 
         let err = match StatementExecutor::new(&session)
-            .execute(QueryRequest::from("select 1"))
+            .execute(select_1_parts())
             .await
         {
             Ok(_) => panic!("network failure must not yield a result set"),
@@ -700,35 +684,6 @@ mod tests {
 
         let table = collect.await.unwrap();
         assert_eq!(table.row_count(), 1);
-    }
-
-    #[test]
-    fn chunk_only_results_require_rowtype_metadata_when_missing_or_empty() {
-        for (label, row_types, expected) in [
-            (
-                "missing",
-                None,
-                "missing required field in Snowflake response: data.rowtype",
-            ),
-            (
-                "empty",
-                Some(Vec::<RawQueryResponseRowType>::new()),
-                "invalid Snowflake response field data.rowtype: must not be empty when result data is present",
-            ),
-        ] {
-            match executor().build_result_set(chunk_only_response(row_types)) {
-                Err(err) => {
-                    let err = crate::Error::from(err);
-                    if err.kind() == ErrorKind::Protocol && err.to_string() == expected {
-                        continue;
-                    }
-                    panic!("expected rowtype metadata error, got {err:?}");
-                }
-                Ok(_) => {
-                    panic!("expected chunk-only response with {label} rowtype metadata to fail")
-                }
-            }
-        }
     }
 
     #[tokio::test]

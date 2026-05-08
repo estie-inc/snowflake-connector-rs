@@ -1,9 +1,13 @@
+pub(crate) mod bind;
+pub(crate) mod builder;
 mod client;
 mod executor;
 mod manifest;
-mod response;
+pub(crate) mod raw;
+pub(crate) mod wire;
 
+pub(crate) use builder::StatementParts;
 pub(crate) use executor::StatementExecutor;
 
 #[cfg(feature = "bench-internals")]
-pub(crate) use response::parse_response;
+pub(crate) use wire::response::parse_response;
