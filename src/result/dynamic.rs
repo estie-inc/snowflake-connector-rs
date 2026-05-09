@@ -316,9 +316,9 @@ fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<SnowflakeValue> {
 
     match ty {
         ColumnType::Boolean => {
-            if raw.eq_ignore_ascii_case("1") || raw.eq_ignore_ascii_case("true") {
+            if raw == "1" || raw.eq_ignore_ascii_case("true") {
                 Ok(SnowflakeValue::Boolean(true))
-            } else if raw.eq_ignore_ascii_case("0") || raw.eq_ignore_ascii_case("false") {
+            } else if raw == "0" || raw.eq_ignore_ascii_case("false") {
                 Ok(SnowflakeValue::Boolean(false))
             } else {
                 Err(CellDecodeIssue::builder(format!("'{raw}' is not bool")).build())
