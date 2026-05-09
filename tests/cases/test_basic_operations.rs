@@ -1,7 +1,10 @@
 use super::common;
 
 use chrono::{NaiveDate, NaiveDateTime};
-use snowflake_connector_rs::{ColumnType, DecimalValue, Result};
+use snowflake_connector_rs::{
+    Result,
+    result::{ColumnType, DecimalValue},
+};
 
 #[tokio::test]
 async fn test_basic_operations() -> Result<()> {
@@ -64,27 +67,39 @@ async fn test_basic_operations() -> Result<()> {
     let rows = table
         .rows::<(i64, String, DecimalValue, bool, NaiveDate, NaiveDateTime)>()?
         .collect::<Result<Vec<_>>>()?;
-    assert_eq!(
-        rows,
-        vec![
-            (
-                1,
-                "hello".to_string(),
-                DecimalValue::new("99.99", Some(10), Some(2)),
-                true,
-                NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
-                NaiveDateTime::parse_from_str("2023-01-01 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
-            ),
-            (
-                2,
-                "world".to_string(),
-                DecimalValue::new("149.99", Some(10), Some(2)),
-                false,
-                NaiveDate::from_ymd_opt(2023, 1, 2).unwrap(),
-                NaiveDateTime::parse_from_str("2023-01-02 15:30:00", "%Y-%m-%d %H:%M:%S").unwrap()
-            )
-        ]
-    );
+    let expected = [
+        (
+            1_i64,
+            "hello",
+            ("99.99", Some(10), Some(2)),
+            true,
+            NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
+            NaiveDateTime::parse_from_str("2023-01-01 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+        ),
+        (
+            2,
+            "world",
+            ("149.99", Some(10), Some(2)),
+            false,
+            NaiveDate::from_ymd_opt(2023, 1, 2).unwrap(),
+            NaiveDateTime::parse_from_str("2023-01-02 15:30:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+        ),
+    ];
+    assert_eq!(rows.len(), expected.len());
+
+    for (actual, expected) in rows.iter().zip(expected) {
+        let (id, value, price, is_active, created_date, updated_at) = actual;
+        let (exp_id, exp_value, (exp_raw, exp_precision, exp_scale), exp_active, exp_date, exp_ts) =
+            expected;
+        assert_eq!(*id, exp_id);
+        assert_eq!(value, exp_value);
+        assert_eq!(price.raw(), exp_raw);
+        assert_eq!(price.precision(), exp_precision);
+        assert_eq!(price.scale(), exp_scale);
+        assert_eq!(*is_active, exp_active);
+        assert_eq!(*created_date, exp_date);
+        assert_eq!(*updated_at, exp_ts);
+    }
 
     let columns = table.schema().columns();
     assert_eq!(columns.len(), 6);
@@ -129,13 +144,15 @@ async fn test_basic_operations() -> Result<()> {
         .await?
         .collect()
         .await?;
-    assert_eq!(
-        price_rows,
-        vec![
-            (1, DecimalValue::new("99.99", Some(10), Some(2))),
-            (2, DecimalValue::new("149.99", Some(10), Some(2))),
-        ]
-    );
+    let expected_prices = [(1_i64, "99.99"), (2, "149.99")];
+    assert_eq!(price_rows.len(), expected_prices.len());
+
+    for ((id, price), (exp_id, exp_raw)) in price_rows.iter().zip(expected_prices) {
+        assert_eq!(*id, exp_id);
+        assert_eq!(price.raw(), exp_raw);
+        assert_eq!(price.precision(), Some(10));
+        assert_eq!(price.scale(), Some(2));
+    }
 
     Ok(())
 }

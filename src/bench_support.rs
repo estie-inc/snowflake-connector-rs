@@ -6,7 +6,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use crate::{
-    Result, ResultTable, Schema,
+    Result, ResultTable,
+    result::Schema,
     rowset::{self, parser},
     statement::parse_response,
 };

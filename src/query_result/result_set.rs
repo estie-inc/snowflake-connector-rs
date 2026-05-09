@@ -299,7 +299,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CellDecodeError, ErrorKind, MissingColumnError, SchemaError,
+        ErrorKind, MissingColumnError, SchemaError,
         error::QueryScopedRepr,
         query_result::{
             TypedResultSet,
@@ -308,7 +308,8 @@ mod tests {
             snapshot::{PartitionCursor, PartitionSpec, ResultIdentity, ResultSnapshot},
         },
         result::{
-            Column, ColumnIndex, ColumnType, DynamicRow, FromRow, RowPlanContext, RowRef, Schema,
+            CellDecodeIssue, CellDecodeResult, CellRef, Column, ColumnIndex, ColumnType,
+            DynamicRow, FromCell, FromRow, RowPlanContext, RowRef, Schema,
         },
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
@@ -482,6 +483,16 @@ mod tests {
     #[derive(Debug)]
     struct DecodeErrorRow;
 
+    #[derive(Debug)]
+    struct DecodeErrorCell;
+
+    impl FromCell for DecodeErrorCell {
+        fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+            let _ = cell.required_raw()?;
+            Err(CellDecodeIssue::builder("simulated decode failure").build())
+        }
+    }
+
     impl FromRow for DecodeErrorRow {
         type Plan = ();
 
@@ -489,20 +500,9 @@ mod tests {
             Ok(())
         }
 
-        fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> crate::Result<Self> {
-            Err(CellDecodeError::new(
-                0,
-                ColumnIndex::new(0),
-                "X",
-                "text",
-                ColumnType::Fixed {
-                    precision: None,
-                    scale: Some(0),
-                },
-                Some("bad"),
-                "simulated decode failure",
-            )
-            .into())
+        fn from_row_with_plan(row: RowRef<'_>, _: &Self::Plan) -> crate::Result<Self> {
+            row.get::<DecodeErrorCell>(ColumnIndex::new(0))?;
+            unreachable!("decode failure should bubble out before constructing DecodeErrorRow")
         }
     }
 

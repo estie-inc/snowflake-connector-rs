@@ -15,7 +15,10 @@ use crate::{
 
 const CAPACITY_RESERVE_CELL_LIMIT: usize = 64 * 1024 * 1024;
 
-/// Materialized batch of rows sharing a single `Schema` and cell storage.
+/// Fully materialized rows with a shared schema and query id.
+///
+/// `ResultTable` is the untyped table handle. Rows can be decoded into a
+/// typed representation or inspected dynamically.
 #[derive(Debug)]
 pub struct ResultTable {
     schema: Arc<Schema>,
@@ -41,40 +44,38 @@ impl ResultTable {
         }
     }
 
+    /// Borrow the schema describing the result-set columns.
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
 
+    /// Snowflake-assigned query id for this table.
     pub fn query_id(&self) -> &str {
         &self.query_id
     }
 
+    /// Total number of rows across this table.
     pub fn row_count(&self) -> usize {
         self.row_count
     }
 
+    /// Returns `true` when [`row_count`](Self::row_count) is zero.
     pub fn is_empty(&self) -> bool {
         self.row_count == 0
     }
 
-    /// Create a typed row iterator for this table.
+    /// Iterate the table as typed rows of `T`.
     ///
     /// # Errors
     ///
-    /// Returns any error produced by [`FromRow::build_plan`] for `T` when
-    /// preparing to iterate this table.
-    ///
-    /// Built-in and derive-based row types typically use
-    /// `ErrorKind::Decode` when this table's schema does not match `T`;
-    /// inspect the detail via [`crate::Error::as_schema_error`].
+    /// Returns an error when building the row decode plan fails.
     pub fn rows<T: FromRow>(&self) -> Result<Rows<'_, T>> {
         Rows::new(self)
     }
 
-    /// Create a dynamic row iterator for this table.
+    /// Iterate the table as [`DynamicRow`] values.
     ///
-    /// This uses the built-in [`DynamicRow`] plan, which currently reuses the
-    /// table schema directly and therefore cannot fail.
+    /// Iterate the table as dynamically typed rows.
     pub fn dynamic_rows(&self) -> Result<Rows<'_, DynamicRow>> {
         self.rows::<DynamicRow>()
     }

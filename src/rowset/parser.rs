@@ -549,8 +549,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ColumnType,
-        result::test_data::make_schema,
+        result::{ColumnType, test_data::make_schema},
         rowset::workload::{
             BLOCKING_GZIP_COMPRESSED_BYTES, BLOCKING_PARSE_BYTES, BLOCKING_PARSE_CELLS,
             ParseExecution, should_spawn_blocking_parse,

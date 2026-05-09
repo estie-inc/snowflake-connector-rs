@@ -1,11 +1,9 @@
-use std::borrow::Cow;
-
 use bytes::Bytes;
 
 use crate::{
     error::RowsetParseError,
-    result::schema::{Column, ColumnType},
-    {CellDecodeError, Error, Result},
+    result::schema::Column,
+    result::{CellDecodeIssue, CellDecodeResult},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -145,72 +143,50 @@ impl CellBlock {
     }
 }
 
-/// Lightweight view into a single cell.
+/// Borrowed view of a single cell.
+///
+/// Contains the cell's raw text (or NULL), column metadata, and row index.
+/// `CellRef` is copyable and does not own the underlying result data.
 #[derive(Clone, Copy, Debug)]
 pub struct CellRef<'a> {
-    pub(crate) row: usize,
+    pub(crate) row_index: usize,
     pub(crate) column: &'a Column,
     pub(crate) raw: Option<&'a str>,
 }
 
 impl<'a> CellRef<'a> {
+    /// Returns `true` when the cell is SQL `NULL`.
     pub fn is_null(self) -> bool {
         self.raw.is_none()
     }
 
+    /// Borrows the cell's raw text as Snowflake delivered it.
+    ///
+    /// Returns `None` for SQL `NULL`. The format is column-type specific
+    /// (e.g. `"123"` for integers, an epoch fragment for timestamps);
+    /// usually you'll let a [`FromCell`](crate::FromCell) implementation
+    /// parse it rather than reading the raw text directly.
     pub fn raw(self) -> Option<&'a str> {
         self.raw
     }
 
+    /// Borrows the column metadata for this cell.
     pub fn column(self) -> &'a Column {
         self.column
     }
 
-    pub fn column_type(self) -> &'a ColumnType {
-        self.column.ty()
+    /// Zero-based index of the row this cell came from.
+    pub fn row_index(self) -> usize {
+        self.row_index
     }
 
-    pub fn row(self) -> usize {
-        self.row
-    }
-
-    /// Convert NULL into a `CellDecodeError`. Otherwise return the raw text.
+    /// Returns the raw text when the cell is not SQL `NULL`.
     ///
-    /// # Errors
-    ///
-    /// Returns `ErrorKind::Decode` when the cell is `NULL`; inspect the
-    /// detail via [`crate::Error::as_cell_decode_error`].
-    pub fn required_raw(self, expected: impl Into<Cow<'static, str>>) -> Result<&'a str> {
+    /// `NULL` is reported as a [`CellDecodeIssue`](crate::result::CellDecodeIssue).
+    pub fn required_raw(self) -> CellDecodeResult<&'a str> {
         match self.raw {
             Some(s) => Ok(s),
-            None => Err(CellDecodeError::new(
-                self.row,
-                self.column.index(),
-                self.column.name(),
-                expected,
-                self.column.ty().clone(),
-                None,
-                "value is NULL",
-            )
-            .into()),
+            None => Err(CellDecodeIssue::builder("value is NULL").build()),
         }
-    }
-
-    /// Build a context-aware decode error for the underlying cell.
-    pub fn decode_error(
-        self,
-        expected: impl Into<Cow<'static, str>>,
-        reason: impl Into<Box<str>>,
-    ) -> Error {
-        CellDecodeError::new(
-            self.row,
-            self.column.index(),
-            self.column.name(),
-            expected,
-            self.column.ty().clone(),
-            self.raw,
-            reason,
-        )
-        .into()
     }
 }

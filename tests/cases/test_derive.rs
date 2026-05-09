@@ -1,6 +1,6 @@
 use chrono::NaiveDateTime;
 
-use snowflake_connector_rs::{DecimalValue, FromRow, Result, SchemaError};
+use snowflake_connector_rs::{FromRow, Result, SchemaError, result::DecimalValue};
 
 use super::common;
 
@@ -136,19 +136,15 @@ async fn derive_named_lookup_variants_decode_expected_rows() -> Result<()> {
         .collect()
         .await?;
 
-    assert_eq!(
-        prices,
-        vec![
-            PriceRow {
-                id: 1,
-                price: DecimalValue::new("99.99", Some(10), Some(2)),
-            },
-            PriceRow {
-                id: 2,
-                price: DecimalValue::new("149.99", Some(10), Some(2)),
-            },
-        ]
-    );
+    let expected_prices = [(1_i64, "99.99"), (2, "149.99")];
+    assert_eq!(prices.len(), expected_prices.len());
+
+    for (row, (exp_id, exp_raw)) in prices.iter().zip(expected_prices) {
+        assert_eq!(row.id, exp_id);
+        assert_eq!(row.price.raw(), exp_raw);
+        assert_eq!(row.price.precision(), Some(10));
+        assert_eq!(row.price.scale(), Some(2));
+    }
 
     let keywords = session
         .query_as::<KeywordRow, _>("SELECT 1 AS TYPE")
@@ -220,7 +216,7 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
     match err.as_cell_decode_error() {
         Some(err) => {
             assert_eq!(err.column_name(), "NOTE");
-            assert_eq!(err.reason(), "value is NULL");
+            assert_eq!(err.issue().reason(), "value is NULL");
         }
         other => panic!("expected Decode error, got: {other:?}"),
     }

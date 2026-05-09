@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{AmbiguousColumnError, MissingColumnError, SchemaError, error::RowsetParseError};
 
-/// Index into a result-set column list.
+/// Position of a column inside a result-set schema.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ColumnIndex(u32);
@@ -12,50 +12,105 @@ impl ColumnIndex {
         Self(index)
     }
 
+    /// Returns the index as `usize` for slice-style access.
     pub fn as_usize(self) -> usize {
         self.0 as usize
     }
 }
 
+/// Snowflake column type as reported by the result-set metadata.
+///
+/// Variants mirror the wire-level type tags Snowflake returns for each
+/// result column. A handful of variants carry the type's parameters
+/// (precision/scale/length) when the server provides them.
+///
+/// Unknown or unrecognized server-side types fall through to
+/// [`ColumnType::Unknown`] rather than failing — this keeps the connector
+/// usable when Snowflake introduces new types.
+///
+/// # Example
+///
+/// ```
+/// use snowflake_connector_rs::result::ColumnType;
+///
+/// let ty = ColumnType::Fixed { precision: Some(10), scale: Some(2) };
+/// assert_eq!(ty.precision(), Some(10));
+/// assert_eq!(ty.scale(), Some(2));
+/// assert_eq!(ty.length(), None);
+/// assert_eq!(ty.as_str(), "fixed");
+///
+/// let text = ColumnType::Text { length: Some(255) };
+/// assert_eq!(text.length(), Some(255));
+/// assert_eq!(text.precision(), None);
+/// assert_eq!(text.as_str(), "text");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ColumnType {
+    /// `NUMBER` / `DECIMAL` / `NUMERIC` / `INT` / etc. — exact-precision
+    /// numbers. `precision` and `scale` come from the column definition
+    /// when reported by Snowflake.
     Fixed {
+        /// Total digit count, when reported.
         precision: Option<i64>,
+        /// Digits to the right of the decimal point. Zero means integer.
         scale: Option<i64>,
     },
+    /// `FLOAT` / `DOUBLE` / `REAL` — IEEE 754 floating-point.
     Real,
+    /// `TEXT` / `VARCHAR` / `CHAR` / `STRING` — variable-length string.
     Text {
+        /// Maximum byte length, when reported by Snowflake.
         length: Option<i64>,
     },
+    /// `BOOLEAN`.
     Boolean,
+    /// `DATE` (calendar day, no time-of-day component).
     Date,
+    /// `TIME` (time-of-day, no date component).
     Time {
+        /// Fractional-seconds precision (digits, 0–9).
         scale: Option<i64>,
     },
+    /// `TIMESTAMP_NTZ` — timestamp without time zone.
     TimestampNtz {
+        /// Fractional-seconds precision.
         scale: Option<i64>,
     },
+    /// `TIMESTAMP_LTZ` — timestamp with local-time-zone semantics.
     TimestampLtz {
+        /// Fractional-seconds precision.
         scale: Option<i64>,
     },
+    /// `TIMESTAMP_TZ` — timestamp with explicit offset.
     TimestampTz {
+        /// Fractional-seconds precision.
         scale: Option<i64>,
     },
+    /// `VARIANT` — semi-structured value.
     Variant,
+    /// `OBJECT` — semi-structured map.
     Object,
+    /// `ARRAY` — semi-structured array.
     Array,
+    /// `BINARY` — byte buffer.
     Binary,
+    /// `GEOGRAPHY`.
     Geography,
+    /// `GEOMETRY`.
     Geometry,
+    /// `VECTOR`.
     Vector,
+    /// Type tag the connector did not recognize. The original (lowercased)
+    /// server-side tag is preserved for diagnostics; values come through as
+    /// raw text.
     Unknown {
+        /// Original lowercased Snowflake type tag.
         snowflake_type: Box<str>,
     },
 }
 
 impl ColumnType {
-    /// Build a `ColumnType` from the raw rowtype metadata returned by Snowflake.
-    pub fn from_driver_metadata(
+    pub(crate) fn from_driver_metadata(
         snowflake_type: &str,
         length: Option<i64>,
         precision: Option<i64>,
@@ -85,8 +140,10 @@ impl ColumnType {
         }
     }
 
-    /// Wire-level type tag (lowercase Snowflake `rowtype.type`).
-    pub fn wire_type(&self) -> &str {
+    /// Returns the lowercase Snowflake type tag (matching the
+    /// `rowtype.type` field).
+    ///
+    pub fn as_str(&self) -> &str {
         match self {
             ColumnType::Fixed { .. } => "fixed",
             ColumnType::Real => "real",
@@ -108,6 +165,8 @@ impl ColumnType {
         }
     }
 
+    /// Numeric precision for [`ColumnType::Fixed`]; `None` for any other
+    /// variant.
     pub fn precision(&self) -> Option<i64> {
         if let ColumnType::Fixed { precision, .. } = self {
             *precision
@@ -116,6 +175,8 @@ impl ColumnType {
         }
     }
 
+    /// Scale for variants that carry one (`Fixed`, `Time`, the `Timestamp*`
+    /// family); `None` for any other variant.
     pub fn scale(&self) -> Option<i64> {
         match self {
             ColumnType::Fixed { scale, .. }
@@ -127,6 +188,8 @@ impl ColumnType {
         }
     }
 
+    /// Maximum byte length for [`ColumnType::Text`]; `None` for any other
+    /// variant.
     pub fn length(&self) -> Option<i64> {
         match self {
             ColumnType::Text { length } => *length,
@@ -135,6 +198,7 @@ impl ColumnType {
     }
 }
 
+/// Metadata for a single result-set column.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Column {
     name: Arc<str>,
@@ -144,7 +208,12 @@ pub struct Column {
 }
 
 impl Column {
-    pub fn new(name: impl Into<Arc<str>>, index: u32, nullable: bool, ty: ColumnType) -> Self {
+    pub(crate) fn new(
+        name: impl Into<Arc<str>>,
+        index: u32,
+        nullable: bool,
+        ty: ColumnType,
+    ) -> Self {
         Self {
             name: name.into(),
             index: ColumnIndex(index),
@@ -153,15 +222,19 @@ impl Column {
         }
     }
 
+    /// Raw column name as Snowflake reported it (case-sensitive).
     pub fn name(&self) -> &str {
         &self.name
     }
+    /// Zero-based position of this column within the schema.
     pub fn index(&self) -> ColumnIndex {
         self.index
     }
+    /// Whether the column may carry SQL `NULL`.
     pub fn nullable(&self) -> bool {
         self.nullable
     }
+    /// The column's Snowflake type.
     pub fn ty(&self) -> &ColumnType {
         &self.ty
     }
@@ -207,6 +280,9 @@ impl ColumnIndexMap {
     }
 }
 
+/// Ordered metadata describing the columns of a result set.
+///
+/// Lookups are case-sensitive and match the raw label Snowflake reported.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Schema {
     columns: Box<[Column]>,
@@ -228,24 +304,35 @@ impl Schema {
         })
     }
 
+    /// Borrows the columns in declaration order.
     pub fn columns(&self) -> &[Column] {
         &self.columns
     }
 
+    /// Returns the number of columns.
     pub fn len(&self) -> usize {
         self.columns.len()
     }
 
+    /// Returns `true` when the result set has no columns.
     pub fn is_empty(&self) -> bool {
         self.columns.is_empty()
     }
 
-    /// Borrows column metadata by index.
+    /// Borrow column metadata by index.
     pub fn column_at(&self, index: ColumnIndex) -> Option<&Column> {
         self.columns.get(index.as_usize())
     }
 
-    /// Resolves an exact raw result label (case-sensitive).
+    /// Resolve a column name to its [`ColumnIndex`].
+    ///
+    /// Matching is case-sensitive against the raw label Snowflake reported
+    /// (a quoted `"Id"` and an unquoted `ID` are distinct).
+    ///
+    /// # Errors
+    ///
+    /// - [`SchemaError::MissingColumn`] when no column carries the name.
+    /// - [`SchemaError::AmbiguousColumn`] when several columns share it.
     pub fn column(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
         lookup_result(name, self.indices.get(name))
     }

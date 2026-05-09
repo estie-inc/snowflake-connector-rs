@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 
-use snowflake_connector_rs::{CollectOptions, ColumnType, Result};
+use snowflake_connector_rs::{CollectOptions, Result, result::ColumnType};
 
 use super::common;
 

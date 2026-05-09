@@ -1,49 +1,128 @@
-use std::{borrow::Cow, iter::repeat_n};
+use std::iter::repeat_n;
 
 use chrono::{DateTime, Days, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
 use crate::result::{
+    CellDecodeIssue, CellDecodeResult,
     cell::CellRef,
     dynamic::DecimalValue,
     plan::RowPlanContext,
     row::RowRef,
     schema::{ColumnIndex, ColumnType},
 };
-use crate::{ColumnCountMismatchError, Error, Result, SchemaError};
+use crate::{ColumnCountMismatchError, Result, SchemaError};
 
 const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 
-/// Trait for decoding a single cell into a Rust value.
+/// Decode a single result-set cell into a Rust value.
+///
+/// Implementations exist for primitive Rust types,
+/// [`SnowflakeValue`](crate::result::SnowflakeValue),
+/// [`DecimalValue`](crate::result::DecimalValue), and `Option<T>`.
+/// Implement it yourself when adapting Snowflake values into domain types.
+///
+/// # Example
+///
+/// A custom decoder that wraps `f64` for type safety:
+///
+/// ```
+/// use snowflake_connector_rs::result::{
+///     CellDecodeIssue, CellDecodeResult, CellRef, FromCell,
+/// };
+///
+/// struct CelsiusTemp(f64);
+///
+/// impl FromCell for CelsiusTemp {
+///     fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+///         let raw = cell.required_raw()?;
+///         raw.parse::<f64>().map(CelsiusTemp).map_err(|e| {
+///             CellDecodeIssue::builder("not a valid temperature")
+///                 .source(e)
+///                 .build()
+///         })
+///     }
+/// }
+/// ```
 pub trait FromCell: Sized {
-    fn expected() -> Cow<'static, str>;
-
     /// Decode a single cell into `Self`.
     ///
+    /// Implementations should reject `NULL` for non-`Option` targets and
+    /// describe conversion failures with [`CellDecodeIssue`].
+    ///
     /// # Errors
     ///
-    /// Implementations may return any [`crate::Error`] appropriate for their
-    /// decode logic.
-    fn from_cell(cell: CellRef<'_>) -> Result<Self>;
+    /// Implementations should return only cell-local issues here.
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self>;
 }
 
-/// Trait for materializing a row into a Rust type using a precomputed plan.
+/// Decode an entire row into a Rust type.
+///
+/// Implementations may use an associated plan to cache schema-dependent
+/// state before decoding individual rows.
+///
+/// # Example
+///
+/// Hand-written equivalent of `#[derive(FromRow)]` for a two-column row:
+///
+/// ```
+/// use snowflake_connector_rs::{
+///     FromRow, Result,
+///     result::{ColumnIndex, RowPlanContext, RowRef},
+/// };
+///
+/// struct UserRow {
+///     id: i64,
+///     name: String,
+/// }
+///
+/// struct UserRowPlan {
+///     id: ColumnIndex,
+///     name: ColumnIndex,
+/// }
+///
+/// impl FromRow for UserRow {
+///     type Plan = UserRowPlan;
+///
+///     fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
+///         let schema = ctx.schema();
+///         Ok(UserRowPlan {
+///             id: schema.column("ID")?,
+///             name: schema.column("NAME")?,
+///         })
+///     }
+///
+///     fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
+///         Ok(UserRow {
+///             id: row.get(plan.id)?,
+///             name: row.get(plan.name)?,
+///         })
+///     }
+/// }
+/// ```
 pub trait FromRow: Sized {
+    /// Per-table state reused while decoding rows.
+    ///
+    /// `Send + Sync` so the plan can be shared across threads when an
+    /// iterator is moved between tasks.
     type Plan: Send + Sync;
 
-    /// Build a reusable decode plan for `Self` from result-set metadata.
+    /// Build the per-table decode plan from the result-set metadata.
     ///
     /// # Errors
     ///
-    /// Implementations may return any [`crate::Error`] appropriate for schema
-    /// validation or planning.
+    /// Implementations may return any [`Error`](crate::Error) appropriate
+    /// for schema validation or planning. Conventional errors include
+    /// [`SchemaError::MissingColumn`](crate::SchemaError::MissingColumn)
+    /// and
+    /// [`SchemaError::ColumnCountMismatch`](crate::SchemaError::ColumnCountMismatch).
     fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan>;
 
-    /// Materialize a row using a precomputed plan.
+    /// Decode a single row using the associated plan.
     ///
     /// # Errors
     ///
-    /// Implementations may return any [`crate::Error`] appropriate for row
-    /// conversion.
+    /// Implementations may return any [`Error`](crate::Error) appropriate
+    /// for row conversion.
     fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self>;
 }
 
@@ -67,10 +146,7 @@ impl FromRow for () {
 }
 
 impl<T: FromCell> FromCell for Option<T> {
-    fn expected() -> Cow<'static, str> {
-        T::expected()
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
         if cell.is_null() {
             Ok(None)
         } else {
@@ -79,288 +155,264 @@ impl<T: FromCell> FromCell for Option<T> {
     }
 }
 
-// Generic decode error helper that uses T::expected()
-fn err_with<T: FromCell>(cell: CellRef<'_>, reason: impl Into<Box<str>>) -> Error {
-    cell.decode_error(T::expected(), reason)
-}
-
-fn ensure_column_type<T: FromCell>(cell: CellRef<'_>, ok: bool) -> Result<()> {
+fn ensure_column_type(cell: CellRef<'_>, ok: bool) -> CellDecodeResult<()> {
     if ok {
         Ok(())
     } else {
-        Err(err_with::<T>(
-            cell,
-            format!("incompatible column type: {:?}", cell.column_type()),
+        Err(CellDecodeIssue::builder(format!(
+            "incompatible column type: {:?}",
+            cell.column().ty()
         ))
+        .build())
     }
 }
 
 macro_rules! impl_int_from_cell {
-    ($t:ty, $expected:expr) => {
+    ($t:ty) => {
         impl FromCell for $t {
-            fn expected() -> Cow<'static, str> {
-                Cow::Borrowed($expected)
-            }
-            fn from_cell(cell: CellRef<'_>) -> Result<Self> {
+            fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
                 // Integers are only valid for `FIXED` with `scale = 0`.
-                match cell.column_type() {
+                match cell.column().ty() {
                     ColumnType::Fixed { scale, .. } => {
                         let s = scale.unwrap_or(0);
                         if s != 0 {
-                            return Err(err_with::<Self>(
-                                cell,
-                                format!("integer cannot decode FIXED with scale {s}"),
-                            ));
+                            return Err(CellDecodeIssue::builder(format!(
+                                "integer cannot decode FIXED with scale {s}"
+                            ))
+                            .build());
                         }
                     }
                     _ => {
-                        ensure_column_type::<Self>(cell, false)?;
+                        ensure_column_type(cell, false)?;
                         unreachable!()
                     }
                 }
-                let raw = cell.required_raw(Self::expected())?;
-                raw.parse::<$t>()
-                    .map_err(|e| err_with::<Self>(cell, format!("parse error: {e}")))
+                let raw = cell.required_raw()?;
+                raw.parse::<$t>().map_err(|e| {
+                    CellDecodeIssue::builder(format!("parse error: {e}"))
+                        .source(e)
+                        .build()
+                })
             }
         }
     };
 }
 
-impl_int_from_cell!(i8, "i8");
-impl_int_from_cell!(i16, "i16");
-impl_int_from_cell!(i32, "i32");
-impl_int_from_cell!(i64, "i64");
-impl_int_from_cell!(i128, "i128");
-impl_int_from_cell!(u8, "u8");
-impl_int_from_cell!(u16, "u16");
-impl_int_from_cell!(u32, "u32");
-impl_int_from_cell!(u64, "u64");
-impl_int_from_cell!(u128, "u128");
+impl_int_from_cell!(i8);
+impl_int_from_cell!(i16);
+impl_int_from_cell!(i32);
+impl_int_from_cell!(i64);
+impl_int_from_cell!(i128);
+impl_int_from_cell!(u8);
+impl_int_from_cell!(u16);
+impl_int_from_cell!(u32);
+impl_int_from_cell!(u64);
+impl_int_from_cell!(u128);
 
 impl FromCell for f64 {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("f64")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        ensure_column_type::<Self>(
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        ensure_column_type(
             cell,
             matches!(
-                cell.column_type(),
+                cell.column().ty(),
                 ColumnType::Real | ColumnType::Fixed { .. }
             ),
         )?;
 
-        let raw = cell.required_raw(Self::expected())?;
-        raw.parse::<f64>()
-            .map_err(|e| err_with::<Self>(cell, format!("parse error: {e}")))
+        let raw = cell.required_raw()?;
+        raw.parse::<f64>().map_err(|e| {
+            CellDecodeIssue::builder(format!("parse error: {e}"))
+                .source(e)
+                .build()
+        })
     }
 }
 
 impl FromCell for f32 {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("f32")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        ensure_column_type::<Self>(
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        ensure_column_type(
             cell,
             matches!(
-                cell.column_type(),
+                cell.column().ty(),
                 ColumnType::Real | ColumnType::Fixed { .. }
             ),
         )?;
 
-        let raw = cell.required_raw(Self::expected())?;
-        raw.parse::<f32>()
-            .map_err(|e| err_with::<Self>(cell, format!("parse error: {e}")))
+        let raw = cell.required_raw()?;
+        raw.parse::<f32>().map_err(|e| {
+            CellDecodeIssue::builder(format!("parse error: {e}"))
+                .source(e)
+                .build()
+        })
     }
 }
 
 impl FromCell for String {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("String")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        cell.required_raw(Self::expected()).map(|s| s.to_owned())
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        cell.required_raw().map(|s| s.to_owned())
     }
 }
 
 impl FromCell for DecimalValue {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("DecimalValue")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        let (precision, scale) = match cell.column_type() {
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        let (precision, scale) = match cell.column().ty() {
             ColumnType::Fixed { precision, scale } => (*precision, *scale),
             other => {
-                return Err(err_with::<Self>(
-                    cell,
-                    format!("incompatible column type: {other:?}"),
-                ));
+                return Err(CellDecodeIssue::builder(format!(
+                    "incompatible column type: {other:?}"
+                ))
+                .build());
             }
         };
-        let raw = cell.required_raw(Self::expected())?;
+        let raw = cell.required_raw()?;
         Ok(DecimalValue::new(raw, precision, scale))
     }
 }
 
 impl FromCell for bool {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("bool")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        ensure_column_type::<Self>(cell, matches!(cell.column_type(), ColumnType::Boolean))?;
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        ensure_column_type(cell, matches!(cell.column().ty(), ColumnType::Boolean))?;
 
-        let raw = cell.required_raw(Self::expected())?;
+        let raw = cell.required_raw()?;
         if raw.eq_ignore_ascii_case("1") || raw.eq_ignore_ascii_case("true") {
             Ok(true)
         } else if raw.eq_ignore_ascii_case("0") || raw.eq_ignore_ascii_case("false") {
             Ok(false)
         } else {
-            Err(err_with::<Self>(cell, format!("'{raw}' is not bool")))
+            Err(CellDecodeIssue::builder(format!("'{raw}' is not bool")).build())
         }
     }
 }
 
 impl FromCell for NaiveDate {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("NaiveDate")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        ensure_column_type::<Self>(cell, matches!(cell.column_type(), ColumnType::Date))?;
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        ensure_column_type(cell, matches!(cell.column().ty(), ColumnType::Date))?;
 
-        let raw = cell.required_raw(Self::expected())?;
-        let days = raw
-            .parse::<i64>()
-            .map_err(|_| err_with::<Self>(cell, format!("'{raw}' is not Date")))?;
+        let raw = cell.required_raw()?;
+        let days = raw.parse::<i64>().map_err(|e| {
+            CellDecodeIssue::builder(format!("'{raw}' is not Date"))
+                .source(e)
+                .build()
+        })?;
         let unix_epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch");
 
         if days >= 0 {
             unix_epoch
                 .checked_add_days(Days::new(days as u64))
-                .ok_or_else(|| err_with::<Self>(cell, format!("'{raw}' is not a valid date")))
+                .ok_or_else(|| {
+                    CellDecodeIssue::builder(format!("'{raw}' is not a valid date")).build()
+                })
         } else {
             unix_epoch
                 .checked_sub_days(Days::new(days.unsigned_abs()))
-                .ok_or_else(|| err_with::<Self>(cell, format!("'{raw}' is not a valid date")))
+                .ok_or_else(|| {
+                    CellDecodeIssue::builder(format!("'{raw}' is not a valid date")).build()
+                })
         }
     }
 }
 
 impl FromCell for NaiveTime {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("NaiveTime")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        ensure_column_type::<Self>(cell, matches!(cell.column_type(), ColumnType::Time { .. }))?;
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        ensure_column_type(cell, matches!(cell.column().ty(), ColumnType::Time { .. }))?;
 
-        let raw = cell.required_raw(Self::expected())?;
-        let scale = match cell.column_type() {
+        let raw = cell.required_raw()?;
+        let scale = match cell.column().ty() {
             ColumnType::Time { scale } => match *scale {
                 None => 0usize,
                 Some(s) if (0..=9).contains(&s) => s as usize,
                 Some(s) => {
-                    return Err(err_with::<Self>(cell, format!("invalid time scale: {s}")));
+                    return Err(
+                        CellDecodeIssue::builder(format!("invalid time scale: {s}")).build()
+                    );
                 }
             },
             _ => 0,
         };
-        let (secs, nsec) =
-            parse_time_seconds_and_nanos(raw, scale).map_err(|m| err_with::<Self>(cell, m))?;
+        let (secs, nsec) = parse_time_seconds_and_nanos(raw, scale)
+            .map_err(|m| CellDecodeIssue::builder(m).build())?;
 
         NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
-            .ok_or_else(|| err_with::<Self>(cell, format!("invalid time: {raw}")))
+            .ok_or_else(|| CellDecodeIssue::builder(format!("invalid time: {raw}")).build())
     }
 }
 
 impl FromCell for NaiveDateTime {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("NaiveDateTime")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        ensure_column_type::<Self>(
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        ensure_column_type(
             cell,
-            matches!(cell.column_type(), ColumnType::TimestampNtz { .. }),
+            matches!(cell.column().ty(), ColumnType::TimestampNtz { .. }),
         )?;
 
-        let raw = cell.required_raw(Self::expected())?;
-        let scale = timestamp_scale(cell.column_type()).unwrap_or(9);
+        let raw = cell.required_raw()?;
+        let scale = timestamp_scale(cell.column().ty()).unwrap_or(9);
 
         parse_timestamp_epoch(raw, scale)
             .map(|dt| dt.naive_utc())
-            .map_err(|m| err_with::<Self>(cell, m))
+            .map_err(|m| CellDecodeIssue::builder(m).build())
     }
 }
 
 impl FromCell for DateTime<Utc> {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("DateTime<Utc>")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        let raw = cell.required_raw(Self::expected())?;
-        let scale = timestamp_scale(cell.column_type()).unwrap_or(9);
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        let raw = cell.required_raw()?;
+        let scale = timestamp_scale(cell.column().ty()).unwrap_or(9);
 
-        match cell.column_type() {
+        match cell.column().ty() {
             ColumnType::TimestampLtz { .. } => {
-                parse_timestamp_epoch(raw, scale).map_err(|m| err_with::<Self>(cell, m))
+                parse_timestamp_epoch(raw, scale).map_err(|m| CellDecodeIssue::builder(m).build())
             }
-            ColumnType::TimestampTz { .. } => {
-                parse_timestamp_tz_as_utc(raw, scale).map_err(|m| err_with::<Self>(cell, m))
-            }
-            other => Err(err_with::<Self>(
-                cell,
-                format!("unsupported column type for DateTime<Utc>: {other:?}"),
-            )),
+            ColumnType::TimestampTz { .. } => parse_timestamp_tz_as_utc(raw, scale)
+                .map_err(|m| CellDecodeIssue::builder(m).build()),
+            other => Err(CellDecodeIssue::builder(format!(
+                "unsupported column type for DateTime<Utc>: {other:?}"
+            ))
+            .build()),
         }
     }
 }
 
 impl FromCell for DateTime<FixedOffset> {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("DateTime<FixedOffset>")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        let raw = cell.required_raw(Self::expected())?;
-        let scale = timestamp_scale(cell.column_type()).unwrap_or(9);
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        let raw = cell.required_raw()?;
+        let scale = timestamp_scale(cell.column().ty()).unwrap_or(9);
 
-        match cell.column_type() {
-            ColumnType::TimestampTz { .. } => {
-                parse_timestamp_tz_with_offset(raw, scale).map_err(|m| err_with::<Self>(cell, m))
-            }
-            other => Err(err_with::<Self>(
-                cell,
-                format!("unsupported column type for DateTime<FixedOffset>: {other:?}"),
-            )),
+        match cell.column().ty() {
+            ColumnType::TimestampTz { .. } => parse_timestamp_tz_with_offset(raw, scale)
+                .map_err(|m| CellDecodeIssue::builder(m).build()),
+            other => Err(CellDecodeIssue::builder(format!(
+                "unsupported column type for DateTime<FixedOffset>: {other:?}"
+            ))
+            .build()),
         }
     }
 }
 
 impl FromCell for serde_json::Value {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("json")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        ensure_column_type::<Self>(
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        ensure_column_type(
             cell,
             matches!(
-                cell.column_type(),
+                cell.column().ty(),
                 ColumnType::Variant | ColumnType::Object | ColumnType::Array
             ),
         )?;
 
-        let raw = cell.required_raw(Self::expected())?;
-        serde_json::from_str(raw).map_err(|e| err_with::<Self>(cell, format!("invalid json: {e}")))
+        let raw = cell.required_raw()?;
+        serde_json::from_str(raw).map_err(|e| {
+            CellDecodeIssue::builder(format!("invalid json: {e}"))
+                .source(e)
+                .build()
+        })
     }
 }
 
 impl FromCell for Vec<u8> {
-    fn expected() -> Cow<'static, str> {
-        Cow::Borrowed("binary")
-    }
-    fn from_cell(cell: CellRef<'_>) -> Result<Self> {
-        ensure_column_type::<Self>(cell, matches!(cell.column_type(), ColumnType::Binary))?;
+    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+        ensure_column_type(cell, matches!(cell.column().ty(), ColumnType::Binary))?;
 
-        let raw = cell.required_raw(Self::expected())?;
-        decode_hex(raw).map_err(|m| err_with::<Self>(cell, m))
+        let raw = cell.required_raw()?;
+        decode_hex(raw).map_err(|m| CellDecodeIssue::builder(m).build())
     }
 }
 
@@ -663,7 +715,7 @@ macro_rules! impl_tuple_from_row {
             }
 
             fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
-                Ok(($($t::from_cell(row.cell(plan[$idx])?)?,)*))
+                Ok(($(row.get::<$t>(plan[$idx])?,)*))
             }
         }
     };
@@ -766,17 +818,13 @@ mod tests {
         assert!(err.contains("Could not decode timestamp"), "actual: {err}");
     }
 
+    /// Snowflake documents timestamp scales in the `0..=9` range.
     #[test]
-    fn parse_timestamp_epoch_rejects_negative_scale() {
-        let err = parse_timestamp_epoch("0.1", -1).unwrap_err();
-        assert!(err.contains("invalid timestamp scale"), "actual: {err}");
-    }
-
-    /// Scale > 9 is also outside Snowflake's documented `0..=9` range.
-    #[test]
-    fn parse_timestamp_epoch_rejects_scale_above_9() {
-        let err = parse_timestamp_epoch("0.1", 10).unwrap_err();
-        assert!(err.contains("invalid timestamp scale"), "actual: {err}");
+    fn parse_timestamp_epoch_rejects_out_of_range_scale() {
+        for scale in [-1, 10] {
+            let err = parse_timestamp_epoch("0.1", scale).unwrap_err();
+            assert!(err.contains("invalid timestamp scale"), "actual: {err}");
+        }
     }
 
     #[test]
@@ -858,21 +906,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_timestamp_tz_with_offset_rejects_unrepresentable_west_boundary_offset() {
-        let err = parse_timestamp_tz_with_offset("0 0", 9).unwrap_err();
-        assert!(
-            err.contains("out of range for DateTime<FixedOffset>"),
-            "actual: {err}"
-        );
-    }
-
-    #[test]
-    fn parse_timestamp_tz_with_offset_rejects_unrepresentable_east_boundary_offset() {
-        let err = parse_timestamp_tz_with_offset("0 2880", 9).unwrap_err();
-        assert!(
-            err.contains("out of range for DateTime<FixedOffset>"),
-            "actual: {err}"
-        );
+    fn parse_timestamp_tz_with_offset_rejects_unrepresentable_boundary_offsets() {
+        for raw in ["0 0", "0 2880"] {
+            let err = parse_timestamp_tz_with_offset(raw, 9).unwrap_err();
+            assert!(
+                err.contains("out of range for DateTime<FixedOffset>"),
+                "actual: {err}"
+            );
+        }
     }
 
     #[test]
@@ -900,9 +941,42 @@ mod tests {
         make_result_table_from_rows(schema, vec![vec![Some(value.to_string())]]).unwrap()
     }
 
+    fn one_nullable_cell_table(ty: ColumnType, value: Option<&str>) -> ResultTable {
+        let schema = make_schema(vec![("X".to_string(), ty, true)]);
+        make_result_table_from_rows(
+            schema,
+            vec![vec![value.map(std::string::ToString::to_string)]],
+        )
+        .unwrap()
+    }
+
     fn zero_cell_table(row_count: usize) -> ResultTable {
         let schema = make_schema(vec![]);
         make_result_table_from_rows(schema, (0..row_count).map(|_| Vec::new()).collect()).unwrap()
+    }
+
+    #[derive(Debug)]
+    struct CelsiusTemp;
+
+    impl FromCell for CelsiusTemp {
+        fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+            let raw = cell.required_raw()?;
+            raw.parse::<f64>().map(|_| CelsiusTemp).map_err(|e| {
+                CellDecodeIssue::builder("not a valid temperature")
+                    .source(e)
+                    .build()
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct AlwaysFails;
+
+    impl FromCell for AlwaysFails {
+        fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+            let _ = cell.required_raw()?;
+            Err(CellDecodeIssue::builder("always fails").build())
+        }
     }
 
     #[test]
@@ -928,6 +1002,85 @@ mod tests {
             Some(SchemaError::ColumnCountMismatch(error))
                 if error.expected() == 0 && error.actual() == 1
         ));
+    }
+
+    #[test]
+    fn option_preserves_null_as_ok_none() {
+        let table = one_nullable_cell_table(ColumnType::Text { length: None }, None);
+        let value = table
+            .rows::<(Option<String>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn custom_from_cell_parse_failure_is_contextualized_and_preserves_source() {
+        let err = one_cell_table(ColumnType::Text { length: None }, "abc")
+            .rows::<(CelsiusTemp,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap_err();
+
+        let decode = err
+            .as_cell_decode_error()
+            .expect("custom decode failure should be contextualized");
+
+        assert_eq!(decode.row_index(), 0);
+        assert_eq!(decode.column_index(), ColumnIndex::new(0));
+        assert_eq!(decode.column_name(), "X");
+        assert_eq!(decode.issue().reason(), "not a valid temperature");
+        assert_eq!(
+            decode.actual_column_type(),
+            &ColumnType::Text { length: None }
+        );
+        assert_eq!(decode.raw_value_preview(), Some("abc"));
+        assert!(decode.target_type_name().ends_with("CelsiusTemp"));
+        assert!(std::error::Error::source(decode).is_some());
+        assert!(decode.issue().source().is_some());
+        assert!(std::error::Error::source(&err).is_some());
+    }
+
+    #[test]
+    fn built_in_parse_failure_preserves_source() {
+        let err = one_cell_table(ColumnType::Real, "abc")
+            .rows::<(f64,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap_err();
+
+        let decode = err
+            .as_cell_decode_error()
+            .expect("built-in parse failure should be contextualized");
+
+        assert!(decode.issue().reason().contains("parse error"));
+        assert!(std::error::Error::source(decode).is_some());
+        assert!(decode.issue().source().is_some());
+        assert!(std::error::Error::source(&err).is_some());
+    }
+
+    #[test]
+    fn long_raw_value_preview_is_truncated() {
+        let raw = "x".repeat(256);
+        let err = one_cell_table(ColumnType::Text { length: None }, &raw)
+            .rows::<(AlwaysFails,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap_err();
+
+        let decode = err.as_cell_decode_error().expect("decode failure expected");
+        let preview = decode
+            .raw_value_preview()
+            .expect("preview should be present for non-null values");
+
+        assert!(preview.ends_with("..."), "preview: {preview}");
+        assert!(preview.len() <= 131, "preview length: {}", preview.len());
     }
 
     #[test]
@@ -961,35 +1114,32 @@ mod tests {
         assert!(err.as_cell_decode_error().is_some());
     }
 
-    /// A `TEXT "42"` cell must NOT decode as `i64` even though the parse
-    /// would succeed — column-type metadata is the authority.
+    /// Integers only accept `FIXED(scale=0)` columns; nearby shapes must fail.
     #[test]
-    fn integer_rejects_text_column() {
-        let t = one_cell_table(ColumnType::Text { length: None }, "42");
-        let e = t.rows::<(i64,)>().unwrap().next().unwrap().unwrap_err();
-        assert!(e.as_cell_decode_error().is_some(), "got {e:?}");
-    }
-
-    /// `BOOLEAN "1"` decoded as `i64` must fail; integers require `FIXED`.
-    #[test]
-    fn integer_rejects_boolean_column() {
-        let t = one_cell_table(ColumnType::Boolean, "1");
-        let e = t.rows::<(i64,)>().unwrap().next().unwrap().unwrap_err();
-        assert!(e.as_cell_decode_error().is_some());
-    }
-
-    /// `FIXED(scale=2)` already had a guard; keep it locked down.
-    #[test]
-    fn integer_rejects_fixed_with_scale() {
-        let t = one_cell_table(
-            ColumnType::Fixed {
-                precision: Some(10),
-                scale: Some(2),
-            },
-            "12",
-        );
-        let e = t.rows::<(i64,)>().unwrap().next().unwrap().unwrap_err();
-        assert!(e.as_cell_decode_error().is_some());
+    fn integer_rejects_non_integer_column_shapes() {
+        for (label, ty, raw) in [
+            ("text", ColumnType::Text { length: None }, "42"),
+            ("boolean", ColumnType::Boolean, "1"),
+            (
+                "scaled fixed",
+                ColumnType::Fixed {
+                    precision: Some(10),
+                    scale: Some(2),
+                },
+                "12",
+            ),
+        ] {
+            let err = one_cell_table(ty, raw)
+                .rows::<(i64,)>()
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap_err();
+            assert!(
+                err.as_cell_decode_error().is_some(),
+                "{label} unexpectedly decoded as i64: {err:?}"
+            );
+        }
     }
 
     /// `TEXT "true"` must NOT decode as `bool`.

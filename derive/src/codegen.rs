@@ -10,7 +10,7 @@ pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
 
     let plan_fields = model.fields.iter().map(|field| {
         let ident = &field.plan_ident;
-        quote! { #ident: #crate_path::ColumnIndex }
+        quote! { #ident: #crate_path::result::ColumnIndex }
     });
 
     let build_plan_lines = model
@@ -34,7 +34,7 @@ pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
                 type Plan = #plan_ident;
 
                 fn build_plan(
-                    ctx: #crate_path::RowPlanContext<'_>,
+                    ctx: #crate_path::result::RowPlanContext<'_>,
                 ) -> #crate_path::Result<Self::Plan> {
                     let schema = ctx.schema();
                     #(#build_plan_lines)*
@@ -42,7 +42,7 @@ pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
                 }
 
                 fn from_row_with_plan(
-                    row: #crate_path::RowRef<'_>,
+                    row: #crate_path::result::RowRef<'_>,
                     plan: &Self::Plan,
                 ) -> #crate_path::Result<Self> {
                     #row_body
