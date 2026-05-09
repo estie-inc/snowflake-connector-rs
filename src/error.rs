@@ -1,4 +1,4 @@
-mod decode;
+pub(crate) mod decode;
 mod display;
 mod parse;
 mod query_scoped;
@@ -546,9 +546,48 @@ mod tests {
 
     use tokio::net::TcpListener;
 
-    use crate::result::{ColumnIndex, ColumnType};
+    use crate::result::{
+        CellDecodeIssue, CellDecodeResult, CellRef, ColumnType, FromCell,
+        test_data::{make_result_table_from_rows, make_schema},
+    };
 
     use super::*;
+
+    #[derive(Debug)]
+    struct NoSourceDecode;
+
+    impl FromCell for NoSourceDecode {
+        fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+            let _ = cell.required_raw()?;
+            Err(CellDecodeIssue::builder("bad value").build())
+        }
+    }
+
+    #[derive(Debug)]
+    struct WithSourceDecode;
+
+    impl FromCell for WithSourceDecode {
+        fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+            let raw = cell.required_raw()?;
+            raw.parse::<u32>()
+                .map(|_| Self)
+                .map_err(|e| CellDecodeIssue::builder("bad value").source(e).build())
+        }
+    }
+
+    fn decode_error<T: FromCell>(value: &str) -> Error {
+        let schema = make_schema(vec![(
+            "COL".to_string(),
+            ColumnType::Text { length: None },
+            true,
+        )]);
+        let table =
+            make_result_table_from_rows(schema, vec![vec![Some(value.to_string())]]).unwrap();
+        match table.rows::<(T,)>().unwrap().next().unwrap() {
+            Ok(_) => panic!("decode_error helper should produce an error"),
+            Err(err) => err,
+        }
+    }
 
     #[test]
     fn error_accessors_expose_structured_details() {
@@ -764,16 +803,7 @@ mod tests {
         let schema_error: Error = SchemaError::MissingColumn(MissingColumnError::new("col")).into();
         assert!(StdError::source(&schema_error).is_none());
 
-        let decode_error: Error = CellDecodeError::new(
-            0,
-            ColumnIndex::new(0),
-            "COL",
-            "integer",
-            ColumnType::Text { length: None },
-            Some("x"),
-            "bad value",
-        )
-        .into();
+        let decode_error = decode_error::<NoSourceDecode>("x");
         assert!(StdError::source(&decode_error).is_none());
 
         let parse_error: Error = RowsetParseError::CapacityOverflow.into();
@@ -788,19 +818,32 @@ mod tests {
         assert!(schema_error.as_schema_error().is_some());
         assert!(schema_error.as_cell_decode_error().is_none());
 
-        let decode_error: Error = CellDecodeError::new(
-            0,
-            ColumnIndex::new(0),
-            "COL",
-            "integer",
-            ColumnType::Text { length: None },
-            Some("x"),
-            "bad value",
-        )
-        .into();
+        let decode_error = decode_error::<NoSourceDecode>("x");
         assert_eq!(decode_error.kind(), ErrorKind::Decode);
         assert!(decode_error.as_cell_decode_error().is_some());
         assert!(decode_error.as_schema_error().is_none());
+    }
+
+    #[test]
+    fn cell_decode_errors_expose_issue_then_underlying_source() {
+        let err = decode_error::<WithSourceDecode>("x");
+        let decode = err
+            .as_cell_decode_error()
+            .expect("typed row decode should expose a CellDecodeError");
+
+        assert_eq!(decode.issue().reason(), "bad value");
+
+        let issue = StdError::source(decode).expect("decode error should expose CellDecodeIssue");
+        assert_eq!(issue.to_string(), "bad value");
+        assert!(StdError::source(issue).is_some());
+
+        let top = StdError::source(&err).expect("top-level Error should expose CellDecodeIssue");
+        assert_eq!(top.to_string(), "bad value");
+        assert!(StdError::source(top).is_some());
+        assert_eq!(
+            StdError::source(&err).map(|source| source.to_string()),
+            StdError::source(decode).map(|source| source.to_string())
+        );
     }
 
     #[test]

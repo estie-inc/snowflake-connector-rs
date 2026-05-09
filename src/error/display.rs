@@ -217,7 +217,7 @@ impl StdError for Error {
                 ..
             } => None,
             Repr::Schema(_) => None,
-            Repr::CellDecode(_) => None,
+            Repr::CellDecode(error) => StdError::source(error),
             _ => None,
         }
     }

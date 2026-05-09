@@ -2,7 +2,7 @@ use super::common;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
-use snowflake_connector_rs::{Result, SchemaError, SnowflakeValue};
+use snowflake_connector_rs::{Result, SchemaError, result::SnowflakeValue};
 
 #[tokio::test]
 async fn test_decode() -> Result<()> {
@@ -28,7 +28,7 @@ async fn test_decode() -> Result<()> {
     assert_eq!(table.row_count(), 1);
 
     let row = table.dynamic_rows()?.next().unwrap()?;
-    let status = row.get("status").unwrap();
+    let status = row.value("status").unwrap();
     assert_eq!(
         status,
         &SnowflakeValue::String("Table EXAMPLE successfully created.".to_owned()),
@@ -51,7 +51,7 @@ async fn test_decode() -> Result<()> {
     assert_eq!(table.row_count(), 1);
 
     let row = table.dynamic_rows()?.next().unwrap()?;
-    let number_of_rows_inserted = row.get("number of rows inserted").unwrap();
+    let number_of_rows_inserted = row.value("number of rows inserted").unwrap();
     assert_eq!(number_of_rows_inserted, &SnowflakeValue::Integer(1));
 
     let table = session
@@ -111,7 +111,7 @@ async fn test_decode() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_dynamic_row_get_resolves_escaped_identifiers() -> Result<()> {
+async fn test_dynamic_row_value_resolves_escaped_identifiers() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
@@ -129,17 +129,17 @@ async fn test_dynamic_row_get_resolves_escaped_identifiers() -> Result<()> {
 
     let row = table.dynamic_rows()?.next().unwrap()?;
 
-    assert_eq!(row.get("ID").unwrap(), &SnowflakeValue::Integer(1));
-    assert_eq!(row.get("id").unwrap(), &SnowflakeValue::Integer(2));
-    assert_eq!(row.get("my column").unwrap(), &SnowflakeValue::Integer(3));
-    assert_eq!(row.get("MixedCase").unwrap(), &SnowflakeValue::Integer(4));
+    assert_eq!(row.value("ID").unwrap(), &SnowflakeValue::Integer(1));
+    assert_eq!(row.value("id").unwrap(), &SnowflakeValue::Integer(2));
+    assert_eq!(row.value("my column").unwrap(), &SnowflakeValue::Integer(3));
+    assert_eq!(row.value("MixedCase").unwrap(), &SnowflakeValue::Integer(4));
 
     assert!(matches!(
-        row.get("MIXEDCASE"),
+        row.value("MIXEDCASE"),
         Err(SchemaError::MissingColumn(_))
     ));
     assert!(matches!(
-        row.get("MY COLUMN"),
+        row.value("MY COLUMN"),
         Err(SchemaError::MissingColumn(_))
     ));
 

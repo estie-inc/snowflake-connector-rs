@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::result::Schema;
 
-/// Shared context available while building a [`crate::FromRow`] plan.
+/// Schema context for building a row decode plan.
 #[derive(Clone, Copy)]
 pub struct RowPlanContext<'a> {
     schema: &'a Arc<Schema>,
@@ -13,11 +13,13 @@ impl<'a> RowPlanContext<'a> {
         Self { schema }
     }
 
+    /// Borrow the schema describing the result-set columns.
     pub fn schema(&self) -> &'a Schema {
         self.schema.as_ref()
     }
 
-    pub fn clone_schema(&self) -> Arc<Schema> {
+    /// Returns the shared `Arc<Schema>`.
+    pub fn schema_arc(&self) -> Arc<Schema> {
         Arc::clone(self.schema)
     }
 }

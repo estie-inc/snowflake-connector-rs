@@ -1,6 +1,6 @@
 use super::common;
 
-use snowflake_connector_rs::{ColumnType, Result};
+use snowflake_connector_rs::{Result, result::ColumnType};
 
 #[tokio::test]
 async fn result_set_query_id_and_schema_survive_inline_empty_and_chunked_paths() -> Result<()> {

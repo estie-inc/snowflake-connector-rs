@@ -1,7 +1,7 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{any::type_name, marker::PhantomData, sync::Arc};
 
 use crate::{
-    Error, InvalidColumnIndexError, Result, SchemaError,
+    CellDecodeError, Error, InvalidColumnIndexError, Result, SchemaError,
     result::{
         cell::{CellBlock, CellRef},
         decode::{FromCell, FromRow},
@@ -11,7 +11,9 @@ use crate::{
     },
 };
 
-/// Lightweight view into a single row.
+/// Borrowed view of a single row.
+///
+/// `RowRef` is copyable and does not own the underlying result data.
 #[derive(Clone, Copy)]
 pub struct RowRef<'a> {
     table: &'a ResultTable,
@@ -21,16 +23,17 @@ pub struct RowRef<'a> {
 }
 
 impl<'a> RowRef<'a> {
+    /// Zero-based index of this row within the result set.
     pub fn row_index(self) -> usize {
         self.global_row
     }
 
-    /// Borrow a cell by column index.
+    /// Borrow a cell by resolved column index.
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Decode` when `index` is out of bounds for
-    /// this row's schema; inspect the detail via [`crate::Error::as_schema_error`].
+    /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when
+    /// `index` is out of bounds for this row's schema.
     pub fn cell(self, index: ColumnIndex) -> Result<CellRef<'a>> {
         let column = self.table.schema().column_at(index).ok_or_else(|| {
             Error::from(SchemaError::InvalidColumnIndex(
@@ -42,7 +45,7 @@ impl<'a> RowRef<'a> {
         let raw = self.block.cell_text(cell);
 
         Ok(CellRef {
-            row: self.global_row,
+            row_index: self.global_row,
             column,
             raw,
         })
@@ -57,7 +60,7 @@ impl<'a> RowRef<'a> {
         let raw = self.block.cell_text(cell);
 
         CellRef {
-            row: self.global_row,
+            row_index: self.global_row,
             column,
             raw,
         }
@@ -67,20 +70,34 @@ impl<'a> RowRef<'a> {
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Decode` when `index` is out of bounds for
-    /// this row's schema or when [`FromCell::from_cell`] fails for `T`. Use
-    /// [`crate::Error::as_schema_error`] to inspect schema mismatches and
-    /// [`crate::Error::as_cell_decode_error`] for conversion failures.
+    /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when
+    /// `index` is out of bounds or the cell cannot be decoded as `T`.
     pub fn get<T: FromCell>(self, index: ColumnIndex) -> Result<T> {
-        T::from_cell(self.cell(index)?)
+        let cell = self.cell(index)?;
+        T::from_cell(cell).map_err(|issue| {
+            CellDecodeError::new(
+                cell.row_index(),
+                cell.column().index(),
+                cell.column().name(),
+                type_name::<T>(),
+                cell.column().ty().clone(),
+                cell.raw(),
+                issue,
+            )
+            .into()
+        })
     }
 
+    /// Borrows the schema describing the result-set columns.
     pub fn schema(self) -> &'a Schema {
         self.table.schema()
     }
 }
 
-/// Typed iterator over the rows of a `ResultTable`.
+/// Typed iterator over result rows.
+///
+/// Iteration is non-allocating beyond what `T`'s decode requires: the
+/// `Arc`-shared schema and decode plan are reused across rows.
 pub struct Rows<'a, T: FromRow> {
     table: &'a ResultTable,
     plan: Arc<T::Plan>,
@@ -159,6 +176,7 @@ impl<T: FromRow> ExactSizeIterator for Rows<'_, T> {}
 mod tests {
     use std::sync::Arc;
 
+    use super::*;
     use crate::result::{
         ColumnType,
         result_table::{ResultTable, ResultTableStorage},
@@ -233,7 +251,7 @@ mod tests {
             ResultTableStorage::Single(block) => block.as_ref(),
             ResultTableStorage::Chunks(_) => panic!("expected single block"),
         };
-        let row = super::RowRef {
+        let row = RowRef {
             table: &table,
             block,
             global_row: 0,
@@ -245,7 +263,7 @@ mod tests {
             let checked = row.cell(column.index()).unwrap();
             assert_eq!(direct.raw(), checked.raw());
             assert_eq!(direct.column().name(), checked.column().name());
-            assert_eq!(direct.row(), checked.row());
+            assert_eq!(direct.row_index(), checked.row_index());
         }
     }
 }

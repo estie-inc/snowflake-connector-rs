@@ -14,7 +14,10 @@ use snowflake_connector_rs::bench_support::{
     decode_gzip_chunk, make_result_table_from_rows, make_schema, parse_remote_chunk_result_table,
     parse_remote_chunk_result_table_async_with_workload, parse_statement_envelope,
 };
-use snowflake_connector_rs::{ColumnType, DynamicRow, ResultTable, Schema};
+use snowflake_connector_rs::{
+    DynamicRow, ResultTable,
+    result::{ColumnType, Schema},
+};
 
 #[derive(snowflake_connector_rs::FromRow)]
 struct BenchRow {

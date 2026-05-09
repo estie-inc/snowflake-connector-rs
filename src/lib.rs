@@ -69,7 +69,7 @@ mod chunk;
 mod config;
 mod error;
 mod query_result;
-mod result;
+pub mod result;
 mod rowset;
 mod runtime;
 mod session;
@@ -89,10 +89,7 @@ pub use error::{
     Error, ErrorKind, InvalidColumnIndexError, MissingColumnError, Result, SchemaError,
 };
 pub use query_result::{CollectOptions, ResultSet, TypedResultSet};
-pub use result::{
-    CellRef, Column, ColumnIndex, ColumnType, DecimalValue, DynamicRow, FromCell, FromRow,
-    ResultTable, RowPlanContext, RowRef, Rows, Schema, SnowflakeValue, TypedResultTable,
-};
+pub use result::{DynamicRow, FromRow, ResultTable, TypedResultTable};
 pub use session::SnowflakeSession;
 pub use statement::builder::{IntoStatement, NamedBinds, PositionalBinds, Statement, UnboundBinds};
 
