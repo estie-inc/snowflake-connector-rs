@@ -1,25 +1,16 @@
-use chrono::Utc;
-use reqwest::header::{ACCEPT, USER_AGENT};
 use reqwest::{Client, Url};
-use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
-    Result, SnowflakeAuthMethod, SnowflakeClientConfig,
-    error::{AuthError, ConfigError, NetworkError, ProtocolError, classify_request_error},
+    Result, SnowflakeClientConfig, SnowflakeSessionConfig,
+    auth::credential::{LoginCredentialProvider, PreparedLoginCredential},
 };
 
-use super::client::AUTH_REQUEST_TIMEOUT;
-#[cfg(feature = "external-browser-sso")]
-use super::external_browser::run_external_browser_flow;
-use super::key_pair::generate_jwt_from_key_pair;
-
-fn base_login_request_data(username: &str, account: &str) -> Value {
-    json!({
-        "ACCOUNT_NAME": account,
-        "LOGIN_NAME": username,
-    })
-}
+use super::{
+    client::AuthApiClient,
+    credential::LoginContext,
+    wire::{LoginBody, LoginData, LoginQuery, LoginRequest},
+};
 
 /// Login to Snowflake and return a session token.
 pub(crate) async fn login(
@@ -27,228 +18,103 @@ pub(crate) async fn login(
     config: &SnowflakeClientConfig,
     base_url: &Url,
 ) -> Result<String> {
-    let username = config.username();
-    let account = config.account();
-    let auth = config.auth();
-    let session = config.session();
-
-    let url = base_url
-        .join("session/v1/login-request")
-        .map_err(|e| ConfigError::invalid_url(e.to_string()))?;
-
-    let mut queries: Vec<(&str, &str)> = vec![];
-    if let Some(warehouse) = session.warehouse() {
-        queries.push(("warehouse", warehouse));
-    }
-    if let Some(database) = session.database() {
-        queries.push(("databaseName", database));
-    }
-    if let Some(schema) = session.schema() {
-        queries.push(("schemaName", schema));
-    }
-    if let Some(role) = session.role() {
-        queries.push(("roleName", role));
-    }
-    #[cfg(feature = "external-browser-sso")]
-    let is_externalbrowser = matches!(auth, SnowflakeAuthMethod::ExternalBrowser(_));
-    #[cfg(not(feature = "external-browser-sso"))]
-    let is_externalbrowser = false;
-    let request_id = if is_externalbrowser {
-        Some(Uuid::new_v4().to_string())
-    } else {
-        None
+    let client = AuthApiClient::new(http.clone(), base_url.clone());
+    let context = LoginContext {
+        username: config.username(),
+        account: config.account(),
     };
-    if let Some(id) = request_id.as_deref() {
-        queries.push(("request_id", id));
-    }
+    let credential = config.auth().prepare(&client, context).await?;
+    let request = build_login_request(context, config.session(), &credential);
 
-    let mut login_data = match auth {
-        SnowflakeAuthMethod::Password(_)
-        | SnowflakeAuthMethod::KeyPair { .. }
-        | SnowflakeAuthMethod::KeyPairUnencrypted { .. }
-        | SnowflakeAuthMethod::Oauth { .. } => login_request_data(username, account, auth)?,
-        #[cfg(feature = "external-browser-sso")]
-        SnowflakeAuthMethod::ExternalBrowser(external_browser_config) => {
-            let result = run_external_browser_flow(
-                http,
-                username,
-                account,
-                base_url,
-                external_browser_config,
-            )
-            .await?;
-
-            let mut data = base_login_request_data(username, account);
-            if let Some(obj) = data.as_object_mut() {
-                obj.insert("AUTHENTICATOR".to_string(), json!("EXTERNALBROWSER"));
-                obj.insert("TOKEN".to_string(), json!(result.token));
-                if let Some(proof_key) = result.proof_key {
-                    obj.insert("PROOF_KEY".to_string(), json!(proof_key));
-                }
-            }
-            data
-        }
-    };
-
-    let session_parameters = session.session_parameters();
-    if !session_parameters.is_empty()
-        && let Some(obj) = login_data.as_object_mut()
-    {
-        obj.insert(
-            "SESSION_PARAMETERS".to_string(),
-            session_parameters
-                .iter()
-                .map(|(k, v)| (k.clone(), json!(v)))
-                .collect(),
-        );
-    }
-
-    let mut request = http.post(url).query(&queries).json(&json!({
-        "data": login_data
-    }));
-    request = request.timeout(AUTH_REQUEST_TIMEOUT);
-    if is_externalbrowser {
-        request = request.header(ACCEPT, "application/snowflake").header(
-            USER_AGENT,
-            format!(
-                "{}/{}",
-                crate::auth::client::client_app_id(),
-                crate::auth::client::client_app_version()
-            ),
-        );
-    }
-
-    let resp = request.send().await.map_err(classify_request_error)?;
-
-    let status = resp.status();
-    let body = resp.text().await.map_err(classify_request_error)?;
-    if !status.is_success() {
-        return Err(NetworkError::http_status(status.as_u16(), body.as_bytes()).into());
-    }
-
-    let token = parse_login_response(&body)?;
-
-    Ok(token)
+    let session = client.login(request).await?;
+    Ok(session.token)
 }
 
-fn parse_login_response(body: &str) -> Result<String> {
-    let parsed: Response =
-        serde_json::from_str(body).map_err(|e| ProtocolError::json_parse(e, body))?;
-    if !parsed.success {
-        return Err(AuthError::login_rejected(parsed.message).into());
+fn build_login_request<'a>(
+    context: LoginContext<'a>,
+    session_config: &'a SnowflakeSessionConfig,
+    credential: &'a PreparedLoginCredential,
+) -> LoginRequest<'a> {
+    let session_parameters = session_config.session_parameters();
+
+    LoginRequest {
+        query: LoginQuery {
+            warehouse: session_config.warehouse(),
+            database_name: session_config.database(),
+            schema_name: session_config.schema(),
+            role_name: session_config.role(),
+            request_id: credential.requires_request_id().then(Uuid::new_v4),
+        },
+        body: LoginBody {
+            data: LoginData {
+                account_name: context.account,
+                login_name: context.username,
+                credential: credential.as_wire(),
+                session_parameters: (!session_parameters.is_empty()).then_some(session_parameters),
+            },
+        },
     }
-
-    let data = parsed
-        .data
-        .ok_or_else(|| ProtocolError::missing_field("data"))?;
-
-    data.token
-        .ok_or_else(|| ProtocolError::missing_field("data.token").into())
-}
-
-fn login_request_data(username: &str, account: &str, auth: &SnowflakeAuthMethod) -> Result<Value> {
-    match auth {
-        SnowflakeAuthMethod::Password(password) => {
-            let mut data = base_login_request_data(username, account);
-            if let Some(obj) = data.as_object_mut() {
-                obj.insert("PASSWORD".to_string(), json!(password));
-            }
-            Ok(data)
-        }
-        SnowflakeAuthMethod::KeyPair {
-            encrypted_pem,
-            password,
-        } => {
-            let jwt = generate_jwt_from_key_pair(
-                encrypted_pem,
-                Some(password),
-                username,
-                account,
-                Utc::now().timestamp(),
-            )?;
-            let mut data = base_login_request_data(username, account);
-            if let Some(obj) = data.as_object_mut() {
-                obj.insert("TOKEN".to_string(), json!(jwt));
-                obj.insert("AUTHENTICATOR".to_string(), json!("SNOWFLAKE_JWT"));
-            }
-            Ok(data)
-        }
-        SnowflakeAuthMethod::KeyPairUnencrypted { pem } => {
-            let jwt = generate_jwt_from_key_pair(
-                pem,
-                Option::<Vec<u8>>::None,
-                username,
-                account,
-                Utc::now().timestamp(),
-            )?;
-            let mut data = base_login_request_data(username, account);
-            if let Some(obj) = data.as_object_mut() {
-                obj.insert("TOKEN".to_string(), json!(jwt));
-                obj.insert("AUTHENTICATOR".to_string(), json!("SNOWFLAKE_JWT"));
-            }
-            Ok(data)
-        }
-        SnowflakeAuthMethod::Oauth { token } => Ok(json!({
-            "AUTHENTICATOR": "OAUTH",
-            "TOKEN": token
-        })),
-        #[cfg(feature = "external-browser-sso")]
-        SnowflakeAuthMethod::ExternalBrowser(_) => unreachable!("handled in caller"),
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LoginResponseData {
-    token: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct Response {
-    data: Option<LoginResponseData>,
-    message: Option<String>,
-    success: bool,
 }
 
 #[cfg(test)]
 mod tests {
+    use reqwest::Url;
+
     use super::*;
-    use crate::ErrorKind;
 
-    #[test]
-    fn parse_login_response_missing_data_is_protocol_error() {
-        let err = parse_login_response(r#"{"success":true}"#).unwrap_err();
-
-        assert_eq!(err.kind(), ErrorKind::Protocol);
-        assert_eq!(err.snowflake_message(), None);
+    fn query_string(query: &LoginQuery<'_>) -> Option<String> {
+        reqwest::Client::new()
+            .get(Url::parse("https://example.com").unwrap())
+            .query(query)
+            .build()
+            .unwrap()
+            .url()
+            .query()
+            .map(str::to_owned)
     }
 
     #[test]
-    fn parse_login_response_missing_token_is_protocol_error() {
-        let err = parse_login_response(r#"{"success":true,"data":{}}"#).unwrap_err();
+    fn password_login_request_omits_request_id() {
+        let session = SnowflakeSessionConfig::default().with_warehouse("warehouse");
+        let credential = PreparedLoginCredential::Password("secret".to_string());
+        let request = build_login_request(
+            LoginContext {
+                username: "user",
+                account: "account",
+            },
+            &session,
+            &credential,
+        );
 
-        assert_eq!(err.kind(), ErrorKind::Protocol);
+        assert_eq!(request.query.request_id, None);
         assert_eq!(
-            err.to_string(),
-            "missing required field in Snowflake response: data.token"
+            query_string(&request.query).as_deref(),
+            Some("warehouse=warehouse")
         );
     }
 
+    #[cfg(feature = "external-browser-sso")]
     #[test]
-    fn parse_login_response_rejected_keeps_auth_classification() {
-        let err =
-            parse_login_response(r#"{"success":false,"message":"bad credentials"}"#).unwrap_err();
+    fn external_browser_login_request_includes_request_id() {
+        let session = SnowflakeSessionConfig::default().with_warehouse("warehouse");
+        let credential = PreparedLoginCredential::ExternalBrowser {
+            token: "browser-token".to_string(),
+            proof_key: None,
+        };
+        let request = build_login_request(
+            LoginContext {
+                username: "user",
+                account: "account",
+            },
+            &session,
+            &credential,
+        );
 
-        assert_eq!(err.kind(), ErrorKind::Auth);
-        assert_eq!(err.snowflake_message(), Some("bad credentials"));
-    }
-
-    #[test]
-    fn parse_login_response_rejected_without_message_preserves_absence() {
-        let err = parse_login_response(r#"{"success":false}"#).unwrap_err();
-
-        assert_eq!(err.kind(), ErrorKind::Auth);
-        assert_eq!(err.snowflake_message(), None);
-        assert_eq!(err.to_string(), "authentication rejected");
+        assert!(request.query.request_id.is_some());
+        assert!(
+            query_string(&request.query)
+                .as_deref()
+                .is_some_and(|query| query.starts_with("warehouse=warehouse&request_id="))
+        );
     }
 }
