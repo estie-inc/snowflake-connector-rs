@@ -17,6 +17,14 @@ keywords = [
 license = "MIT"
 readme = "README.md"
 
+[profile.ci]
+debug = 0
+incremental = false
+inherits = "test"
+
+[profile.ci.package."*"]
+debug = false
+
 [workspace]
 members = [
     "derive",
