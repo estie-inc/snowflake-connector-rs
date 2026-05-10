@@ -1,6 +1,7 @@
-use std::env;
-use std::io;
-use std::process::{Command, Stdio};
+use std::{
+    env, fmt, io, mem,
+    process::{Command, Stdio},
+};
 
 use indexmap::IndexSet;
 
@@ -18,8 +19,8 @@ pub(crate) enum BrowserError {
     EmptyUrl,
 }
 
-impl std::fmt::Display for BrowserError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for BrowserError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyUrl => f.write_str("URL must not be empty"),
         }
@@ -184,12 +185,8 @@ fn parse_browser_env(value: &str, url: &str, platform: Platform) -> Vec<CommandS
 }
 
 fn parse_browser_entry(entry: &str, url: &str) -> CommandSpec {
-    // Use shell-words to properly handle quoted paths like:
-    // BROWSER="C:\\Program Files\\Browser\\browser.exe" %s
-    let mut parts = shell_words::split(entry).unwrap_or_else(|_| {
-        // Fallback to simple whitespace split if shell-words fails (e.g., unmatched quotes)
-        entry.split_whitespace().map(|s| s.to_string()).collect()
-    });
+    let mut parts = split_browser_entry(entry)
+        .unwrap_or_else(|| entry.split_whitespace().map(|s| s.to_string()).collect());
     if parts.is_empty() {
         return CommandSpec {
             program: entry.to_string(),
@@ -215,6 +212,103 @@ fn parse_browser_entry(entry: &str, url: &str) -> CommandSpec {
     }
 
     CommandSpec { program, args }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Quote {
+    Single,
+    Double,
+}
+
+fn split_browser_entry(entry: &str) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = entry.chars();
+    let mut quote = None;
+    let mut has_current = false;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(Quote::Single) => match ch {
+                '\'' => quote = None,
+                _ => {
+                    current.push(ch);
+                    has_current = true;
+                }
+            },
+            Some(Quote::Double) => match ch {
+                '"' => quote = None,
+                '\\' => match chars.next() {
+                    Some('\n') => has_current = true,
+                    Some(escaped) if matches!(escaped, '$' | '`' | '"' | '\\') => {
+                        current.push(escaped);
+                        has_current = true;
+                    }
+                    Some(escaped) => {
+                        current.push('\\');
+                        current.push(escaped);
+                        has_current = true;
+                    }
+                    None => {
+                        current.push('\\');
+                        has_current = true;
+                    }
+                },
+                _ => {
+                    current.push(ch);
+                    has_current = true;
+                }
+            },
+            None => match ch {
+                '\'' => {
+                    quote = Some(Quote::Single);
+                    has_current = true;
+                }
+                '"' => {
+                    quote = Some(Quote::Double);
+                    has_current = true;
+                }
+                '\\' => {
+                    if let Some(escaped) = chars.next() {
+                        if escaped == '\n' {
+                            continue;
+                        }
+                        current.push(escaped);
+                    } else {
+                        current.push('\\');
+                    }
+                    has_current = true;
+                }
+                '#' if !has_current => {
+                    for next in chars.by_ref() {
+                        if next == '\n' {
+                            break;
+                        }
+                    }
+                }
+                ' ' | '\t' | '\n' => {
+                    if has_current {
+                        parts.push(mem::take(&mut current));
+                        has_current = false;
+                    }
+                }
+                _ => {
+                    current.push(ch);
+                    has_current = true;
+                }
+            },
+        }
+    }
+
+    if quote.is_some() {
+        return None;
+    }
+
+    if has_current {
+        parts.push(current);
+    }
+
+    Some(parts)
 }
 
 #[cfg(test)]
@@ -271,6 +365,62 @@ mod tests {
         );
         assert_eq!(cmds[1].program, "lynx");
         assert_eq!(cmds[1].args, vec![url.to_string()]);
+    }
+
+    #[test]
+    fn parses_quoted_browser_path() {
+        let url = "https://example.com";
+        let cmd = parse_browser_entry("\"C:\\Program Files\\Browser\\browser.exe\" %s", url);
+        assert_eq!(cmd.program, "C:\\Program Files\\Browser\\browser.exe");
+        assert_eq!(cmd.args, vec![url.to_string()]);
+    }
+
+    #[test]
+    fn parses_quoted_browser_argument() {
+        let url = "https://example.com";
+        let cmd = parse_browser_entry(
+            "google-chrome --profile-directory=\"Default Profile\" %s",
+            url,
+        );
+        assert_eq!(cmd.program, "google-chrome");
+        assert_eq!(
+            cmd.args,
+            vec![
+                "--profile-directory=Default Profile".to_string(),
+                url.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_browser_entry_line_continuations() {
+        let url = "https://example.com";
+        let cases = [
+            (
+                "fire\\\nfox \"--new\\\n-window\" %s",
+                "firefox",
+                vec!["--new-window".to_string(), url.to_string()],
+            ),
+            (
+                "firefox \\\n  --new-window %s",
+                "firefox",
+                vec!["--new-window".to_string(), url.to_string()],
+            ),
+        ];
+
+        for (entry, expected_program, expected_args) in cases {
+            let cmd = parse_browser_entry(entry, url);
+            assert_eq!(cmd.program, expected_program, "entry: {entry:?}");
+            assert_eq!(cmd.args, expected_args, "entry: {entry:?}");
+        }
+    }
+
+    #[test]
+    fn falls_back_to_whitespace_split_for_unmatched_quote() {
+        let url = "https://example.com";
+        let cmd = parse_browser_entry("\"broken browser %s", url);
+        assert_eq!(cmd.program, "\"broken");
+        assert_eq!(cmd.args, vec!["browser".to_string(), url.to_string()]);
     }
 
     #[test]
