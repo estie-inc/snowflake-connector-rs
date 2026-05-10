@@ -1,8 +1,11 @@
+use std::env;
+
+use url::Url;
+
 use snowflake_connector_rs::{
-    Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig, SnowflakeEndpointConfig,
+    Result, SnowflakeAuthConfig, SnowflakeClient, SnowflakeClientConfig, SnowflakeEndpointConfig,
     SnowflakeQueryConfig, SnowflakeSessionConfig,
 };
-use url::Url;
 
 pub fn connect() -> Result<SnowflakeClient> {
     connect_with_configs(session_config(), SnowflakeQueryConfig::default())
@@ -20,13 +23,13 @@ fn connect_with_configs(
     session_config: SnowflakeSessionConfig,
     query_config: SnowflakeQueryConfig,
 ) -> Result<SnowflakeClient> {
-    let username = std::env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME for testing");
-    let account = std::env::var("SNOWFLAKE_ACCOUNT").expect("set SNOWFLAKE_ACCOUNT for testing");
-    let host = std::env::var("SNOWFLAKE_HOST").ok();
-    let port = std::env::var("SNOWFLAKE_PORT")
+    let username = env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME for testing");
+    let account = env::var("SNOWFLAKE_ACCOUNT").expect("set SNOWFLAKE_ACCOUNT for testing");
+    let host = env::var("SNOWFLAKE_HOST").ok();
+    let port = env::var("SNOWFLAKE_PORT")
         .ok()
         .and_then(|var| var.parse().ok());
-    let protocol = std::env::var("SNOWFLAKE_PROTOCOL").ok();
+    let protocol = env::var("SNOWFLAKE_PROTOCOL").ok();
 
     let mut client_config = SnowflakeClientConfig::new(&username, &account, auth_method())
         .with_session(session_config)
@@ -47,10 +50,10 @@ fn connect_with_configs(
 }
 
 pub fn session_config() -> SnowflakeSessionConfig {
-    let role = std::env::var("SNOWFLAKE_ROLE").ok();
-    let warehouse = std::env::var("SNOWFLAKE_WAREHOUSE").ok();
-    let database = std::env::var("SNOWFLAKE_DATABASE").ok();
-    let schema = std::env::var("SNOWFLAKE_SCHEMA").ok();
+    let role = env::var("SNOWFLAKE_ROLE").ok();
+    let warehouse = env::var("SNOWFLAKE_WAREHOUSE").ok();
+    let database = env::var("SNOWFLAKE_DATABASE").ok();
+    let schema = env::var("SNOWFLAKE_SCHEMA").ok();
 
     let mut session_config = SnowflakeSessionConfig::default();
     if let Some(warehouse) = warehouse {
@@ -69,22 +72,24 @@ pub fn session_config() -> SnowflakeSessionConfig {
     session_config
 }
 
-#[cfg(not(feature = "external-browser-sso"))]
-fn auth_method() -> SnowflakeAuthMethod {
+#[cfg(all(not(feature = "external-browser-sso"), feature = "key-pair-auth"))]
+fn auth_method() -> SnowflakeAuthConfig {
+    use snowflake_connector_rs::KeyPairAuthConfig;
+
     let private_key =
-        std::env::var("SNOWFLAKE_PRIVATE_KEY").expect("set SNOWFLAKE_PRIVATE_KEY for testing");
-    let private_key_password = std::env::var("SNOWFLAKE_PRIVATE_KEY_PASSWORD")
+        env::var("SNOWFLAKE_PRIVATE_KEY").expect("set SNOWFLAKE_PRIVATE_KEY for testing");
+    let private_key_password = env::var("SNOWFLAKE_PRIVATE_KEY_PASSWORD")
         .expect("set SNOWFLAKE_PRIVATE_KEY_PASSWORD for testing");
 
-    SnowflakeAuthMethod::KeyPair {
-        encrypted_pem: private_key,
-        password: private_key_password.into_bytes(),
-    }
+    SnowflakeAuthConfig::key_pair(KeyPairAuthConfig::encrypted_pem(
+        private_key,
+        private_key_password.into_bytes(),
+    ))
 }
 
 #[cfg(feature = "external-browser-sso")]
-fn auth_method() -> SnowflakeAuthMethod {
+fn auth_method() -> SnowflakeAuthConfig {
     use snowflake_connector_rs::ExternalBrowserConfig;
 
-    SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default())
+    SnowflakeAuthConfig::external_browser(ExternalBrowserConfig::default())
 }

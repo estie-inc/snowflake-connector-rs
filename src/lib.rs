@@ -5,13 +5,13 @@
 //!
 //! ```rust,no_run
 //! # use snowflake_connector_rs::{
-//! #     Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig,
+//! #     Result, SnowflakeAuthConfig, SnowflakeClient, SnowflakeClientConfig,
 //! # };
 //! # async fn run() -> Result<()> {
 //! let client = SnowflakeClient::new(SnowflakeClientConfig::new(
 //!     "USERNAME",
 //!     "ACCOUNT",
-//!     SnowflakeAuthMethod::Password("PASSWORD".to_string()),
+//!     SnowflakeAuthConfig::password("PASSWORD"),
 //! ))?;
 //! let session = client.create_session().await?;
 //!
@@ -75,6 +75,9 @@ mod runtime;
 mod session;
 mod statement;
 
+#[cfg(feature = "key-pair-auth")]
+pub use auth::config::KeyPairAuthConfig;
+pub use auth::config::SnowflakeAuthConfig;
 #[cfg(feature = "external-browser-sso")]
 pub use auth::external_browser::{
     BrowserLaunchMode, ExternalBrowserConfig, WithCallbackListenerConfig,
@@ -90,6 +93,7 @@ pub use error::{
 };
 pub use query_result::{CollectOptions, ResultSet, TypedResultSet};
 pub use result::{DynamicRow, FromRow, ResultTable, TypedResultTable};
+use runtime::QueryRuntime;
 pub use session::SnowflakeSession;
 pub use statement::builder::{IntoStatement, NamedBinds, PositionalBinds, Statement, UnboundBinds};
 
@@ -109,64 +113,7 @@ pub struct SnowflakeClient {
     http: reqwest::Client,
     config: SnowflakeClientConfig,
     base_url: Url,
-    runtime: runtime::QueryRuntime,
-}
-
-#[derive(Clone)]
-pub enum SnowflakeAuthMethod {
-    Password(String),
-    KeyPair {
-        encrypted_pem: String,
-        password: Vec<u8>,
-    },
-    KeyPairUnencrypted {
-        pem: String,
-    },
-    Oauth {
-        token: String,
-    },
-    #[cfg(feature = "external-browser-sso")]
-    /// External browser SSO authentication.
-    ///
-    /// This is an experimental feature.
-    /// The API and behavior may change in future releases without backward compatibility guarantees.
-    ///
-    /// ## Typical setup patterns
-    ///
-    /// ### Default (auto browser launch, localhost callback with auto-picked port)
-    ///
-    /// ```rust
-    /// use snowflake_connector_rs::{ExternalBrowserConfig, SnowflakeAuthMethod};
-    ///
-    /// let auth = SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default());
-    /// ```
-    ///
-    /// ### Docker/container mode (manual open + explicit callback bind address/port)
-    ///
-    /// ```rust
-    /// use std::net::Ipv4Addr;
-    /// use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthMethod};
-    ///
-    /// let external_browser = ExternalBrowserConfig::with_callback_listener(
-    ///     BrowserLaunchMode::Manual,
-    ///     Ipv4Addr::UNSPECIFIED.into(),
-    ///     3037,
-    /// );
-    /// let auth = SnowflakeAuthMethod::ExternalBrowser(external_browser);
-    /// ```
-    ///
-    /// ### Without callback listener mode (manual redirected-URL input)
-    ///
-    /// ```rust
-    /// use std::num::NonZeroU16;
-    /// use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthMethod};
-    ///
-    /// let redirect_port = NonZeroU16::new(3037).unwrap();
-    /// let external_browser =
-    ///     ExternalBrowserConfig::without_callback_listener(BrowserLaunchMode::Manual, redirect_port);
-    /// let auth = SnowflakeAuthMethod::ExternalBrowser(external_browser);
-    /// ```
-    ExternalBrowser(ExternalBrowserConfig),
+    runtime: QueryRuntime,
 }
 
 impl SnowflakeClient {
@@ -183,7 +130,7 @@ impl SnowflakeClient {
             http,
             config,
             base_url,
-            runtime: runtime::QueryRuntime::new(),
+            runtime: QueryRuntime::new(),
         })
     }
 

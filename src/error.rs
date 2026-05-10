@@ -325,14 +325,17 @@ impl AuthError {
         }
     }
 
+    #[cfg(feature = "key-pair-auth")]
     pub(crate) fn key_parse(source: pkcs8::Error) -> Self {
         Self::KeyParse(Box::new(source))
     }
 
+    #[cfg(feature = "key-pair-auth")]
     pub(crate) fn der_parse(source: pkcs8::spki::Error) -> Self {
         Self::DerParse(Box::new(source))
     }
 
+    #[cfg(feature = "key-pair-auth")]
     pub(crate) fn jwt_sign(source: jsonwebtoken::errors::Error) -> Self {
         Self::JwtSign(Box::new(source))
     }

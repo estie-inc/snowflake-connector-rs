@@ -1,16 +1,16 @@
-use std::num::NonZeroU16;
+use std::{env, num::NonZeroU16};
 
 use snowflake_connector_rs::{
-    BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthMethod, SnowflakeClient,
+    BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthConfig, SnowflakeClient,
     SnowflakeClientConfig, SnowflakeSessionConfig,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let username = std::env::var("SNOWFLAKE_USERNAME")?;
-    let account = std::env::var("SNOWFLAKE_ACCOUNT")?;
-    let role = std::env::var("SNOWFLAKE_ROLE").ok();
-    let warehouse = std::env::var("SNOWFLAKE_WAREHOUSE").ok();
+    let username = env::var("SNOWFLAKE_USERNAME")?;
+    let account = env::var("SNOWFLAKE_ACCOUNT")?;
+    let role = env::var("SNOWFLAKE_ROLE").ok();
+    let warehouse = env::var("SNOWFLAKE_WAREHOUSE").ok();
 
     let redirect_port = NonZeroU16::new(3037).unwrap();
     let external_browser =
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SnowflakeClientConfig::new(
             &username,
             &account,
-            SnowflakeAuthMethod::ExternalBrowser(external_browser),
+            SnowflakeAuthConfig::external_browser(external_browser),
         )
         .with_session(session_config),
     )?;

@@ -19,8 +19,11 @@ impl fmt::Display for Error {
             Repr::Auth(AuthError::LoginRejected { message: None }) => {
                 f.write_str("authentication rejected")
             }
+            #[cfg(feature = "key-pair-auth")]
             Repr::Auth(AuthError::KeyParse(_source)) => f.write_str("private key error"),
+            #[cfg(feature = "key-pair-auth")]
             Repr::Auth(AuthError::DerParse(_source)) => f.write_str("DER error"),
+            #[cfg(feature = "key-pair-auth")]
             Repr::Auth(AuthError::JwtSign(_source)) => f.write_str("JWT error"),
             #[cfg(feature = "external-browser-sso")]
             Repr::Auth(AuthError::ExternalBrowser { message, .. }) => {
@@ -164,8 +167,11 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match &*self.repr {
             Repr::Config(ConfigError::HttpClientBuild(source)) => Some(source),
+            #[cfg(feature = "key-pair-auth")]
             Repr::Auth(AuthError::KeyParse(source)) => Some(source.as_ref()),
+            #[cfg(feature = "key-pair-auth")]
             Repr::Auth(AuthError::DerParse(source)) => Some(source.as_ref()),
+            #[cfg(feature = "key-pair-auth")]
             Repr::Auth(AuthError::JwtSign(source)) => Some(source.as_ref()),
             #[cfg(feature = "external-browser-sso")]
             Repr::Auth(AuthError::ExternalBrowser {

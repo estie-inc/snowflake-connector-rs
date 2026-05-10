@@ -45,6 +45,7 @@ pub(crate) enum LoginCredentialWire<'a> {
     Password {
         password: &'a str,
     },
+    #[cfg(feature = "key-pair-auth")]
     SnowflakeJwt {
         token: &'a str,
     },
@@ -66,6 +67,7 @@ impl Serialize for LoginCredentialWire<'_> {
                 map.serialize_entry("PASSWORD", password)?;
                 map.end()
             }
+            #[cfg(feature = "key-pair-auth")]
             Self::SnowflakeJwt { token } => {
                 let mut map = serializer.serialize_map(Some(2))?;
                 map.serialize_entry("AUTHENTICATOR", "SNOWFLAKE_JWT")?;
@@ -125,6 +127,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "key-pair-auth")]
     #[test]
     fn snowflake_jwt_login_body_matches_wire_shape() {
         let body = LoginBody {

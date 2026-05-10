@@ -1,18 +1,20 @@
+#[cfg(feature = "key-pair-auth")]
 use chrono::Utc;
 
 use crate::{
-    Result, SnowflakeAuthMethod,
-    auth::{
-        client::AuthApiClient, key_pair::generate_jwt_from_key_pair, wire::LoginCredentialWire,
-    },
+    Result, SnowflakeAuthConfig,
+    auth::{client::AuthApiClient, config::SnowflakeAuthConfigKind, wire::LoginCredentialWire},
 };
 
 #[cfg(feature = "external-browser-sso")]
 use crate::auth::external_browser::acquire_external_browser_credential;
+#[cfg(feature = "key-pair-auth")]
+use crate::auth::key_pair::generate_jwt_from_key_pair;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PreparedLoginCredential {
     Password(String),
+    #[cfg(feature = "key-pair-auth")]
     SnowflakeJwt(String),
     OAuth(String),
     #[cfg(feature = "external-browser-sso")]
@@ -26,6 +28,7 @@ impl PreparedLoginCredential {
     pub(crate) fn as_wire(&self) -> LoginCredentialWire<'_> {
         match self {
             Self::Password(password) => LoginCredentialWire::Password { password },
+            #[cfg(feature = "key-pair-auth")]
             Self::SnowflakeJwt(token) => LoginCredentialWire::SnowflakeJwt { token },
             Self::OAuth(token) => LoginCredentialWire::OAuth { token },
             #[cfg(feature = "external-browser-sso")]
@@ -59,40 +62,31 @@ pub(crate) trait LoginCredentialProvider {
     ) -> Result<PreparedLoginCredential>;
 }
 
-impl LoginCredentialProvider for SnowflakeAuthMethod {
+impl LoginCredentialProvider for SnowflakeAuthConfig {
     async fn prepare<'a>(
         &'a self,
         _client: &'a AuthApiClient,
-        context: LoginContext<'a>,
+        _context: LoginContext<'a>,
     ) -> Result<PreparedLoginCredential> {
-        match self {
-            SnowflakeAuthMethod::Password(password) => {
-                Ok(PreparedLoginCredential::Password(password.clone()))
-            }
-            SnowflakeAuthMethod::KeyPair {
-                encrypted_pem,
-                password,
-            } => prepare_jwt_credential(
-                encrypted_pem,
-                Some(password.as_slice()),
-                context.username,
-                context.account,
+        match self.kind() {
+            SnowflakeAuthConfigKind::Password(config) => Ok(PreparedLoginCredential::Password(
+                config.password().to_owned(),
+            )),
+            #[cfg(feature = "key-pair-auth")]
+            SnowflakeAuthConfigKind::KeyPair(config) => prepare_jwt_credential(
+                config.pem(),
+                config.password(),
+                _context.username,
+                _context.account,
                 Utc::now().timestamp(),
             ),
-            SnowflakeAuthMethod::KeyPairUnencrypted { pem } => prepare_jwt_credential(
-                pem,
-                None,
-                context.username,
-                context.account,
-                Utc::now().timestamp(),
-            ),
-            SnowflakeAuthMethod::Oauth { token } => {
-                Ok(PreparedLoginCredential::OAuth(token.clone()))
+            SnowflakeAuthConfigKind::Oauth(config) => {
+                Ok(PreparedLoginCredential::OAuth(config.token().to_owned()))
             }
             #[cfg(feature = "external-browser-sso")]
-            SnowflakeAuthMethod::ExternalBrowser(config) => {
+            SnowflakeAuthConfigKind::ExternalBrowser(config) => {
                 let credential =
-                    acquire_external_browser_credential(_client, context, config).await?;
+                    acquire_external_browser_credential(_client, _context, config).await?;
                 Ok(PreparedLoginCredential::ExternalBrowser {
                     token: credential.token,
                     proof_key: credential.proof_key,
@@ -102,6 +96,7 @@ impl LoginCredentialProvider for SnowflakeAuthMethod {
     }
 }
 
+#[cfg(feature = "key-pair-auth")]
 fn prepare_jwt_credential(
     pem: &str,
     password: Option<&[u8]>,
@@ -119,6 +114,14 @@ mod tests {
 
     use super::*;
 
+    #[cfg(feature = "key-pair-auth")]
+    use crate::KeyPairAuthConfig;
+
+    #[cfg(feature = "key-pair-auth")]
+    const ENCRYPTED_TEST_PEM: &str = include_str!("./test_snowflake_key.p8");
+    #[cfg(feature = "key-pair-auth")]
+    const UNENCRYPTED_TEST_PEM: &str = include_str!("./test_snowflake_key_unencrypted.p8");
+
     fn dummy_client() -> AuthApiClient {
         AuthApiClient::new(
             reqwest::Client::new(),
@@ -128,7 +131,7 @@ mod tests {
 
     #[tokio::test]
     async fn password_auth_is_prepared_as_password_credential() {
-        let auth = SnowflakeAuthMethod::Password("secret".to_string());
+        let auth = SnowflakeAuthConfig::password("secret");
         let credential = auth
             .prepare(
                 &dummy_client(),
@@ -148,9 +151,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_auth_is_prepared_as_oauth_credential() {
-        let auth = SnowflakeAuthMethod::Oauth {
-            token: "oauth-token".to_string(),
-        };
+        let auth = SnowflakeAuthConfig::oauth("oauth-token");
         let credential = auth
             .prepare(
                 &dummy_client(),
@@ -168,11 +169,53 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "key-pair-auth")]
+    async fn assert_key_pair_auth_prepares_jwt(auth: SnowflakeAuthConfig) {
+        let credential = auth
+            .prepare(
+                &dummy_client(),
+                LoginContext {
+                    username: "user",
+                    account: "account",
+                },
+            )
+            .await
+            .unwrap();
+
+        match credential {
+            PreparedLoginCredential::SnowflakeJwt(token) => {
+                assert!(!token.is_empty());
+                assert_eq!(token.split('.').count(), 3);
+            }
+            other => panic!("expected SnowflakeJwt credential, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "key-pair-auth")]
+    #[tokio::test]
+    async fn encrypted_key_pair_auth_is_prepared_as_jwt_credential() {
+        let auth = SnowflakeAuthConfig::key_pair(KeyPairAuthConfig::encrypted_pem(
+            ENCRYPTED_TEST_PEM,
+            b"12345".to_vec(),
+        ));
+
+        assert_key_pair_auth_prepares_jwt(auth).await;
+    }
+
+    #[cfg(feature = "key-pair-auth")]
+    #[tokio::test]
+    async fn unencrypted_key_pair_auth_is_prepared_as_jwt_credential() {
+        let auth =
+            SnowflakeAuthConfig::key_pair(KeyPairAuthConfig::unencrypted_pem(UNENCRYPTED_TEST_PEM));
+
+        assert_key_pair_auth_prepares_jwt(auth).await;
+    }
+
+    #[cfg(feature = "key-pair-auth")]
     #[test]
     fn key_pair_jwt_generation_is_deterministic_for_tests() {
-        let encrypted_pem = include_str!("./test_snowflake_key.p8");
         let credential = prepare_jwt_credential(
-            encrypted_pem,
+            ENCRYPTED_TEST_PEM,
             Some("12345".as_bytes()),
             "USER_NAME",
             "myaccount.ap-northeast-1.aws",

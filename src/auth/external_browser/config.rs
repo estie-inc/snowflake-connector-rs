@@ -1,5 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr};
-use std::num::NonZeroU16;
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    num::NonZeroU16,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Controls how the SSO URL is opened.
@@ -82,12 +84,18 @@ impl WithoutCallbackListenerConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Configuration for `SnowflakeAuthMethod::ExternalBrowser`.
+/// Configuration for [`SnowflakeAuthConfig::external_browser`](crate::SnowflakeAuthConfig::external_browser).
 ///
-/// Use this type to choose one of two authentication modes:
-/// `WithCallbackListener` or `WithoutCallbackListener`.
-/// For end-to-end setup examples, see `SnowflakeAuthMethod::ExternalBrowser`.
-pub enum ExternalBrowserConfig {
+/// Use [`ExternalBrowserConfig::with_callback_listener`] or
+/// [`ExternalBrowserConfig::without_callback_listener`] to choose the
+/// authentication mode.
+/// For end-to-end setup examples, see [`SnowflakeAuthConfig::external_browser`](crate::SnowflakeAuthConfig::external_browser).
+pub struct ExternalBrowserConfig {
+    mode: ExternalBrowserMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ExternalBrowserMode {
     WithCallbackListener(WithCallbackListenerConfig),
     WithoutCallbackListener(WithoutCallbackListenerConfig),
 }
@@ -100,12 +108,14 @@ impl Default for ExternalBrowserConfig {
     /// - `callback_socket_addr = 127.0.0.1`
     /// - `callback_socket_port = 0` (OS-selected ephemeral port)
     fn default() -> Self {
-        Self::WithCallbackListener(WithCallbackListenerConfig::default())
+        Self {
+            mode: ExternalBrowserMode::WithCallbackListener(WithCallbackListenerConfig::default()),
+        }
     }
 }
 
 impl ExternalBrowserConfig {
-    /// Creates `ExternalBrowserConfig::WithCallbackListener`.
+    /// Creates a callback-listener external-browser configuration.
     ///
     /// This mode starts a local HTTP listener and receives the token automatically
     /// from the redirected callback URL.
@@ -121,14 +131,16 @@ impl ExternalBrowserConfig {
         callback_socket_addr: IpAddr,
         callback_socket_port: u16,
     ) -> Self {
-        ExternalBrowserConfig::WithCallbackListener(WithCallbackListenerConfig::new(
-            browser_launch_mode,
-            callback_socket_addr,
-            callback_socket_port,
-        ))
+        Self {
+            mode: ExternalBrowserMode::WithCallbackListener(WithCallbackListenerConfig::new(
+                browser_launch_mode,
+                callback_socket_addr,
+                callback_socket_port,
+            )),
+        }
     }
 
-    /// Creates `ExternalBrowserConfig::WithoutCallbackListener`.
+    /// Creates a manual-redirect external-browser configuration.
     ///
     /// This mode does not start a local listener. After login, paste the redirected
     /// URL shown by the browser into the terminal prompt.
@@ -145,9 +157,15 @@ impl ExternalBrowserConfig {
         browser_launch_mode: BrowserLaunchMode,
         redirect_port: NonZeroU16,
     ) -> Self {
-        ExternalBrowserConfig::WithoutCallbackListener(WithoutCallbackListenerConfig::new(
-            browser_launch_mode,
-            redirect_port,
-        ))
+        Self {
+            mode: ExternalBrowserMode::WithoutCallbackListener(WithoutCallbackListenerConfig::new(
+                browser_launch_mode,
+                redirect_port,
+            )),
+        }
+    }
+
+    pub(super) fn mode(&self) -> &ExternalBrowserMode {
+        &self.mode
     }
 }

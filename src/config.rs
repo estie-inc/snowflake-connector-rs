@@ -1,17 +1,15 @@
-use std::collections::HashMap;
-use std::num::NonZeroUsize;
-use std::time::Duration;
+use std::{collections::HashMap, num::NonZeroUsize, time::Duration};
 
 use url::Url;
 
-use crate::{Result, SnowflakeAuthMethod, error::ConfigError};
+use crate::{Result, SnowflakeAuthConfig, error::ConfigError};
 
 /// Top-level configuration for a [`SnowflakeClient`](crate::SnowflakeClient).
 #[derive(Clone)]
 pub struct SnowflakeClientConfig {
     username: String,
     account: String,
-    auth: SnowflakeAuthMethod,
+    auth: SnowflakeAuthConfig,
     session: SnowflakeSessionConfig,
     query: SnowflakeQueryConfig,
     endpoint: SnowflakeEndpointConfig,
@@ -99,7 +97,7 @@ impl SnowflakeClientConfig {
     pub fn new(
         username: impl Into<String>,
         account: impl Into<String>,
-        auth: SnowflakeAuthMethod,
+        auth: SnowflakeAuthConfig,
     ) -> Self {
         Self {
             username: username.into(),
@@ -140,7 +138,7 @@ impl SnowflakeClientConfig {
         &self.account
     }
 
-    pub(crate) fn auth(&self) -> &SnowflakeAuthMethod {
+    pub(crate) fn auth(&self) -> &SnowflakeAuthConfig {
         &self.auth
     }
 

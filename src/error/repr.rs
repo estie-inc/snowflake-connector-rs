@@ -47,8 +47,11 @@ pub(crate) enum AuthError {
     LoginRejected {
         message: Option<Box<str>>,
     },
+    #[cfg(feature = "key-pair-auth")]
     KeyParse(Box<dyn StdError + Send + Sync>),
+    #[cfg(feature = "key-pair-auth")]
     DerParse(Box<dyn StdError + Send + Sync>),
+    #[cfg(feature = "key-pair-auth")]
     JwtSign(Box<dyn StdError + Send + Sync>),
     #[cfg(feature = "external-browser-sso")]
     ExternalBrowser {
