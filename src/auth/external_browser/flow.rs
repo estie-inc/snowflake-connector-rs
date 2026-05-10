@@ -10,7 +10,7 @@ use crate::{
 
 use super::{
     config::{
-        BrowserLaunchMode, ExternalBrowserConfig, WithCallbackListenerConfig,
+        BrowserLaunchMode, ExternalBrowserConfig, ExternalBrowserMode, WithCallbackListenerConfig,
         WithoutCallbackListenerConfig,
     },
     launcher::{BrowserLauncher, LaunchOutcome, SystemCommandRunner},
@@ -32,11 +32,11 @@ pub(crate) async fn acquire_external_browser_credential(
     context: LoginContext<'_>,
     config: &ExternalBrowserConfig,
 ) -> Result<ExternalBrowserCredential> {
-    match config {
-        ExternalBrowserConfig::WithCallbackListener(config) => {
+    match config.mode() {
+        ExternalBrowserMode::WithCallbackListener(config) => {
             run_with_listener(client, context, config).await
         }
-        ExternalBrowserConfig::WithoutCallbackListener(config) => {
+        ExternalBrowserMode::WithoutCallbackListener(config) => {
             run_without_listener(client, context, config).await
         }
     }

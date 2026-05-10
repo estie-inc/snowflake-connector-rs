@@ -31,7 +31,7 @@ let client = SnowflakeClient::new(
     SnowflakeClientConfig::new(
         "USERNAME",
         "ACCOUNT",
-        SnowflakeAuthMethod::Password("PASSWORD".to_string()),
+        SnowflakeAuthConfig::password("PASSWORD"),
     )
     .with_session(session_config)
     .with_query(query_config),
@@ -99,7 +99,7 @@ To override the default Snowflake endpoint (e.g. for testing or non-default netw
 
 ```rust
 use url::Url;
-let auth = SnowflakeAuthMethod::Password("PASSWORD".to_string());
+let auth = SnowflakeAuthConfig::password("PASSWORD");
 let endpoint = SnowflakeEndpointConfig::custom_base_url(
     Url::parse("https://custom-host.example.com").unwrap(),
 );
@@ -115,7 +115,7 @@ To route requests through an HTTP proxy:
 
 ```rust
 use url::Url;
-let auth = SnowflakeAuthMethod::Password("PASSWORD".to_string());
+let auth = SnowflakeAuthConfig::password("PASSWORD");
 let proxy = SnowflakeProxyConfig::new(
     Url::parse("http://proxy.example.com:8080").unwrap(),
 )
@@ -136,6 +136,7 @@ These algorithms are considered insecure and should only be used for legacy comp
 - **`pkcs8-des`**: Enables DES decryption support
 - **`pkcs8-3des`**: Enables 3DES decryption support
 - **`derive`**: Re-exports the `FromRow` derive macro (enabled by default)
+- **`key-pair-auth`**: Enables key-pair authentication support (enabled by default)
 - **`external-browser-sso`**: Enables external browser SSO authentication support
 
 > [!NOTE]
@@ -150,29 +151,29 @@ Typical configurations for the `external-browser-sso` feature:
 
 - Local default (auto browser launch, localhost callback, auto-picked port)
    ```rust
-   use snowflake_connector_rs::{ExternalBrowserConfig, SnowflakeAuthMethod};
-   let auth = SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default());
+   use snowflake_connector_rs::{ExternalBrowserConfig, SnowflakeAuthConfig};
+   let auth = SnowflakeAuthConfig::external_browser(ExternalBrowserConfig::default());
    ```
 - Docker/container setup (manual open with explicit callback bind address/port)
    ```rust
-   use std::net::Ipv4Addr;
-   use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthMethod};
-   let external_browser = ExternalBrowserConfig::with_callback_listener(
-       BrowserLaunchMode::Manual,
-       Ipv4Addr::UNSPECIFIED.into(),
-       3037,
-   );
-   let auth = SnowflakeAuthMethod::ExternalBrowser(external_browser);
-   ```
+    use std::net::Ipv4Addr;
+    use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthConfig};
+    let external_browser = ExternalBrowserConfig::with_callback_listener(
+        BrowserLaunchMode::Manual,
+        Ipv4Addr::UNSPECIFIED.into(),
+        3037,
+    );
+    let auth = SnowflakeAuthConfig::external_browser(external_browser);
+    ```
 - Without callback listener mode (manual redirected URL input)
    ```rust
-   use std::num::NonZeroU16;
-   use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthMethod};
-   let redirect_port = NonZeroU16::new(3037).unwrap();
-   let external_browser =
-       ExternalBrowserConfig::without_callback_listener(BrowserLaunchMode::Manual, redirect_port);
-   let auth = SnowflakeAuthMethod::ExternalBrowser(external_browser);
-   ```
+    use std::num::NonZeroU16;
+    use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthConfig};
+    let redirect_port = NonZeroU16::new(3037).unwrap();
+    let external_browser =
+        ExternalBrowserConfig::without_callback_listener(BrowserLaunchMode::Manual, redirect_port);
+    let auth = SnowflakeAuthConfig::external_browser(external_browser);
+    ```
 
 For Docker/container setup, make sure that:
 

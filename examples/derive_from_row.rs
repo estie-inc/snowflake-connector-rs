@@ -3,7 +3,7 @@ use std::env;
 use url::Url;
 
 use snowflake_connector_rs::{
-    ExternalBrowserConfig, FromRow, Result, SnowflakeAuthMethod, SnowflakeClient,
+    ExternalBrowserConfig, FromRow, Result, SnowflakeAuthConfig, SnowflakeClient,
     SnowflakeClientConfig, SnowflakeEndpointConfig, SnowflakeQueryConfig, SnowflakeSession,
     SnowflakeSessionConfig,
 };
@@ -180,7 +180,7 @@ fn connect_with_configs(
     let mut client_config = SnowflakeClientConfig::new(
         &username,
         &account,
-        SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default()),
+        SnowflakeAuthConfig::external_browser(ExternalBrowserConfig::default()),
     )
     .with_session(session_config)
     .with_query(query_config);

@@ -1,16 +1,18 @@
+use std::env;
+
 use snowflake_connector_rs::{
-    ExternalBrowserConfig, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig,
+    ExternalBrowserConfig, SnowflakeAuthConfig, SnowflakeClient, SnowflakeClientConfig,
     SnowflakeSessionConfig,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let username = std::env::var("SNOWFLAKE_USERNAME")?;
-    let account = std::env::var("SNOWFLAKE_ACCOUNT")?;
-    let role = std::env::var("SNOWFLAKE_ROLE").ok();
-    let warehouse = std::env::var("SNOWFLAKE_WAREHOUSE").ok();
-    let database = std::env::var("SNOWFLAKE_DATABASE").ok();
-    let schema = std::env::var("SNOWFLAKE_SCHEMA").ok();
+    let username = env::var("SNOWFLAKE_USERNAME")?;
+    let account = env::var("SNOWFLAKE_ACCOUNT")?;
+    let role = env::var("SNOWFLAKE_ROLE").ok();
+    let warehouse = env::var("SNOWFLAKE_WAREHOUSE").ok();
+    let database = env::var("SNOWFLAKE_DATABASE").ok();
+    let schema = env::var("SNOWFLAKE_SCHEMA").ok();
 
     let mut session_config = SnowflakeSessionConfig::default();
     if let Some(warehouse) = warehouse {
@@ -30,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SnowflakeClientConfig::new(
             &username,
             &account,
-            SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default()),
+            SnowflakeAuthConfig::external_browser(ExternalBrowserConfig::default()),
         )
         .with_session(session_config),
     )?;

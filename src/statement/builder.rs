@@ -285,13 +285,13 @@ impl From<String> for Statement<UnboundBinds> {
 ///
 /// ```no_run
 /// use snowflake_connector_rs::{
-///     Result, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig, Statement,
+///     Result, SnowflakeAuthConfig, SnowflakeClient, SnowflakeClientConfig, Statement,
 /// };
 /// # async fn run() -> Result<()> {
 /// # let client = SnowflakeClient::new(SnowflakeClientConfig::new(
 /// #     "USER",
 /// #     "ACCOUNT",
-/// #     SnowflakeAuthMethod::Password("PW".to_string()),
+/// #     SnowflakeAuthConfig::password("PW"),
 /// # ))?;
 /// let session = client.create_session().await?;
 ///

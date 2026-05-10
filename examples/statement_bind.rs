@@ -3,7 +3,7 @@ use std::env;
 use chrono::{FixedOffset, NaiveDate};
 
 use snowflake_connector_rs::{
-    ExternalBrowserConfig, SnowflakeAuthMethod, SnowflakeClient, SnowflakeClientConfig,
+    ExternalBrowserConfig, SnowflakeAuthConfig, SnowflakeClient, SnowflakeClientConfig,
     SnowflakeSession, SnowflakeSessionConfig, Statement,
     bind::{Binary, Integer, RawBind, SnowflakeBindType, TimestampTz},
 };
@@ -164,7 +164,7 @@ async fn build_session() -> std::result::Result<SnowflakeSession, Box<dyn std::e
         SnowflakeClientConfig::new(
             &username,
             &account,
-            SnowflakeAuthMethod::ExternalBrowser(ExternalBrowserConfig::default()),
+            SnowflakeAuthConfig::external_browser(ExternalBrowserConfig::default()),
         )
         .with_session(session_config),
     )?;
