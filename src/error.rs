@@ -336,7 +336,7 @@ impl AuthError {
     }
 
     #[cfg(feature = "key-pair-auth")]
-    pub(crate) fn jwt_sign(source: jsonwebtoken::errors::Error) -> Self {
+    pub(crate) fn jwt_sign(source: impl StdError + Send + Sync + 'static) -> Self {
         Self::JwtSign(Box::new(source))
     }
 

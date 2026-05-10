@@ -53,7 +53,6 @@ serde_json = { version = "1.0", features = [
     "raw_value",
 ] }
 tokio = { version = "1.52", features = [
-    "rt",
     "sync",
     "time",
 ] }
@@ -63,27 +62,25 @@ uuid = { version = "1.23", features = [
     "v4",
 ] }
 
-jsonwebtoken = { version = "10.3.0", optional = true, features = [
-    "rust_crypto",
-] }
 pkcs8 = { version = "0.10", optional = true, features = [
     "encryption",
     "pem",
-    "pkcs5",
 ] }
 rsa = { version = "0.9", optional = true }
-sha2 = { version = "0.11", optional = true }
+sha2 = { version = "0.11", optional = true, default-features = false, features = [
+    "alloc",
+] }
 
 http-body-util = { version = "0.1", optional = true }
-hyper = { version = "1.9", features = [
+hyper = { version = "1.9", optional = true, features = [
     "http1",
     "server",
-], optional = true }
-hyper-util = { version = "0.1", features = [
+] }
+hyper-util = { version = "0.1", optional = true, features = [
     "http1",
     "server",
     "tokio",
-], optional = true }
+] }
 nix = { version = "0.31", optional = true, features = [
     "term",
 ] }
@@ -113,7 +110,6 @@ external-browser-sso = [
     "tokio/time",
 ]
 key-pair-auth = [
-    "dep:jsonwebtoken",
     "dep:pkcs8",
     "dep:rsa",
     "dep:sha2",
