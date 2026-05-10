@@ -104,8 +104,6 @@ external-browser-sso = [
     "dep:socket2",
     "tokio/macros",
     "tokio/net",
-    "tokio/sync",
-    "tokio/time",
 ]
 key-pair-auth = [
     "dep:pkcs8",
