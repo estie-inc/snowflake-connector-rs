@@ -142,8 +142,6 @@ async fn derive_named_lookup_variants_decode_expected_rows() -> Result<()> {
     for (row, (exp_id, exp_raw)) in prices.iter().zip(expected_prices) {
         assert_eq!(row.id, exp_id);
         assert_eq!(row.price.raw(), exp_raw);
-        assert_eq!(row.price.precision(), Some(10));
-        assert_eq!(row.price.scale(), Some(2));
     }
 
     let keywords = session

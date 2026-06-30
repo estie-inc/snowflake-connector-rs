@@ -163,15 +163,15 @@ pub(crate) struct RawQueryResponseRowType {
     pub(crate) database: String,
     pub(crate) name: String,
     pub(crate) nullable: bool,
-    pub(crate) scale: Option<i64>,
+    pub(crate) scale: Option<u8>,
     #[allow(unused)]
     pub(crate) byte_length: Option<i64>,
-    pub(crate) length: Option<i64>,
+    pub(crate) length: Option<u32>,
     #[allow(unused)]
     pub(crate) schema: String,
     #[allow(unused)]
     pub(crate) table: String,
-    pub(crate) precision: Option<i64>,
+    pub(crate) precision: Option<u8>,
 
     #[serde(rename = "type")]
     pub(crate) data_type: String,

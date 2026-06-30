@@ -255,17 +255,9 @@ impl FromCell for String {
 
 impl FromCell for DecimalValue {
     fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        let (precision, scale) = match cell.column().ty() {
-            ColumnType::Fixed { precision, scale } => (*precision, *scale),
-            other => {
-                return Err(CellDecodeIssue::builder(format!(
-                    "incompatible column type: {other:?}"
-                ))
-                .build());
-            }
-        };
+        ensure_column_type(cell, matches!(cell.column().ty(), ColumnType::Fixed { .. }))?;
         let raw = cell.required_raw()?;
-        Ok(DecimalValue::new(raw, precision, scale))
+        Ok(DecimalValue::new(raw))
     }
 }
 
@@ -409,7 +401,10 @@ impl FromCell for serde_json::Value {
 
 impl FromCell for Vec<u8> {
     fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        ensure_column_type(cell, matches!(cell.column().ty(), ColumnType::Binary))?;
+        ensure_column_type(
+            cell,
+            matches!(cell.column().ty(), ColumnType::Binary { .. }),
+        )?;
 
         let raw = cell.required_raw()?;
         decode_hex(raw).map_err(|m| CellDecodeIssue::builder(m).build())
@@ -420,7 +415,7 @@ fn timestamp_scale(ty: &ColumnType) -> Option<i64> {
     match ty {
         ColumnType::TimestampNtz { scale }
         | ColumnType::TimestampLtz { scale }
-        | ColumnType::TimestampTz { scale } => *scale,
+        | ColumnType::TimestampTz { scale } => scale.map(i64::from),
         _ => None,
     }
 }
@@ -1099,7 +1094,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .0;
-        assert_eq!(value, DecimalValue::new("12.34", Some(10), Some(2)));
+        assert_eq!(value, DecimalValue::new("12.34"));
     }
 
     #[test]
