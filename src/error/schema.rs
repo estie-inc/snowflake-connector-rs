@@ -18,7 +18,7 @@ pub struct MissingColumnError {
 }
 
 impl MissingColumnError {
-    pub fn new(name: impl Into<Box<str>>) -> Self {
+    pub(crate) fn new(name: impl Into<Box<str>>) -> Self {
         Self { name: name.into() }
     }
 
@@ -42,7 +42,10 @@ pub struct AmbiguousColumnError {
 }
 
 impl AmbiguousColumnError {
-    pub fn new(name: impl Into<Box<str>>, candidates: impl Into<Box<[ColumnIndex]>>) -> Self {
+    pub(crate) fn new(
+        name: impl Into<Box<str>>,
+        candidates: impl Into<Box<[ColumnIndex]>>,
+    ) -> Self {
         Self {
             name: name.into(),
             candidates: candidates.into(),
@@ -73,7 +76,7 @@ pub struct InvalidColumnIndexError {
 }
 
 impl InvalidColumnIndexError {
-    pub fn new(index: ColumnIndex, len: usize) -> Self {
+    pub(crate) fn new(index: ColumnIndex, len: usize) -> Self {
         Self { index, len }
     }
 
@@ -108,7 +111,7 @@ pub struct DuplicateColumnNameError {
 }
 
 impl DuplicateColumnNameError {
-    pub fn new(name: impl Into<Box<str>>) -> Self {
+    pub(crate) fn new(name: impl Into<Box<str>>) -> Self {
         Self { name: name.into() }
     }
 
@@ -132,6 +135,7 @@ pub struct ColumnCountMismatchError {
 }
 
 impl ColumnCountMismatchError {
+    // Must stay `pub`: the `FromRow` derive emits a call to this constructor in downstream crates.
     pub fn new(expected: usize, actual: usize) -> Self {
         Self { expected, actual }
     }

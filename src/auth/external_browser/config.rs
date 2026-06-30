@@ -3,8 +3,9 @@ use std::{
     num::NonZeroU16,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Controls how the SSO URL is opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BrowserLaunchMode {
     /// Try to launch a local browser command first.
     Auto,
@@ -13,7 +14,7 @@ pub enum BrowserLaunchMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WithCallbackListenerConfig {
+pub(crate) struct WithCallbackListenerConfig {
     browser_launch_mode: BrowserLaunchMode,
     callback_socket_addr: IpAddr,
     callback_socket_port: u16,
@@ -61,7 +62,7 @@ impl WithCallbackListenerConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WithoutCallbackListenerConfig {
+pub(crate) struct WithoutCallbackListenerConfig {
     browser_launch_mode: BrowserLaunchMode,
     redirect_port: NonZeroU16,
 }
