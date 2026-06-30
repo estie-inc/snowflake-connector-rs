@@ -77,6 +77,7 @@ impl DecimalValue {
 /// }
 /// ```
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum SnowflakeValue {
     /// SQL `NULL`.
     Null,

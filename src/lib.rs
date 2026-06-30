@@ -79,10 +79,7 @@ mod statement;
 pub use auth::config::KeyPairAuthConfig;
 pub use auth::config::SnowflakeAuthConfig;
 #[cfg(feature = "external-browser-sso")]
-pub use auth::external_browser::{
-    BrowserLaunchMode, ExternalBrowserConfig, WithCallbackListenerConfig,
-    WithoutCallbackListenerConfig,
-};
+pub use auth::external_browser::{BrowserLaunchMode, ExternalBrowserConfig};
 pub use config::{
     SnowflakeClientConfig, SnowflakeEndpointConfig, SnowflakeProxyConfig, SnowflakeQueryConfig,
     SnowflakeSessionConfig, SnowflakeTransportConfig,
@@ -92,7 +89,7 @@ pub use error::{
     Error, ErrorKind, InvalidColumnIndexError, MissingColumnError, Result, SchemaError,
 };
 pub use query_result::{CollectOptions, ResultSet, TypedResultSet};
-pub use result::{DynamicRow, FromRow, ResultTable, TypedResultTable};
+pub use result::{DynamicRow, FromCell, FromRow, ResultTable, TypedResultTable};
 use runtime::QueryRuntime;
 pub use session::SnowflakeSession;
 pub use statement::builder::{IntoStatement, NamedBinds, PositionalBinds, Statement, UnboundBinds};
