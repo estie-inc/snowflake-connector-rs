@@ -227,7 +227,7 @@ impl QueryExecutor {
             }
         }
 
-        let mut chunks = {
+        let chunks = {
             let chunks = &mut *self.chunks.lock().await;
             if chunks.is_empty() {
                 return Ok(rows);
@@ -243,7 +243,7 @@ impl QueryExecutor {
         let semaphore = Arc::new(Semaphore::new(concurrency));
 
         let mut handles = Vec::with_capacity(chunks.len());
-        while let Some(chunk) = chunks.pop() {
+        for chunk in chunks {
             let http = self.http.clone();
             let chunk_headers = self.chunk_headers.clone();
             let qrmk = self.qrmk.clone();
