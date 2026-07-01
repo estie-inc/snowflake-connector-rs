@@ -5,10 +5,6 @@
 
 A Rust client for Snowflake, which enables you to connect to Snowflake and run queries.
 
-## MSRV
-
-The minimum supported Rust version (MSRV) is 1.88.
-
 ## Usage
 
 ```rust
@@ -93,61 +89,68 @@ let table = result.collect_table().await?;
 assert_eq!(table.row_count(), 2);
 ```
 
-### Custom Endpoint
+## Authentication
 
-To override the default Snowflake endpoint (e.g. for testing or non-default network setups):
+The authentication method is chosen with `SnowflakeAuthConfig`, passed to `SnowflakeClientConfig::new`.
+
+### Key-pair
+
+Key-pair (JWT) authentication. Recommended for programmatic and unattended access. Requires the `key-pair-auth` feature (enabled by default).
 
 ```rust
-use url::Url;
-let auth = SnowflakeAuthConfig::password("PASSWORD");
-let endpoint = SnowflakeEndpointConfig::custom_base_url(
-    Url::parse("https://custom-host.example.com").unwrap(),
+use snowflake_connector_rs::{KeyPairAuthConfig, SnowflakeAuthConfig};
+
+// Encrypted PKCS#8 PEM, with its passphrase:
+let auth = SnowflakeAuthConfig::key_pair(
+    KeyPairAuthConfig::encrypted_pem(pem, b"passphrase".to_vec()),
 );
-let client = SnowflakeClient::new(
-    SnowflakeClientConfig::new("USERNAME", "ACCOUNT", auth)
-        .with_endpoint(endpoint),
-)?;
+
+// Unencrypted PKCS#8 PEM:
+let auth = SnowflakeAuthConfig::key_pair(KeyPairAuthConfig::unencrypted_pem(pem));
 ```
 
-### Proxy
+### OAuth
 
-To route requests through an HTTP proxy:
+Authenticate with a Snowflake OAuth access token. Acquiring and refreshing the token is the caller's responsibility.
 
 ```rust
-use url::Url;
-let auth = SnowflakeAuthConfig::password("PASSWORD");
-let proxy = SnowflakeProxyConfig::new(
-    Url::parse("http://proxy.example.com:8080").unwrap(),
-)
-.with_basic_auth("proxy_user", "proxy_pass");
+use snowflake_connector_rs::SnowflakeAuthConfig;
 
-let transport = SnowflakeTransportConfig::default().with_proxy(proxy);
-let client = SnowflakeClient::new(
-    SnowflakeClientConfig::new("USERNAME", "ACCOUNT", auth)
-        .with_transport(transport),
-)?;
+let auth = SnowflakeAuthConfig::oauth("OAUTH_ACCESS_TOKEN");
 ```
 
-## Features
+### Password and MFA
 
-This crate supports optional features to decrypt legacy keys that use DES or 3DES encryption.
-These algorithms are considered insecure and should only be used for legacy compatibility.
+Snowflake enforces MFA for password sign-ins. Without a passcode, login relies on an out-of-band approval (for example a Duo push) that must be approved interactively, so plain password auth is unsuitable for unattended use — prefer key-pair or OAuth there.
 
-- **`pkcs8-des`**: Enables DES decryption support
-- **`pkcs8-3des`**: Enables 3DES decryption support
-- **`derive`**: Re-exports the `FromRow` derive macro (enabled by default)
-- **`key-pair-auth`**: Enables key-pair authentication support (enabled by default)
-- **`external-browser-sso`**: Enables external browser SSO authentication support
+```rust
+use snowflake_connector_rs::{PasswordAuthConfig, SnowflakeAuthConfig};
+
+// Plain password (an interactive MFA approval may still be required).
+let auth = SnowflakeAuthConfig::password("PASSWORD");
+
+// TOTP passcode sent as a separate value.
+let auth = SnowflakeAuthConfig::password(
+    PasswordAuthConfig::new("PASSWORD").with_passcode("123456"),
+);
+
+// Or the passcode already appended to the password.
+let auth = SnowflakeAuthConfig::password(
+    PasswordAuthConfig::new("PASSWORD123456").with_passcode_in_password(),
+);
+```
+
+The MFA token cache is not supported, so an MFA factor may be requested on every connection.
+
+### External browser SSO (experimental)
 
 > [!NOTE]
-> The `external-browser-sso` feature is experimental. 
+> The `external-browser-sso` feature is experimental.
 > The implementation and API may change in future releases, and stability or backward compatibility is not guaranteed.
 > Use this feature with caution in production environments.
 > Please open an issue for bugs or feature requests.
 
-### External Browser SSO Use Cases
-
-Typical configurations for the `external-browser-sso` feature:
+Requires the `external-browser-sso` feature. Typical configurations:
 
 - Local default (auto browser launch, localhost callback, auto-picked port)
    ```rust
@@ -187,3 +190,54 @@ In `WithoutCallbackListener` mode:
 - no local server is started, so `localhost:<redirect_port>` is not actually listened on by this connector.
 - a non-zero `redirect_port` is still required because Snowflake uses `BROWSER_MODE_REDIRECT_PORT` to construct the browser redirect URL.
 - the browser may show a connection error page at `localhost:<redirect_port>` after login; copy that redirected URL and paste it into the terminal prompt so the connector can extract the token.
+
+## Configuration
+
+### Custom endpoint
+
+To override the default Snowflake endpoint (e.g. for testing or non-default network setups):
+
+```rust
+use url::Url;
+let auth = SnowflakeAuthConfig::password("PASSWORD");
+let endpoint = SnowflakeEndpointConfig::custom_base_url(
+    Url::parse("https://custom-host.example.com").unwrap(),
+);
+let client = SnowflakeClient::new(
+    SnowflakeClientConfig::new("USERNAME", "ACCOUNT", auth)
+        .with_endpoint(endpoint),
+)?;
+```
+
+### Proxy
+
+To route requests through an HTTP proxy:
+
+```rust
+use url::Url;
+let auth = SnowflakeAuthConfig::password("PASSWORD");
+let proxy = SnowflakeProxyConfig::new(
+    Url::parse("http://proxy.example.com:8080").unwrap(),
+)
+.with_basic_auth("proxy_user", "proxy_pass");
+
+let transport = SnowflakeTransportConfig::default().with_proxy(proxy);
+let client = SnowflakeClient::new(
+    SnowflakeClientConfig::new("USERNAME", "ACCOUNT", auth)
+        .with_transport(transport),
+)?;
+```
+
+## Cargo features
+
+- `derive` (enabled by default): re-exports the `FromRow` derive macro.
+- `key-pair-auth` (enabled by default): key-pair (JWT) authentication.
+- `external-browser-sso`: external browser SSO authentication (experimental; see above).
+- `pkcs8-des`: support for DES-encrypted private keys.
+- `pkcs8-3des`: support for 3DES-encrypted private keys.
+
+`pkcs8-des` and `pkcs8-3des` exist only for legacy compatibility. DES and 3DES are considered insecure and should not be used for new keys.
+
+## MSRV
+
+The minimum supported Rust version (MSRV) is 1.88.

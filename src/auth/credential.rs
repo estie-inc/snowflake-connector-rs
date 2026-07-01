@@ -103,7 +103,7 @@ impl LoginCredentialProvider for SnowflakeAuthConfig {
                 _context.account,
                 Utc::now().timestamp(),
             ),
-            SnowflakeAuthConfigKind::Oauth(config) => {
+            SnowflakeAuthConfigKind::OAuth(config) => {
                 Ok(PreparedLoginCredential::OAuth(config.token().to_owned()))
             }
             #[cfg(feature = "external-browser-sso")]
