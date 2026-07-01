@@ -77,7 +77,7 @@ mod statement;
 
 #[cfg(feature = "key-pair-auth")]
 pub use auth::config::KeyPairAuthConfig;
-pub use auth::config::SnowflakeAuthConfig;
+pub use auth::config::{PasswordAuthConfig, SnowflakeAuthConfig};
 #[cfg(feature = "external-browser-sso")]
 pub use auth::external_browser::{BrowserLaunchMode, ExternalBrowserConfig};
 pub use config::{

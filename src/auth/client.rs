@@ -205,7 +205,10 @@ mod tests {
                 data: LoginData {
                     account_name: "account",
                     login_name: "username",
-                    credential: LoginCredentialWire::Password { password: "secret" },
+                    credential: LoginCredentialWire::Password {
+                        password: "secret",
+                        passcode: None,
+                    },
                     session_parameters: None,
                 },
             },
