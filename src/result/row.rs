@@ -172,6 +172,8 @@ impl<'a, T: FromRow> Iterator for Rows<'a, T> {
 
 impl<T: FromRow> ExactSizeIterator for Rows<'_, T> {}
 
+impl<T: FromRow> std::iter::FusedIterator for Rows<'_, T> {}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

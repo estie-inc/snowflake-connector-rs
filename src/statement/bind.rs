@@ -185,7 +185,7 @@ impl From<String> for BindName {
 /// let _ = Binary::new(vec![0x12, 0xAB]);
 /// let _ = Binary::new(b"hello".as_slice());
 /// ```
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Binary(Vec<u8>);
 
 impl fmt::Debug for Binary {
@@ -339,7 +339,7 @@ impl_from_int_for_integer!(i8, i16, i32, i64, u8, u16, u32, u64);
 ///     .unwrap();
 /// assert!(TimestampTz::try_from(bad).is_err());
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimestampTz(DateTime<FixedOffset>);
 
 impl TryFrom<DateTime<FixedOffset>> for TimestampTz {
@@ -390,7 +390,7 @@ impl TryFrom<DateTime<FixedOffset>> for TimestampTz {
 ///     .unwrap();
 /// assert!(TimestampNtz::try_from(leap).is_err());
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimestampNtz(NaiveDateTime);
 
 impl TryFrom<NaiveDateTime> for TimestampNtz {
@@ -435,7 +435,7 @@ impl TryFrom<NaiveDateTime> for TimestampNtz {
 ///     .and_utc();
 /// assert!(TimestampLtz::try_from(leap).is_err());
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimestampLtz(DateTime<Utc>);
 
 impl TryFrom<DateTime<Utc>> for TimestampLtz {
@@ -472,7 +472,7 @@ impl TryFrom<DateTime<Utc>> for TimestampLtz {
 /// let leap = NaiveTime::from_hms_nano_opt(23, 59, 59, 1_000_000_000).unwrap();
 /// assert!(Time::try_from(leap).is_err());
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Time(NaiveTime);
 
 impl TryFrom<NaiveTime> for Time {

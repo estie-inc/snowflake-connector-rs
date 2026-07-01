@@ -1,4 +1,4 @@
-use std::{any::type_name, mem, sync::Arc};
+use std::{any::type_name, fmt, mem, sync::Arc};
 
 use base64::Engine as _;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
@@ -35,6 +35,12 @@ impl DecimalValue {
     /// Borrow the underlying decimal string.
     pub fn raw(&self) -> &str {
         &self.raw
+    }
+}
+
+impl fmt::Display for DecimalValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.raw)
     }
 }
 
@@ -106,7 +112,7 @@ impl SnowflakeValue {
 ///
 /// Values are stored in column order and can be accessed by
 /// [`ColumnIndex`] or by raw column name.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DynamicRow {
     schema: Arc<Schema>,
     values: Box<[SnowflakeValue]>,
