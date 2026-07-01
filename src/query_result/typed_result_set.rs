@@ -47,6 +47,11 @@ impl<T: FromRow> TypedResultSet<T> {
 
     /// Fetch the next partition as a typed table.
     ///
+    /// # Cancellation safety
+    ///
+    /// Dropping this future before it resolves leaves the cursor unchanged;
+    /// the next call to `next_table` retries the same partition.
+    ///
     /// # Errors
     ///
     /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,

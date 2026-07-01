@@ -41,6 +41,7 @@ impl Default for CollectOptions {
     }
 }
 
+/// A query result as a cursor over its remaining partitions.
 pub struct ResultSet {
     snapshot: Arc<ResultSnapshot>,
     cursor: PartitionCursor,
@@ -109,6 +110,11 @@ impl ResultSet {
     }
 
     /// Fetch the next partition as a `ResultTable`.
+    ///
+    /// # Cancellation safety
+    ///
+    /// Dropping this future before it resolves leaves the cursor unchanged;
+    /// the next call to `next_table` retries the same partition.
     ///
     /// # Errors
     ///
