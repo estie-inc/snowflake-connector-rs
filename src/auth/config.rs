@@ -13,12 +13,15 @@ pub(crate) enum SnowflakeAuthConfigKind {
     Password(PasswordAuthConfig),
     #[cfg(feature = "key-pair-auth")]
     KeyPair(KeyPairAuthConfig),
-    Oauth(OauthAuthConfig),
+    OAuth(OAuthAuthConfig),
     #[cfg(feature = "external-browser-sso")]
     ExternalBrowser(ExternalBrowserConfig),
 }
 
 impl SnowflakeAuthConfig {
+    /// Username/password authentication, optionally with an MFA passcode.
+    ///
+    /// Pass a `&str`/`String`, or a [`PasswordAuthConfig`] to attach a TOTP passcode.
     pub fn password(config: impl Into<PasswordAuthConfig>) -> Self {
         Self {
             kind: SnowflakeAuthConfigKind::Password(config.into()),
@@ -32,9 +35,10 @@ impl SnowflakeAuthConfig {
         }
     }
 
+    /// Authenticate with a Snowflake OAuth access token. Acquiring and refreshing the token is the caller's responsibility.
     pub fn oauth(token: impl Into<String>) -> Self {
         Self {
-            kind: SnowflakeAuthConfigKind::Oauth(OauthAuthConfig::new(token)),
+            kind: SnowflakeAuthConfigKind::OAuth(OAuthAuthConfig::new(token)),
         }
     }
 
@@ -102,8 +106,8 @@ impl fmt::Debug for SnowflakeAuthConfig {
                 .debug_tuple("SnowflakeAuthConfig::KeyPair")
                 .field(config)
                 .finish(),
-            SnowflakeAuthConfigKind::Oauth(_) => f
-                .debug_tuple("SnowflakeAuthConfig::Oauth")
+            SnowflakeAuthConfigKind::OAuth(_) => f
+                .debug_tuple("SnowflakeAuthConfig::OAuth")
                 .field(&"<redacted>")
                 .finish(),
             #[cfg(feature = "external-browser-sso")]
@@ -187,11 +191,11 @@ impl fmt::Debug for PasswordAuthConfig {
 }
 
 #[derive(Clone)]
-pub(crate) struct OauthAuthConfig {
+pub(crate) struct OAuthAuthConfig {
     token: String,
 }
 
-impl OauthAuthConfig {
+impl OAuthAuthConfig {
     fn new(token: impl Into<String>) -> Self {
         Self {
             token: token.into(),
@@ -295,7 +299,7 @@ mod tests {
     #[test]
     fn oauth_debug_redacts_secret() {
         let debug = format!("{:?}", SnowflakeAuthConfig::oauth("oauth-token"));
-        assert!(debug.contains("SnowflakeAuthConfig::Oauth"));
+        assert!(debug.contains("SnowflakeAuthConfig::OAuth"));
         assert!(!debug.contains("oauth-token"));
     }
 
