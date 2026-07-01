@@ -479,4 +479,25 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn statement_debug_redacts_bound_values() {
+        let email = "alice@example.com";
+        let statement = Statement::new("SELECT ?, ?")
+            .bind(email)
+            .bind(crate::bind::Binary::new(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        let rendered = format!("{statement:?}");
+
+        // The SQL text stays visible; the bound values do not.
+        assert!(
+            rendered.contains("SELECT ?, ?"),
+            "sql should be visible: {rendered}"
+        );
+        assert!(!rendered.contains(email), "text bind leaked: {rendered}");
+        assert!(!rendered.contains("222"), "binary bytes leaked: {rendered}");
+        assert!(
+            rendered.contains("<redacted>"),
+            "expected redaction marker: {rendered}"
+        );
+    }
 }

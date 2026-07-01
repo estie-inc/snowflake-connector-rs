@@ -1,3 +1,5 @@
+use std::fmt;
+
 use url::Url;
 
 use crate::{
@@ -15,6 +17,17 @@ pub struct SnowflakeSession {
     pub(super) session_token: String,
     pub(super) query: SnowflakeQueryConfig,
     pub(super) runtime: QueryRuntime,
+}
+
+impl fmt::Debug for SnowflakeSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The session token authenticates every request; never print it.
+        f.debug_struct("SnowflakeSession")
+            .field("base_url", &self.base_url)
+            .field("session_token", &"<redacted>")
+            .field("query", &self.query)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SnowflakeSession {

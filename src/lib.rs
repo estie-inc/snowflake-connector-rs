@@ -101,6 +101,8 @@ pub use snowflake_connector_rs_derive::FromRow;
 #[doc(hidden)]
 pub mod bench_support;
 
+use std::fmt;
+
 use url::Url;
 
 use auth::login;
@@ -111,6 +113,16 @@ pub struct SnowflakeClient {
     config: SnowflakeClientConfig,
     base_url: Url,
     runtime: QueryRuntime,
+}
+
+impl fmt::Debug for SnowflakeClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Omits the reqwest client and runtime; config's own Debug redacts credentials.
+        f.debug_struct("SnowflakeClient")
+            .field("base_url", &self.base_url)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SnowflakeClient {

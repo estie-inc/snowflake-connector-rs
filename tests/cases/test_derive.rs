@@ -171,8 +171,7 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
     let err = session
         .query_as::<UserRow, _>("SELECT 1 AS id, 'alice' AS user_name, TRUE AS is_active")
         .await
-        .err()
-        .expect("missing named column should fail during plan building");
+        .expect_err("missing named column should fail during plan building");
 
     match err.as_schema_error() {
         Some(SchemaError::MissingColumn(error)) => assert_eq!(error.name(), "BIO"),
@@ -182,8 +181,7 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
     let err = session
         .query_as::<DefaultCaseValueRow, _>(r#"SELECT 1 AS "value""#)
         .await
-        .err()
-        .expect("default lookup should not match lowercase quoted labels");
+        .expect_err("default lookup should not match lowercase quoted labels");
 
     match err.as_schema_error() {
         Some(SchemaError::MissingColumn(error)) => assert_eq!(error.name(), "VALUE"),
@@ -193,8 +191,7 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
     let err = session
         .query_as::<CountAndName, _>("SELECT 42")
         .await
-        .err()
-        .expect("short positional row should fail during plan building");
+        .expect_err("short positional row should fail during plan building");
 
     match err.as_schema_error() {
         Some(SchemaError::ColumnCountMismatch(error)) => {
@@ -222,8 +219,7 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
     let err = session
         .query_as::<AmbiguousIdRow, _>("SELECT 1 AS id, 2 AS ID")
         .await
-        .err()
-        .expect("duplicate raw labels should fail during plan building");
+        .expect_err("duplicate raw labels should fail during plan building");
 
     assert!(matches!(
         err.as_schema_error(),

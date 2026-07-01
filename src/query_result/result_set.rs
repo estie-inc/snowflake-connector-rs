@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{fmt, num::NonZeroUsize, sync::Arc};
 
 use bytes::Bytes;
 
@@ -17,6 +17,7 @@ use super::{
 };
 
 /// Options for controlling how result-set collection fetches remaining partitions.
+#[derive(Clone, Debug)]
 pub struct CollectOptions {
     prefetch_concurrency: Option<NonZeroUsize>,
 }
@@ -47,6 +48,15 @@ pub struct ResultSet {
     source: PartitionSource,
     runtime: QueryRuntime,
     default_collect_policy: CollectPolicy,
+}
+
+impl fmt::Debug for ResultSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResultSet")
+            .field("query_id", &self.query_id())
+            .field("is_exhausted", &self.is_exhausted())
+            .finish_non_exhaustive()
+    }
 }
 
 pub(crate) struct InlineRowset {

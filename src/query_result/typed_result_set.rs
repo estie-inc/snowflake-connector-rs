@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{fmt, marker::PhantomData, sync::Arc};
 
 use crate::{
     Result,
@@ -12,6 +12,16 @@ pub struct TypedResultSet<T: FromRow> {
     inner: ResultSet,
     plan: Arc<T::Plan>,
     _marker: PhantomData<fn() -> T>,
+}
+
+impl<T: FromRow> fmt::Debug for TypedResultSet<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // No `T: Debug` bound: surface the same shape as `ResultSet`.
+        f.debug_struct("TypedResultSet")
+            .field("query_id", &self.query_id())
+            .field("is_exhausted", &self.is_exhausted())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<T: FromRow> TypedResultSet<T> {
