@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 
@@ -62,7 +62,7 @@ impl SnowflakeBindType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) enum BindValue {
     Fixed(i128),
     Real32(f32),
@@ -76,6 +76,13 @@ pub(crate) enum BindValue {
     TimestampTz(DateTime<FixedOffset>),
     Binary(Vec<u8>),
     Raw(Cow<'static, str>),
+}
+
+impl fmt::Debug for BindValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Bound values may contain secrets or PII, and this Debug output ends up in logs.
+        f.write_str("<redacted>")
+    }
 }
 
 /// Internal typed bind value used by [`IntoBind`].
@@ -178,8 +185,17 @@ impl From<String> for BindName {
 /// let _ = Binary::new(vec![0x12, 0xAB]);
 /// let _ = Binary::new(b"hello".as_slice());
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Binary(Vec<u8>);
+
+impl fmt::Debug for Binary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never print the raw bytes: BINARY binds are where keys/tokens live.
+        f.debug_tuple("Binary")
+            .field(&format_args!("{} bytes", self.0.len()))
+            .finish()
+    }
+}
 
 impl Binary {
     /// Wraps any byte buffer as a Snowflake `BINARY` bind value.
@@ -790,6 +806,25 @@ mod tests {
     ) {
         assert_eq!(bind.ty(), expected_ty);
         assert_eq!(bind.value(), expected_value.as_ref());
+    }
+
+    #[test]
+    fn binary_debug_elides_raw_bytes() {
+        let rendered = format!("{:?}", Binary::new(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        assert_eq!(rendered, "Binary(4 bytes)");
+    }
+
+    #[test]
+    fn bind_value_debug_is_redacted() {
+        assert_eq!(
+            format!("{:?}", BindValue::Text("secret".into())),
+            "<redacted>"
+        );
+        assert_eq!(
+            format!("{:?}", BindValue::Binary(vec![1, 2, 3])),
+            "<redacted>"
+        );
+        assert_eq!(format!("{:?}", BindValue::Fixed(42)), "<redacted>");
     }
 
     #[test]

@@ -1,11 +1,11 @@
-use std::{collections::HashMap, num::NonZeroUsize, time::Duration};
+use std::{collections::HashMap, fmt, num::NonZeroUsize, time::Duration};
 
 use url::Url;
 
 use crate::{Result, SnowflakeAuthConfig, error::ConfigError};
 
 /// Top-level configuration for a [`SnowflakeClient`](crate::SnowflakeClient).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SnowflakeClientConfig {
     username: String,
     account: String,
@@ -22,7 +22,7 @@ pub struct SnowflakeClientConfig {
 /// determine the initial state of the Snowflake session (active warehouse,
 /// database, schema, and role). They correspond directly to Snowflake's
 /// session-level settings and do not affect client-side behavior.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct SnowflakeSessionConfig {
     warehouse: Option<String>,
     database: Option<String>,
@@ -38,7 +38,7 @@ const DEFAULT_COLLECT_PREFETCH_CONCURRENCY: usize = 8;
 /// Controls how this connector behaves while executing queries — for example,
 /// how long to poll for the completion of an async query. These settings are
 /// enforced entirely on the client side and are never sent to Snowflake.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SnowflakeQueryConfig {
     async_query_completion_timeout: Option<Duration>,
     collect_prefetch_concurrency: NonZeroUsize,
@@ -61,7 +61,7 @@ impl Default for SnowflakeQueryConfig {
 /// [`CustomBaseUrl`](Self::CustomBaseUrl) to override this — for example,
 /// when connecting through a PrivateLink endpoint or a local test server.
 #[non_exhaustive]
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub enum SnowflakeEndpointConfig {
     #[default]
     AccountDefault,
@@ -72,7 +72,7 @@ pub enum SnowflakeEndpointConfig {
 ///
 /// Configures how requests are physically delivered to Snowflake,
 /// independent of which endpoint they target.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct SnowflakeTransportConfig {
     proxy: Option<SnowflakeProxyConfig>,
 }
@@ -81,7 +81,7 @@ pub struct SnowflakeTransportConfig {
 ///
 /// Specifies the proxy URL and optional authentication credentials.
 /// Only HTTP and HTTPS proxy schemes are accepted.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SnowflakeProxyConfig {
     url: Url,
     auth: SnowflakeProxyAuth,
@@ -91,6 +91,19 @@ pub struct SnowflakeProxyConfig {
 pub(crate) enum SnowflakeProxyAuth {
     None,
     Basic { username: String, password: String },
+}
+
+impl fmt::Debug for SnowflakeProxyAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::Basic { username, .. } => f
+                .debug_struct("Basic")
+                .field("username", username)
+                .field("password", &"<redacted>")
+                .finish(),
+        }
+    }
 }
 
 impl SnowflakeClientConfig {
@@ -375,6 +388,26 @@ fn validate_proxy_url(url: Url) -> Result<Url> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxy_debug_redacts_basic_auth_password() {
+        let proxy = SnowflakeProxyConfig::new(Url::parse("http://proxy.example.com:8080").unwrap())
+            .with_basic_auth("proxy_user", "s3cr3t-proxy-pass");
+        let rendered = format!("{proxy:?}");
+
+        assert!(
+            rendered.contains("proxy_user"),
+            "username should be visible: {rendered}"
+        );
+        assert!(
+            !rendered.contains("s3cr3t-proxy-pass"),
+            "password leaked into Debug: {rendered}"
+        );
+        assert!(
+            rendered.contains("<redacted>"),
+            "expected redaction marker: {rendered}"
+        );
+    }
 
     #[test]
     fn proxy_urls_with_supported_schemes_build_successfully() {
