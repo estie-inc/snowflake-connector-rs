@@ -44,6 +44,7 @@ pub(crate) struct LoginData<'a> {
 pub(crate) enum LoginCredentialWire<'a> {
     Password {
         password: &'a str,
+        passcode: Option<PasscodeWire<'a>>,
     },
     #[cfg(feature = "key-pair-auth")]
     SnowflakeJwt {
@@ -59,12 +60,37 @@ pub(crate) enum LoginCredentialWire<'a> {
     },
 }
 
+/// MFA passcode carried alongside `PASSWORD` in a password login request.
+#[derive(Debug)]
+pub(crate) enum PasscodeWire<'a> {
+    /// Sent as a separate `PASSCODE` field.
+    Separate(&'a str),
+    /// The passcode is already appended to `PASSWORD`; only the method flag is
+    /// sent.
+    InPassword,
+}
+
 impl Serialize for LoginCredentialWire<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Password { password } => {
-                let mut map = serializer.serialize_map(Some(1))?;
+            Self::Password { password, passcode } => {
+                let len = match passcode {
+                    None => 1,
+                    Some(PasscodeWire::InPassword) => 2,
+                    Some(PasscodeWire::Separate(_)) => 3,
+                };
+                let mut map = serializer.serialize_map(Some(len))?;
                 map.serialize_entry("PASSWORD", password)?;
+                match passcode {
+                    None => {}
+                    Some(PasscodeWire::InPassword) => {
+                        map.serialize_entry("EXT_AUTHN_DUO_METHOD", "passcode")?;
+                    }
+                    Some(PasscodeWire::Separate(code)) => {
+                        map.serialize_entry("EXT_AUTHN_DUO_METHOD", "passcode")?;
+                        map.serialize_entry("PASSCODE", code)?;
+                    }
+                }
                 map.end()
             }
             #[cfg(feature = "key-pair-auth")]
@@ -110,7 +136,10 @@ mod tests {
             data: LoginData {
                 account_name: "account",
                 login_name: "username",
-                credential: LoginCredentialWire::Password { password: "secret" },
+                credential: LoginCredentialWire::Password {
+                    password: "secret",
+                    passcode: None,
+                },
                 session_parameters: None,
             },
         };
@@ -122,6 +151,62 @@ mod tests {
                     "ACCOUNT_NAME": "account",
                     "LOGIN_NAME": "username",
                     "PASSWORD": "secret",
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn password_login_body_with_separate_passcode_matches_wire_shape() {
+        let body = LoginBody {
+            data: LoginData {
+                account_name: "account",
+                login_name: "username",
+                credential: LoginCredentialWire::Password {
+                    password: "secret",
+                    passcode: Some(PasscodeWire::Separate("123456")),
+                },
+                session_parameters: None,
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(&body).unwrap(),
+            json!({
+                "data": {
+                    "ACCOUNT_NAME": "account",
+                    "LOGIN_NAME": "username",
+                    "PASSWORD": "secret",
+                    "EXT_AUTHN_DUO_METHOD": "passcode",
+                    "PASSCODE": "123456",
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn password_login_body_with_passcode_in_password_matches_wire_shape() {
+        let body = LoginBody {
+            data: LoginData {
+                account_name: "account",
+                login_name: "username",
+                credential: LoginCredentialWire::Password {
+                    password: "secret123456",
+                    passcode: Some(PasscodeWire::InPassword),
+                },
+                session_parameters: None,
+            },
+        };
+
+        // No PASSCODE field: the passcode is already inside PASSWORD.
+        assert_eq!(
+            serde_json::to_value(&body).unwrap(),
+            json!({
+                "data": {
+                    "ACCOUNT_NAME": "account",
+                    "LOGIN_NAME": "username",
+                    "PASSWORD": "secret123456",
+                    "EXT_AUTHN_DUO_METHOD": "passcode",
                 }
             })
         );
@@ -241,7 +326,10 @@ mod tests {
             data: LoginData {
                 account_name: "account",
                 login_name: "username",
-                credential: LoginCredentialWire::Password { password: "secret" },
+                credential: LoginCredentialWire::Password {
+                    password: "secret",
+                    passcode: None,
+                },
                 session_parameters: None,
             },
         };
@@ -258,7 +346,10 @@ mod tests {
             data: LoginData {
                 account_name: "account",
                 login_name: "username",
-                credential: LoginCredentialWire::Password { password: "secret" },
+                credential: LoginCredentialWire::Password {
+                    password: "secret",
+                    passcode: None,
+                },
                 session_parameters: Some(&session_parameters),
             },
         };

@@ -76,7 +76,10 @@ mod tests {
     #[test]
     fn password_login_request_omits_request_id() {
         let session = SnowflakeSessionConfig::default().with_warehouse("warehouse");
-        let credential = PreparedLoginCredential::Password("secret".to_string());
+        let credential = PreparedLoginCredential::Password {
+            password: "secret".to_string(),
+            passcode: None,
+        };
         let request = build_login_request(
             LoginContext {
                 username: "user",

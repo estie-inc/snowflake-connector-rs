@@ -19,9 +19,9 @@ pub(crate) enum SnowflakeAuthConfigKind {
 }
 
 impl SnowflakeAuthConfig {
-    pub fn password(password: impl Into<String>) -> Self {
+    pub fn password(config: impl Into<PasswordAuthConfig>) -> Self {
         Self {
-            kind: SnowflakeAuthConfigKind::Password(PasswordAuthConfig::new(password)),
+            kind: SnowflakeAuthConfigKind::Password(config.into()),
         }
     }
 
@@ -93,9 +93,9 @@ impl SnowflakeAuthConfig {
 impl fmt::Debug for SnowflakeAuthConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind() {
-            SnowflakeAuthConfigKind::Password(_) => f
+            SnowflakeAuthConfigKind::Password(config) => f
                 .debug_tuple("SnowflakeAuthConfig::Password")
-                .field(&"<redacted>")
+                .field(config)
                 .finish(),
             #[cfg(feature = "key-pair-auth")]
             SnowflakeAuthConfigKind::KeyPair(config) => f
@@ -115,20 +115,74 @@ impl fmt::Debug for SnowflakeAuthConfig {
     }
 }
 
+/// Password authentication, optionally carrying an MFA passcode.
 #[derive(Clone)]
-pub(crate) struct PasswordAuthConfig {
+pub struct PasswordAuthConfig {
     password: String,
+    passcode: Option<PasscodeMode>,
+}
+
+#[derive(Clone)]
+pub(crate) enum PasscodeMode {
+    Separate(String),
+    InPassword,
 }
 
 impl PasswordAuthConfig {
-    fn new(password: impl Into<String>) -> Self {
+    /// Password without an MFA passcode.
+    pub fn new(password: impl Into<String>) -> Self {
         Self {
             password: password.into(),
+            passcode: None,
         }
+    }
+
+    /// Attach a TOTP passcode, sent to Snowflake as a separate `PASSCODE`.
+    pub fn with_passcode(mut self, passcode: impl Into<String>) -> Self {
+        self.passcode = Some(PasscodeMode::Separate(passcode.into()));
+        self
+    }
+
+    /// Signal that the passcode is already appended to the password passed to [`PasswordAuthConfig::new`];
+    /// no separate `PASSCODE` is sent.
+    pub fn with_passcode_in_password(mut self) -> Self {
+        self.passcode = Some(PasscodeMode::InPassword);
+        self
     }
 
     pub(crate) fn password(&self) -> &str {
         &self.password
+    }
+
+    pub(crate) fn passcode(&self) -> Option<&PasscodeMode> {
+        self.passcode.as_ref()
+    }
+}
+
+impl From<&str> for PasswordAuthConfig {
+    fn from(password: &str) -> Self {
+        Self::new(password)
+    }
+}
+
+impl From<String> for PasswordAuthConfig {
+    fn from(password: String) -> Self {
+        Self::new(password)
+    }
+}
+
+impl fmt::Debug for PasswordAuthConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Expose only which passcode mode is set, not its value.
+        let passcode = match self.passcode {
+            None => "none",
+            Some(PasscodeMode::Separate(_)) => "passcode",
+            Some(PasscodeMode::InPassword) => "in-password",
+        };
+        f.debug_struct("PasswordAuthConfig")
+            .field("password", &"<redacted>")
+            .field("passcode", &passcode)
+            .finish()
     }
 }
 
@@ -200,6 +254,42 @@ mod tests {
         let debug = format!("{:?}", SnowflakeAuthConfig::password("secret"));
         assert!(debug.contains("SnowflakeAuthConfig::Password"));
         assert!(!debug.contains("secret"));
+    }
+
+    #[test]
+    fn password_debug_redacts_passcode() {
+        let debug = format!(
+            "{:?}",
+            SnowflakeAuthConfig::password(
+                PasswordAuthConfig::new("secret").with_passcode("123456")
+            )
+        );
+        assert!(debug.contains("SnowflakeAuthConfig::Password"));
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("123456"));
+    }
+
+    #[test]
+    fn password_passcode_modes_are_mutually_exclusive_last_wins() {
+        assert!(PasswordAuthConfig::new("pw").passcode().is_none());
+        assert!(matches!(
+            PasswordAuthConfig::new("pw").with_passcode("123456").passcode(),
+            Some(PasscodeMode::Separate(code)) if code == "123456"
+        ));
+        assert!(matches!(
+            PasswordAuthConfig::new("pw")
+                .with_passcode_in_password()
+                .passcode(),
+            Some(PasscodeMode::InPassword)
+        ));
+        // Setting one mode after another overwrites rather than accumulating.
+        assert!(matches!(
+            PasswordAuthConfig::new("pw")
+                .with_passcode("123456")
+                .with_passcode_in_password()
+                .passcode(),
+            Some(PasscodeMode::InPassword)
+        ));
     }
 
     #[test]

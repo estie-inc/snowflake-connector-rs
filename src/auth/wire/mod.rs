@@ -11,6 +11,6 @@ pub(crate) use authenticator_request::{AuthenticatorRequest, ClientEnvironment};
 #[cfg(feature = "external-browser-sso")]
 pub(crate) use authenticator_response::{ExternalBrowserChallenge, parse_authenticator_response};
 pub(crate) use login_request::{
-    LoginBody, LoginCredentialWire, LoginData, LoginQuery, LoginRequest,
+    LoginBody, LoginCredentialWire, LoginData, LoginQuery, LoginRequest, PasscodeWire,
 };
 pub(crate) use login_response::{LoginSession, parse_login_response};

@@ -3,7 +3,11 @@ use chrono::Utc;
 
 use crate::{
     Result, SnowflakeAuthConfig,
-    auth::{client::AuthApiClient, config::SnowflakeAuthConfigKind, wire::LoginCredentialWire},
+    auth::{
+        client::AuthApiClient,
+        config::{PasscodeMode, SnowflakeAuthConfigKind},
+        wire::{LoginCredentialWire, PasscodeWire},
+    },
 };
 
 #[cfg(feature = "external-browser-sso")]
@@ -13,7 +17,10 @@ use crate::auth::key_pair::generate_jwt_from_key_pair;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PreparedLoginCredential {
-    Password(String),
+    Password {
+        password: String,
+        passcode: Option<PreparedPasscode>,
+    },
     #[cfg(feature = "key-pair-auth")]
     SnowflakeJwt(String),
     OAuth(String),
@@ -24,10 +31,22 @@ pub(crate) enum PreparedLoginCredential {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PreparedPasscode {
+    Separate(String),
+    InPassword,
+}
+
 impl PreparedLoginCredential {
     pub(crate) fn as_wire(&self) -> LoginCredentialWire<'_> {
         match self {
-            Self::Password(password) => LoginCredentialWire::Password { password },
+            Self::Password { password, passcode } => LoginCredentialWire::Password {
+                password,
+                passcode: passcode.as_ref().map(|passcode| match passcode {
+                    PreparedPasscode::Separate(code) => PasscodeWire::Separate(code),
+                    PreparedPasscode::InPassword => PasscodeWire::InPassword,
+                }),
+            },
             #[cfg(feature = "key-pair-auth")]
             Self::SnowflakeJwt(token) => LoginCredentialWire::SnowflakeJwt { token },
             Self::OAuth(token) => LoginCredentialWire::OAuth { token },
@@ -69,9 +88,13 @@ impl LoginCredentialProvider for SnowflakeAuthConfig {
         _context: LoginContext<'a>,
     ) -> Result<PreparedLoginCredential> {
         match self.kind() {
-            SnowflakeAuthConfigKind::Password(config) => Ok(PreparedLoginCredential::Password(
-                config.password().to_owned(),
-            )),
+            SnowflakeAuthConfigKind::Password(config) => Ok(PreparedLoginCredential::Password {
+                password: config.password().to_owned(),
+                passcode: config.passcode().map(|passcode| match passcode {
+                    PasscodeMode::Separate(code) => PreparedPasscode::Separate(code.clone()),
+                    PasscodeMode::InPassword => PreparedPasscode::InPassword,
+                }),
+            }),
             #[cfg(feature = "key-pair-auth")]
             SnowflakeAuthConfigKind::KeyPair(config) => prepare_jwt_credential(
                 config.pem(),
@@ -114,6 +137,8 @@ mod tests {
 
     use super::*;
 
+    use crate::PasswordAuthConfig;
+
     #[cfg(feature = "key-pair-auth")]
     use crate::KeyPairAuthConfig;
 
@@ -145,7 +170,60 @@ mod tests {
 
         assert_eq!(
             credential,
-            PreparedLoginCredential::Password("secret".to_string())
+            PreparedLoginCredential::Password {
+                password: "secret".to_string(),
+                passcode: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn password_auth_with_passcode_is_prepared_with_separate_passcode() {
+        let auth = SnowflakeAuthConfig::password(
+            PasswordAuthConfig::new("secret").with_passcode("123456"),
+        );
+        let credential = auth
+            .prepare(
+                &dummy_client(),
+                LoginContext {
+                    username: "user",
+                    account: "account",
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            credential,
+            PreparedLoginCredential::Password {
+                password: "secret".to_string(),
+                passcode: Some(PreparedPasscode::Separate("123456".to_string())),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn password_auth_with_passcode_in_password_is_prepared_accordingly() {
+        let auth = SnowflakeAuthConfig::password(
+            PasswordAuthConfig::new("secret123456").with_passcode_in_password(),
+        );
+        let credential = auth
+            .prepare(
+                &dummy_client(),
+                LoginContext {
+                    username: "user",
+                    account: "account",
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            credential,
+            PreparedLoginCredential::Password {
+                password: "secret123456".to_string(),
+                passcode: Some(PreparedPasscode::InPassword),
+            }
         );
     }
 
