@@ -16,7 +16,7 @@ pub use row::{RowRef, Rows};
 pub use schema::{Column, ColumnIndex, ColumnType, Schema};
 pub use typed_result_table::TypedResultTable;
 
-pub use crate::error::decode::{CellDecodeIssue, CellDecodeResult};
+pub use crate::error::decode::{CellDecodeIssue, CellDecodeIssueBuilder, CellDecodeResult};
 pub(crate) use cell::RawSpan;
 pub(crate) use result_table::ResultTableBuilder;
 
