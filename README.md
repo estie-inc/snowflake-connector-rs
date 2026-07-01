@@ -44,14 +44,14 @@ session
 let dynamic_rows = session
     .query("SELECT id, value FROM example ORDER BY id")
     .await?
-    .collect()
+    .collect::<Vec<_>>()
     .await?;
 assert_eq!(dynamic_rows.len(), 2);
 
-let rows: Vec<ExampleRow> = session
+let rows = session
     .query_as::<ExampleRow, _>("SELECT id, value FROM example ORDER BY id")
     .await?
-    .collect()
+    .collect::<Vec<_>>()
     .await?;
 assert_eq!(
     rows,

@@ -87,9 +87,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Executing query:\n{query}");
 
     let rows = session
-        .query_as::<(i64,), _>(query)
+        .query_as(query)
         .await?
-        .collect()
+        .collect::<Vec<(i64,)>>()
         .await?;
     let inserted = rows[0].0;
     assert_eq!(inserted, 2);
@@ -99,9 +99,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Executing query:\n{query}");
 
     let rows = session
-        .query_as::<(i64, String), _>("SELECT id, value FROM example ORDER BY id")
+        .query_as("SELECT id, value FROM example ORDER BY id")
         .await?
-        .collect()
+        .collect::<Vec<(i64, String)>>()
         .await?;
     assert_eq!(
         rows,

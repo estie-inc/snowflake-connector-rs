@@ -35,9 +35,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let session = client.create_session().await?;
     let rows = session
-        .query_as::<(String,), _>("SELECT CURRENT_VERSION()")
+        .query_as("SELECT CURRENT_VERSION()")
         .await?
-        .collect()
+        .collect::<Vec<(String,)>>()
         .await?;
     let version = &rows[0].0;
     println!("Connected. Snowflake version={version}");

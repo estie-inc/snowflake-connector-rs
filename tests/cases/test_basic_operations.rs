@@ -137,9 +137,9 @@ async fn test_basic_operations() -> Result<()> {
     ));
 
     let price_rows = session
-        .query_as::<(i64, DecimalValue), _>("SELECT id, price FROM example ORDER BY id")
+        .query_as("SELECT id, price FROM example ORDER BY id")
         .await?
-        .collect()
+        .collect::<Vec<(i64, DecimalValue)>>()
         .await?;
     let expected_prices = [(1_i64, "99.99"), (2, "149.99")];
     assert_eq!(price_rows.len(), expected_prices.len());
