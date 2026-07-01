@@ -39,6 +39,15 @@ pub mod test_data {
         Arc::new(Schema::from_columns(cols).expect("schema build"))
     }
 
+    pub fn column_type(
+        snowflake_type: &str,
+        length: Option<u32>,
+        precision: Option<u8>,
+        scale: Option<u8>,
+    ) -> ColumnType {
+        ColumnType::from_driver_metadata(snowflake_type, length, precision, scale)
+    }
+
     pub fn make_result_table_from_rows(
         schema: Arc<Schema>,
         rows: Vec<Vec<Option<String>>>,

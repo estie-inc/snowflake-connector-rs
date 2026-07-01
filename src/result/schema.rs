@@ -20,72 +20,77 @@ impl ColumnIndex {
 
 /// Snowflake column type as reported by the result-set metadata.
 ///
-/// Variants mirror the wire-level type tags Snowflake returns for each
-/// result column. A handful of variants carry the type's parameters
-/// (precision/scale/length) when the server provides them.
+/// Variants mirror the wire-level type tags Snowflake returns for each result column.
+/// A handful of variants carry the type's parameters (precision/scale/length) when the server provides them.
 ///
-/// Unknown or unrecognized server-side types fall through to
-/// [`ColumnType::Unknown`] rather than failing — this keeps the connector
-/// usable when Snowflake introduces new types.
+/// Unknown or unrecognized server-side types fall through to [`ColumnType::Unknown`] rather than failing — this
+/// keeps the connector usable when Snowflake introduces new types.
 ///
 /// # Example
 ///
 /// ```
 /// use snowflake_connector_rs::result::ColumnType;
 ///
-/// let ty = ColumnType::Fixed { precision: Some(10), scale: Some(2) };
-/// assert_eq!(ty.precision(), Some(10));
-/// assert_eq!(ty.scale(), Some(2));
-/// assert_eq!(ty.length(), None);
-/// assert_eq!(ty.as_str(), "fixed");
-///
-/// let text = ColumnType::Text { length: Some(255) };
-/// assert_eq!(text.length(), Some(255));
-/// assert_eq!(text.precision(), None);
-/// assert_eq!(text.as_str(), "text");
+/// // `ColumnType` values come from a query result's schema (`column.ty()`).
+/// // Read the reported metadata through its accessors:
+/// fn describe(ty: &ColumnType) -> String {
+///     format!(
+///         "{} precision={:?} scale={:?} length={:?}",
+///         ty.as_str(),
+///         ty.precision(),
+///         ty.scale(),
+///         ty.length(),
+///     )
+/// }
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ColumnType {
-    /// `NUMBER` / `DECIMAL` / `NUMERIC` / `INT` / etc. — exact-precision
-    /// numbers. `precision` and `scale` come from the column definition
-    /// when reported by Snowflake.
+    /// `NUMBER` / `DECIMAL` / `NUMERIC` / `INT` / etc. — exact-precision numbers.
+    /// `precision` and `scale` come from the column definition when reported by Snowflake.
+    #[non_exhaustive]
     Fixed {
-        /// Total digit count, when reported.
-        precision: Option<i64>,
-        /// Digits to the right of the decimal point. Zero means integer.
-        scale: Option<i64>,
+        /// Total digit count (1..=38), when reported.
+        precision: Option<u8>,
+        /// Digits to the right of the decimal point (0..=37). Zero means integer.
+        scale: Option<u8>,
     },
     /// `FLOAT` / `DOUBLE` / `REAL` — IEEE 754 floating-point.
     Real,
     /// `TEXT` / `VARCHAR` / `CHAR` / `STRING` — variable-length string.
+    #[non_exhaustive]
     Text {
-        /// Maximum byte length, when reported by Snowflake.
-        length: Option<i64>,
+        /// Maximum length in characters, when reported by Snowflake.
+        /// This is the character count, not the byte length Snowflake also reports.
+        length: Option<u32>,
     },
     /// `BOOLEAN`.
     Boolean,
     /// `DATE` (calendar day, no time-of-day component).
     Date,
     /// `TIME` (time-of-day, no date component).
+    #[non_exhaustive]
     Time {
-        /// Fractional-seconds precision (digits, 0–9).
-        scale: Option<i64>,
+        /// Fractional-seconds precision (digits, 0..=9).
+        scale: Option<u8>,
     },
     /// `TIMESTAMP_NTZ` — timestamp without time zone.
+    #[non_exhaustive]
     TimestampNtz {
-        /// Fractional-seconds precision.
-        scale: Option<i64>,
+        /// Fractional-seconds precision (digits, 0..=9).
+        scale: Option<u8>,
     },
     /// `TIMESTAMP_LTZ` — timestamp with local-time-zone semantics.
+    #[non_exhaustive]
     TimestampLtz {
-        /// Fractional-seconds precision.
-        scale: Option<i64>,
+        /// Fractional-seconds precision (digits, 0..=9).
+        scale: Option<u8>,
     },
     /// `TIMESTAMP_TZ` — timestamp with explicit offset.
+    #[non_exhaustive]
     TimestampTz {
-        /// Fractional-seconds precision.
-        scale: Option<i64>,
+        /// Fractional-seconds precision (digits, 0..=9).
+        scale: Option<u8>,
     },
     /// `VARIANT` — semi-structured value.
     Variant,
@@ -94,16 +99,19 @@ pub enum ColumnType {
     /// `ARRAY` — semi-structured array.
     Array,
     /// `BINARY` — byte buffer.
-    Binary,
+    #[non_exhaustive]
+    Binary {
+        /// Maximum length in bytes, when reported by Snowflake.
+        length: Option<u32>,
+    },
     /// `GEOGRAPHY`.
     Geography,
     /// `GEOMETRY`.
     Geometry,
     /// `VECTOR`.
     Vector,
-    /// Type tag the connector did not recognize. The original (lowercased)
-    /// server-side tag is preserved for diagnostics; values come through as
-    /// raw text.
+    /// Type tag the connector did not recognize. The original (lowercased) server-side tag is preserved for diagnostics;
+    /// values come through as raw text.
     Unknown {
         /// Original lowercased Snowflake type tag.
         snowflake_type: Box<str>,
@@ -113,9 +121,9 @@ pub enum ColumnType {
 impl ColumnType {
     pub(crate) fn from_driver_metadata(
         snowflake_type: &str,
-        length: Option<i64>,
-        precision: Option<i64>,
-        scale: Option<i64>,
+        length: Option<u32>,
+        precision: Option<u8>,
+        scale: Option<u8>,
     ) -> Self {
         let lower = snowflake_type.to_ascii_lowercase();
         match lower.as_str() {
@@ -131,7 +139,7 @@ impl ColumnType {
             "variant" => ColumnType::Variant,
             "object" => ColumnType::Object,
             "array" => ColumnType::Array,
-            "binary" => ColumnType::Binary,
+            "binary" => ColumnType::Binary { length },
             "geography" => ColumnType::Geography,
             "geometry" => ColumnType::Geometry,
             "vector" => ColumnType::Vector,
@@ -158,7 +166,7 @@ impl ColumnType {
             ColumnType::Variant => "variant",
             ColumnType::Object => "object",
             ColumnType::Array => "array",
-            ColumnType::Binary => "binary",
+            ColumnType::Binary { .. } => "binary",
             ColumnType::Geography => "geography",
             ColumnType::Geometry => "geometry",
             ColumnType::Vector => "vector",
@@ -168,7 +176,7 @@ impl ColumnType {
 
     /// Numeric precision for [`ColumnType::Fixed`]; `None` for any other
     /// variant.
-    pub fn precision(&self) -> Option<i64> {
+    pub fn precision(&self) -> Option<u8> {
         if let ColumnType::Fixed { precision, .. } = self {
             *precision
         } else {
@@ -176,9 +184,12 @@ impl ColumnType {
         }
     }
 
-    /// Scale for variants that carry one (`Fixed`, `Time`, the `Timestamp*`
-    /// family); `None` for any other variant.
-    pub fn scale(&self) -> Option<i64> {
+    /// Scale for variants that carry one; `None` for any other variant.
+    ///
+    /// The meaning depends on the variant: for [`ColumnType::Fixed`] it is the decimal scale (digits after the point, 0..=37);
+    /// for [`ColumnType::Time`] and the `Timestamp*` family it is the fractional-seconds precision (0..=9).
+    /// Snowflake delivers both in the same wire field.
+    pub fn scale(&self) -> Option<u8> {
         match self {
             ColumnType::Fixed { scale, .. }
             | ColumnType::Time { scale }
@@ -189,9 +200,8 @@ impl ColumnType {
         }
     }
 
-    /// Maximum byte length for [`ColumnType::Text`]; `None` for any other
-    /// variant.
-    pub fn length(&self) -> Option<i64> {
+    /// Maximum character length for [`ColumnType::Text`]; `None` for any other variant.
+    pub fn length(&self) -> Option<u32> {
         match self {
             ColumnType::Text { length } => *length,
             _ => None,

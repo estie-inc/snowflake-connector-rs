@@ -12,7 +12,7 @@ use crate::{
     statement::parse_response,
 };
 
-pub use crate::result::test_data::{make_result_table_from_rows, make_schema};
+pub use crate::result::test_data::{column_type, make_result_table_from_rows, make_schema};
 
 #[derive(Debug, Clone)]
 pub struct StatementEnvelopeParts {

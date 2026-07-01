@@ -17,46 +17,24 @@ use crate::{
     CellDecodeError, DuplicateColumnNameError, InvalidColumnIndexError, Result, SchemaError,
 };
 
-/// Result-side representation of a Snowflake `NUMBER` / `DECIMAL` cell
-/// with non-zero scale.
+/// Result-side representation of a Snowflake `NUMBER` / `DECIMAL` cell with non-zero scale.
 ///
-/// Snowflake decimals can carry up to 38 digits of precision, which does
-/// not fit in any native Rust numeric type. `DecimalValue` therefore
-/// preserves the value as the exact string Snowflake delivered, alongside
-/// the column's declared precision and scale (when reported).
+/// Snowflake decimals can carry up to 38 digits of precision, which does not fit in any native Rust numeric type.
+/// `DecimalValue` therefore preserves the value as the exact string Snowflake delivered.
+/// The column's declared precision and scale are available on its [`ColumnType`](crate::result::ColumnType).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecimalValue {
     raw: Box<str>,
-    precision: Option<i64>,
-    scale: Option<i64>,
 }
 
 impl DecimalValue {
-    pub(crate) fn new(
-        raw: impl Into<Box<str>>,
-        precision: Option<i64>,
-        scale: Option<i64>,
-    ) -> Self {
-        Self {
-            raw: raw.into(),
-            precision,
-            scale,
-        }
+    pub(crate) fn new(raw: impl Into<Box<str>>) -> Self {
+        Self { raw: raw.into() }
     }
 
     /// Borrow the underlying decimal string.
     pub fn raw(&self) -> &str {
         &self.raw
-    }
-
-    /// Total digit count declared on the source column, when reported.
-    pub fn precision(&self) -> Option<i64> {
-        self.precision
-    }
-
-    /// Digits to the right of the decimal point, when reported.
-    pub fn scale(&self) -> Option<i64> {
-        self.scale
     }
 }
 
@@ -325,15 +303,13 @@ fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<SnowflakeValue> {
                 Err(CellDecodeIssue::builder(format!("'{raw}' is not bool")).build())
             }
         }
-        ColumnType::Fixed { precision, scale } => {
+        ColumnType::Fixed { scale, .. } => {
             if scale.unwrap_or(0) == 0 {
                 if let Ok(v) = raw.parse::<i128>() {
                     return Ok(SnowflakeValue::Integer(v));
                 }
             }
-            Ok(SnowflakeValue::Decimal(DecimalValue::new(
-                raw, *precision, *scale,
-            )))
+            Ok(SnowflakeValue::Decimal(DecimalValue::new(raw)))
         }
         ColumnType::Real => raw.parse::<f64>().map(SnowflakeValue::Float).map_err(|e| {
             CellDecodeIssue::builder(format!("parse error: {e}"))
@@ -373,19 +349,19 @@ fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<SnowflakeValue> {
             Ok(SnowflakeValue::Time(t))
         }
         ColumnType::TimestampNtz { scale } => {
-            let scale = scale.unwrap_or(9);
+            let scale = i64::from(scale.unwrap_or(9));
             let dt = parse_timestamp_epoch(raw, scale)
                 .map_err(|m| CellDecodeIssue::builder(m).build())?;
             Ok(SnowflakeValue::TimestampNtz(dt.naive_utc()))
         }
         ColumnType::TimestampLtz { scale } => {
-            let scale = scale.unwrap_or(9);
+            let scale = i64::from(scale.unwrap_or(9));
             let dt = parse_timestamp_epoch(raw, scale)
                 .map_err(|m| CellDecodeIssue::builder(m).build())?;
             Ok(SnowflakeValue::TimestampLtz(dt))
         }
         ColumnType::TimestampTz { scale } => {
-            let scale = scale.unwrap_or(9);
+            let scale = i64::from(scale.unwrap_or(9));
             let dt = parse_timestamp_tz_with_offset(raw, scale)
                 .map_err(|m| CellDecodeIssue::builder(m).build())?;
             Ok(SnowflakeValue::TimestampTz(dt))
@@ -398,7 +374,7 @@ fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<SnowflakeValue> {
             })?;
             Ok(SnowflakeValue::Json(v))
         }
-        ColumnType::Binary => {
+        ColumnType::Binary { .. } => {
             let bytes = decode_hex(raw).map_err(|m| CellDecodeIssue::builder(m).build())?;
             Ok(SnowflakeValue::Binary(bytes))
         }

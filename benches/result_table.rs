@@ -11,13 +11,11 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use flate2::{Compression, write::GzEncoder};
 
 use snowflake_connector_rs::bench_support::{
-    decode_gzip_chunk, make_result_table_from_rows, make_schema, parse_remote_chunk_result_table,
-    parse_remote_chunk_result_table_async_with_workload, parse_statement_envelope,
+    column_type, decode_gzip_chunk, make_result_table_from_rows, make_schema,
+    parse_remote_chunk_result_table, parse_remote_chunk_result_table_async_with_workload,
+    parse_statement_envelope,
 };
-use snowflake_connector_rs::{
-    DynamicRow, ResultTable,
-    result::{ColumnType, Schema},
-};
+use snowflake_connector_rs::{DynamicRow, ResultTable, result::Schema};
 
 #[derive(snowflake_connector_rs::FromRow)]
 struct BenchRow {
@@ -126,16 +124,17 @@ fn build_schema() -> Arc<Schema> {
     make_schema(vec![
         (
             "ID".to_string(),
-            ColumnType::Fixed {
-                precision: None,
-                scale: Some(0),
-            },
+            column_type("fixed", None, None, Some(0)),
             false,
         ),
-        ("NAME".to_string(), ColumnType::Text { length: None }, true),
+        (
+            "NAME".to_string(),
+            column_type("text", None, None, None),
+            true,
+        ),
         (
             "TS".to_string(),
-            ColumnType::TimestampNtz { scale: Some(9) },
+            column_type("timestamp_ntz", None, None, Some(9)),
             false,
         ),
     ])
