@@ -20,7 +20,7 @@ async fn test_session_parameters_support_bulk_and_incremental_configuration() ->
     let rows = session
         .query("SHOW PARAMETERS LIKE 'CLIENT_RESULT_CHUNK_SIZE' IN SESSION")
         .await?
-        .collect()
+        .collect::<Vec<_>>()
         .await?;
     let value = rows[0].value("value").unwrap();
     assert_eq!(value, &SnowflakeValue::String("48".to_owned()));
@@ -28,7 +28,7 @@ async fn test_session_parameters_support_bulk_and_incremental_configuration() ->
     let rows = session
         .query("SHOW PARAMETERS LIKE 'TIMEZONE' IN SESSION")
         .await?
-        .collect()
+        .collect::<Vec<_>>()
         .await?;
     let value = rows[0].value("value").unwrap();
     assert_eq!(value, &SnowflakeValue::String("Asia/Tokyo".to_owned()));

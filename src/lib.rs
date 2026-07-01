@@ -19,14 +19,14 @@
 //! let dynamic_rows = session
 //!     .query("SELECT 1 AS id, 'hi' AS name")
 //!     .await?
-//!     .collect()
+//!     .collect::<Vec<_>>()
 //!     .await?;
 //! assert_eq!(dynamic_rows.len(), 1);
 //!
 //! let typed_rows = session
-//!     .query_as::<(i64, String), _>("SELECT 1 AS id, 'hi' AS name")
+//!     .query_as("SELECT 1 AS id, 'hi' AS name")
 //!     .await?
-//!     .collect()
+//!     .collect::<Vec<(i64, String)>>()
 //!     .await?;
 //! assert_eq!(typed_rows, vec![(1, "hi".to_string())]);
 //!

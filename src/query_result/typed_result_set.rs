@@ -59,34 +59,38 @@ impl<T: FromRow> TypedResultSet<T> {
             .map(|table| table.map(|table| TypedResultTable::new(table, Arc::clone(&self.plan))))
     }
 
-    /// Consume this result set and decode all rows into `T`.
+    /// Consume this result set and decode all rows into any collection implementing [`FromIterator<T>`](FromIterator).
+    ///
+    /// The target collection is inferred from context (e.g. a `let` binding type or a `.collect::<Vec<_>>()` turbofish),
+    /// matching [`Iterator::collect`]'s usual inference.
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`TypedResultSet::collect_table`]. Decoding
-    /// rows then propagates any error returned by [`FromRow::from_row_with_plan`]
-    /// for `T`.
+    /// Returns the same errors as [`TypedResultSet::collect_table`].
+    /// Decoding rows then propagates any error returned by [`FromRow::from_row_with_plan`] for `T`.
     ///
-    /// Built-in and derive-based row types typically use
-    /// `ErrorKind::Decode` for per-row conversion failures; inspect the
+    /// Built-in and derive-based row types typically use `ErrorKind::Decode` for per-row conversion failures; inspect the
     /// detail via [`crate::Error::as_cell_decode_error`].
-    pub async fn collect(self) -> Result<Vec<T>> {
+    pub async fn collect<C: FromIterator<T>>(self) -> Result<C> {
         let table = self.collect_table().await?;
         table.rows().collect()
     }
 
-    /// Consume this result set and decode all rows into `T`.
+    /// Consume this result set and decode all rows into any collection implementing [`FromIterator<T>`](FromIterator).
+    ///
+    /// The target collection is inferred from context, as with [`TypedResultSet::collect`].
     ///
     /// # Errors
     ///
     /// Returns the same errors as [`TypedResultSet::collect_table_with_options`].
-    /// Decoding rows then propagates any error returned by
-    /// [`FromRow::from_row_with_plan`] for `T`.
+    /// Decoding rows then propagates any error returned by [`FromRow::from_row_with_plan`] for `T`.
     ///
-    /// Built-in and derive-based row types typically use
-    /// `ErrorKind::Decode` for per-row conversion failures; inspect the
+    /// Built-in and derive-based row types typically use `ErrorKind::Decode` for per-row conversion failures; inspect the
     /// detail via [`crate::Error::as_cell_decode_error`].
-    pub async fn collect_with_options(self, options: CollectOptions) -> Result<Vec<T>> {
+    pub async fn collect_with_options<C: FromIterator<T>>(
+        self,
+        options: CollectOptions,
+    ) -> Result<C> {
         let table = self.collect_table_with_options(options).await?;
         table.rows().collect()
     }

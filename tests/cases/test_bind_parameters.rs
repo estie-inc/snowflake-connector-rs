@@ -140,20 +140,7 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
     }
 
     let rows = session
-        .query_as::<(
-            i64,
-            String,
-            bool,
-            f64,
-            NaiveDate,
-            NaiveTime,
-            NaiveDateTime,
-            DateTime<Utc>,
-            Option<String>,
-            i64,
-            String,
-            String,
-        ), _>(
+        .query_as(
             "
             SELECT
                 id,
@@ -175,7 +162,20 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
             ",
         )
         .await?
-        .collect()
+        .collect::<Vec<(
+            i64,
+            String,
+            bool,
+            f64,
+            NaiveDate,
+            NaiveTime,
+            NaiveDateTime,
+            DateTime<Utc>,
+            Option<String>,
+            i64,
+            String,
+            String,
+        )>>()
         .await?;
     assert_eq!(rows.len(), cases.len());
 
@@ -201,12 +201,12 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
     }
 
     let filtered = session
-        .query_as::<(String, Option<String>), _>(
+        .query_as(
             Statement::new("SELECT text_val, nullable_text FROM bind_round_trip WHERE id = ?")
                 .bind(2_i64),
         )
         .await?
-        .collect()
+        .collect::<Vec<(String, Option<String>)>>()
         .await?;
     assert_eq!(
         filtered,
@@ -215,7 +215,7 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
 
     for case in &cases {
         let matched = session
-            .query_as::<(i64,), _>(
+            .query_as(
                 Statement::new(
                     "
                     SELECT
@@ -233,20 +233,20 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
                 .bind(case.decfloat),
             )
             .await?
-            .collect()
+            .collect::<Vec<(i64,)>>()
             .await?;
         assert_eq!(matched, vec![(case.id,)]);
     }
 
     let named_filtered = session
-        .query_as::<(i64,), _>(
+        .query_as(
             Statement::new("SELECT id FROM bind_round_trip WHERE id = :id OR id = :1 ORDER BY id")
                 .bind_named("id", 0_i64)
                 .bind_named("id", 2_i64)
                 .bind_named("1", 1_i64),
         )
         .await?
-        .collect()
+        .collect::<Vec<(i64,)>>()
         .await?;
     assert_eq!(named_filtered, vec![(1_i64,), (2_i64,)]);
 
@@ -271,9 +271,9 @@ async fn render_bound_timestamp_tz(
         Statement::new("SELECT TO_CHAR(?::TIMESTAMP_TZ, 'YYYY-MM-DD HH24:MI:SS TZHTZM') AS ts_str")
             .bind(TimestampTz::try_from(dt)?);
     let rows = session
-        .query_as::<(String,), _>(query)
+        .query_as(query)
         .await?
-        .collect()
+        .collect::<Vec<(String,)>>()
         .await?;
     Ok(rows.into_iter().next().unwrap().0)
 }
@@ -312,7 +312,7 @@ async fn test_bind_parameters_timestamp_tz_round_trips_control_and_extreme_offse
         .await?;
 
     let inserted_rows = session
-        .query_as::<(String,), _>(
+        .query_as(
             "
             SELECT
                 TO_CHAR(ts, 'YYYY-MM-DD HH24:MI:SS TZHTZM') AS ts_str
@@ -323,17 +323,17 @@ async fn test_bind_parameters_timestamp_tz_round_trips_control_and_extreme_offse
             ",
         )
         .await?
-        .collect()
+        .collect::<Vec<(String,)>>()
         .await?;
     assert_eq!(inserted_rows.len(), 2);
     assert_eq!(inserted_rows[0].0, inserted_rows[1].0);
 
     let control_literal = session
-        .query_as::<(String,), _>(
+        .query_as(
             "SELECT TO_CHAR('2024-06-15 12:30:45 +09:00'::TIMESTAMP_TZ, 'YYYY-MM-DD HH24:MI:SS TZHTZM') AS ts_str",
         )
         .await?
-        .collect()
+        .collect::<Vec<(String,)>>()
         .await?;
     let control_bound = render_bound_timestamp_tz(&session, control_offset).await?;
     assert_eq!(control_bound, control_literal.into_iter().next().unwrap().0);

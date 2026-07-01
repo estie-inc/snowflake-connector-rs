@@ -78,14 +78,14 @@ async fn derive_named_lookup_variants_decode_expected_rows() -> Result<()> {
     let session = client.create_session().await?;
 
     let users = session
-        .query_as::<UserRow, _>(
+        .query_as(
             "SELECT 1 AS id, 'alice' AS user_name, TRUE AS is_active, NULL::STRING AS bio
              UNION ALL
              SELECT 2 AS id, 'bob' AS user_name, FALSE AS is_active, 'hello' AS bio
              ORDER BY 1",
         )
         .await?
-        .collect()
+        .collect::<Vec<UserRow>>()
         .await?;
 
     assert_eq!(
@@ -109,11 +109,9 @@ async fn derive_named_lookup_variants_decode_expected_rows() -> Result<()> {
     session.query("ALTER SESSION SET TIMEZONE = 'UTC'").await?;
 
     let events = session
-        .query_as::<EventRow, _>(
-            "SELECT 1 AS id, '2024-01-01 00:00:00'::TIMESTAMP_NTZ AS created_at",
-        )
+        .query_as("SELECT 1 AS id, '2024-01-01 00:00:00'::TIMESTAMP_NTZ AS created_at")
         .await?
-        .collect()
+        .collect::<Vec<EventRow>>()
         .await?;
 
     assert_eq!(
@@ -126,14 +124,14 @@ async fn derive_named_lookup_variants_decode_expected_rows() -> Result<()> {
     );
 
     let prices = session
-        .query_as::<PriceRow, _>(
+        .query_as(
             "SELECT 1 AS id, 99.99::DECIMAL(10,2) AS price
              UNION ALL
              SELECT 2 AS id, 149.99::DECIMAL(10,2) AS price
              ORDER BY 1",
         )
         .await?
-        .collect()
+        .collect::<Vec<PriceRow>>()
         .await?;
 
     let expected_prices = [(1_i64, "99.99"), (2, "149.99")];
@@ -145,17 +143,17 @@ async fn derive_named_lookup_variants_decode_expected_rows() -> Result<()> {
     }
 
     let keywords = session
-        .query_as::<KeywordRow, _>("SELECT 1 AS TYPE")
+        .query_as("SELECT 1 AS TYPE")
         .await?
-        .collect()
+        .collect::<Vec<KeywordRow>>()
         .await?;
 
     assert_eq!(keywords, vec![KeywordRow { r#type: 1 }]);
 
     let renamed = session
-        .query_as::<QuotedAliasRow, _>(r#"SELECT 1 AS "value""#)
+        .query_as(r#"SELECT 1 AS "value""#)
         .await?
-        .collect()
+        .collect::<Vec<QuotedAliasRow>>()
         .await?;
 
     assert_eq!(renamed, vec![QuotedAliasRow { v: 1 }]);
@@ -202,9 +200,9 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
     }
 
     let err = session
-        .query_as::<RequiredNoteRow, _>("SELECT 1 AS id, NULL::STRING AS note")
+        .query_as("SELECT 1 AS id, NULL::STRING AS note")
         .await?
-        .collect()
+        .collect::<Vec<RequiredNoteRow>>()
         .await
         .expect_err("non-Option NULL should surface the decode error");
 
@@ -239,9 +237,9 @@ async fn derive_nondefault_lookup_modes_cover_metadata_and_named_position_paths(
         .await?;
 
     let rows = session
-        .query_as::<SessionParameterRow, _>("SHOW PARAMETERS LIKE 'TIMEZONE' IN SESSION")
+        .query_as("SHOW PARAMETERS LIKE 'TIMEZONE' IN SESSION")
         .await?
-        .collect()
+        .collect::<Vec<SessionParameterRow>>()
         .await?;
 
     assert_eq!(
@@ -254,9 +252,9 @@ async fn derive_nondefault_lookup_modes_cover_metadata_and_named_position_paths(
     );
 
     let rows = session
-        .query_as::<CountAndName, _>("SELECT 42, 'hi' UNION ALL SELECT 7, 'lo' ORDER BY 1 DESC")
+        .query_as("SELECT 42, 'hi' UNION ALL SELECT 7, 'lo' ORDER BY 1 DESC")
         .await?
-        .collect()
+        .collect::<Vec<CountAndName>>()
         .await?;
 
     assert_eq!(
@@ -268,9 +266,9 @@ async fn derive_nondefault_lookup_modes_cover_metadata_and_named_position_paths(
     );
 
     let rows = session
-        .query_as::<NamedByPosition, _>(r#"SELECT 9, 'named row'"#)
+        .query_as(r#"SELECT 9, 'named row'"#)
         .await?
-        .collect()
+        .collect::<Vec<NamedByPosition>>()
         .await?;
 
     assert_eq!(

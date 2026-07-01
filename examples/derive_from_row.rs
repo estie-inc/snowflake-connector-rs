@@ -62,11 +62,9 @@ async fn async_main() -> Result<()> {
 async fn run_default_mapping_example(session: &SnowflakeSession) -> Result<()> {
     // Default field-name mapping uses compile-time SCREAMING_SNAKE_CASE labels.
     let rows = session
-        .query_as::<DefaultLabels, _>(
-            r#"SELECT 1 AS id, 'alice' AS user_name, NULL::STRING AS note"#,
-        )
+        .query_as(r#"SELECT 1 AS id, 'alice' AS user_name, NULL::STRING AS note"#)
         .await?
-        .collect()
+        .collect::<Vec<DefaultLabels>>()
         .await?;
     assert_eq!(
         rows,
@@ -83,9 +81,9 @@ async fn run_default_mapping_example(session: &SnowflakeSession) -> Result<()> {
 async fn run_rename_all_none_example(session: &SnowflakeSession) -> Result<()> {
     // Lowercase quoted labels can opt out of the default renaming rule.
     let rows = session
-        .query_as::<LowercaseLabels, _>(r#"SELECT 'TIMEZONE' AS "name", 'Asia/Tokyo' AS "value""#)
+        .query_as(r#"SELECT 'TIMEZONE' AS "name", 'Asia/Tokyo' AS "value""#)
         .await?
-        .collect()
+        .collect::<Vec<LowercaseLabels>>()
         .await?;
     assert_eq!(
         rows,
@@ -101,9 +99,9 @@ async fn run_rename_all_none_example(session: &SnowflakeSession) -> Result<()> {
 async fn run_exact_rename_example(session: &SnowflakeSession) -> Result<()> {
     // `rename` targets the exact raw label, including spaces.
     let rows = session
-        .query_as::<ExactLabels, _>(r#"SELECT 'Alice Example' AS "display name""#)
+        .query_as(r#"SELECT 'Alice Example' AS "display name""#)
         .await?
-        .collect()
+        .collect::<Vec<ExactLabels>>()
         .await?;
     assert_eq!(
         rows,
@@ -119,9 +117,9 @@ async fn run_position_examples(session: &SnowflakeSession) -> Result<()> {
     // Tuple structs decode by position automatically; named structs opt in with
     // container-level `#[snowflake(by_position)]`.
     let tuple_rows = session
-        .query_as::<TupleByPosition, _>(r#"SELECT 7, 'tuple row'"#)
+        .query_as(r#"SELECT 7, 'tuple row'"#)
         .await?
-        .collect()
+        .collect::<Vec<TupleByPosition>>()
         .await?;
     assert_eq!(
         tuple_rows,
@@ -129,9 +127,9 @@ async fn run_position_examples(session: &SnowflakeSession) -> Result<()> {
     );
 
     let named_rows = session
-        .query_as::<NamedByPosition, _>(r#"SELECT 9, 'named row'"#)
+        .query_as(r#"SELECT 9, 'named row'"#)
         .await?
-        .collect()
+        .collect::<Vec<NamedByPosition>>()
         .await?;
     assert_eq!(
         named_rows,

@@ -66,7 +66,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     let positional = session
-        .query_as::<(i64, String, bool, Option<String>), _>(
+        .query_as(
             "
             SELECT
                 id, text_val, flag, nullable_text
@@ -75,12 +75,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             ",
         )
         .await?
-        .collect()
+        .collect::<Vec<(i64, String, bool, Option<String>)>>()
         .await?;
     println!("positional bind row: {positional:?}");
 
     let named = session
-        .query_as::<(i64, String), _>(
+        .query_as(
             Statement::new(
                 "
                 SELECT
@@ -95,7 +95,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .bind_named("1", 999_i64),
         )
         .await?
-        .collect()
+        .collect::<Vec<(i64, String)>>()
         .await?;
     println!("named bind rows: {named:?}");
 
@@ -117,7 +117,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     let rendered = session
-        .query_as::<(String, String, String, i128), _>(
+        .query_as(
             "
             SELECT
                 TO_CHAR(ts_tz, 'YYYY-MM-DD HH24:MI:SS TZHTZM'),
@@ -131,7 +131,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             ",
         )
         .await?
-        .collect()
+        .collect::<Vec<(String, String, String, i128)>>()
         .await?;
     println!("rendered bind values: {rendered:?}");
 

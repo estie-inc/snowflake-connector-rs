@@ -198,28 +198,32 @@ impl ResultSet {
             .map_err(crate::Error::from)
     }
 
-    /// Consume this result set and decode all rows into [`DynamicRow`].
+    /// Consume this result set and decode all rows into any collection implementing [`FromIterator<DynamicRow>`](FromIterator).
+    ///
+    /// The target collection is inferred from context (e.g. a `let` binding type or a `.collect::<Vec<_>>()` turbofish),
+    /// matching [`Iterator::collect`]'s usual inference.
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
-    /// `ErrorKind::Protocol`, `ErrorKind::Internal`, or
-    /// `ErrorKind::Decode`; inspect the detail via
-    /// [`crate::Error::as_cell_decode_error`].
-    pub async fn collect(self) -> Result<Vec<DynamicRow>> {
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, `ErrorKind::Internal`, or
+    /// `ErrorKind::Decode`; inspect the detail via [`crate::Error::as_cell_decode_error`].
+    pub async fn collect<C: FromIterator<DynamicRow>>(self) -> Result<C> {
         let table = self.collect_table().await?;
         table.dynamic_rows()?.collect()
     }
 
-    /// Consume this result set and decode all rows into [`DynamicRow`].
+    /// Consume this result set and decode all rows into any collection implementing [`FromIterator<DynamicRow>`](FromIterator).
+    ///
+    /// The target collection is inferred from context, as with [`ResultSet::collect`].
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
-    /// `ErrorKind::Protocol`, `ErrorKind::Internal`, or
-    /// `ErrorKind::Decode`; inspect the detail via
-    /// [`crate::Error::as_cell_decode_error`].
-    pub async fn collect_with_options(self, options: CollectOptions) -> Result<Vec<DynamicRow>> {
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, `ErrorKind::Internal`, or
+    /// `ErrorKind::Decode`; inspect the detail via [`crate::Error::as_cell_decode_error`].
+    pub async fn collect_with_options<C: FromIterator<DynamicRow>>(
+        self,
+        options: CollectOptions,
+    ) -> Result<C> {
         let table = self.collect_table_with_options(options).await?;
         table.dynamic_rows()?.collect()
     }
@@ -723,7 +727,7 @@ mod tests {
         ))
         .unwrap();
 
-        let rows = rs.collect().await.unwrap();
+        let rows = rs.collect::<Vec<_>>().await.unwrap();
 
         assert_eq!(rows, vec![CountingRow, CountingRow]);
         assert_eq!(build_plan_calls(), 1);
@@ -733,7 +737,7 @@ mod tests {
     async fn collect_failure_propagates_query_id_from_consumed_result_set() {
         let snapshot = dummy_snapshot(1);
         let err = build_result_set(snapshot, fake_source(vec![(0, vec![fail()])]))
-            .collect()
+            .collect::<Vec<_>>()
             .await
             .unwrap_err();
 
@@ -769,7 +773,7 @@ mod tests {
             snapshot,
             fake_source(vec![(0, vec![ok_rows(1)]), (1, vec![ok_rows(2)])]),
         )
-        .collect()
+        .collect::<Vec<_>>()
         .await
         .unwrap();
 
@@ -796,7 +800,7 @@ mod tests {
         .unwrap();
 
         let rows = rs
-            .collect_with_options(
+            .collect_with_options::<Vec<_>>(
                 CollectOptions::default().with_prefetch_concurrency(NonZeroUsize::new(1).unwrap()),
             )
             .await
@@ -814,7 +818,7 @@ mod tests {
             fake_source(vec![(0, vec![fail()])]),
         ))
         .unwrap()
-        .collect()
+        .collect::<Vec<_>>()
         .await
         .unwrap_err();
 
@@ -852,7 +856,7 @@ mod tests {
             fake_source(vec![(0, vec![ok_rows(1)])]),
         ))
         .unwrap()
-        .collect()
+        .collect::<Vec<_>>()
         .await
         .unwrap_err();
 
