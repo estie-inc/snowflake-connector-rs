@@ -5,8 +5,8 @@ use crate::{
     error::{ProtocolError, QueryScopedError, QueryScopedResult, ServerError, SessionExpiredError},
     query_result::{
         CollectPolicy, InlineRowset, ResultCursor,
+        partition::PartitionCursor,
         partition_source::{PartitionSource, StaticPartitionSource},
-        snapshot::PartitionCursor,
     },
     runtime::QueryRuntime,
     statement::StatementParts,

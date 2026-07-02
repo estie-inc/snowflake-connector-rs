@@ -7,7 +7,7 @@ use crate::{
     runtime::BlockingParseLimiter,
 };
 
-use super::snapshot::{PartitionSpec, ResolvedLease, ResultSnapshot};
+use super::{lease::ResolvedLease, partition::PartitionSpec, snapshot::ResultSnapshot};
 
 #[derive(Clone)]
 pub(crate) struct FetchContext {

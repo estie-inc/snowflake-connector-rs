@@ -4,8 +4,10 @@ use bytes::Bytes;
 
 use crate::{
     error::{ProtocolError, QueryScopedError, QueryScopedResult},
-    query_result::snapshot::{
-        DownloadLocator, PartitionSpec, ResolvedLease, ResultIdentity, ResultSnapshot,
+    query_result::{
+        lease::{DownloadLocator, ResolvedLease},
+        partition::PartitionSpec,
+        snapshot::{ResultIdentity, ResultSnapshot},
     },
     result::{Column, ColumnType, Schema},
     rowset::parser::inline_rowset_has_rows_inner,
