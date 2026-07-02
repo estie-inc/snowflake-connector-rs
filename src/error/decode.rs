@@ -5,21 +5,21 @@ use crate::result::{ColumnIndex, ColumnType};
 use super::{VALUE_PREVIEW_MAX_CHARS, truncate_preview_chars};
 
 /// Result alias for cell-local decode failures.
-pub type CellDecodeResult<T> = std::result::Result<T, CellDecodeIssue>;
+pub type CellDecodeResult<T> = std::result::Result<T, CellConversionError>;
 
 /// Cell-local reason why decoding a value failed.
 ///
 /// This describes only the local conversion problem. Row, column, and
 /// value context live on [`CellDecodeError`].
 #[derive(Debug)]
-pub struct CellDecodeIssue {
+pub struct CellConversionError {
     reason: Box<str>,
     source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
-impl CellDecodeIssue {
-    pub fn builder(reason: impl Into<Box<str>>) -> CellDecodeIssueBuilder {
-        CellDecodeIssueBuilder {
+impl CellConversionError {
+    pub fn builder(reason: impl Into<Box<str>>) -> CellConversionErrorBuilder {
+        CellConversionErrorBuilder {
             reason: reason.into(),
             source: None,
         }
@@ -34,25 +34,25 @@ impl CellDecodeIssue {
     }
 }
 
-impl std::fmt::Display for CellDecodeIssue {
+impl std::fmt::Display for CellConversionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.reason)
     }
 }
 
-impl std::error::Error for CellDecodeIssue {
+impl std::error::Error for CellConversionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.source.as_deref().map(|source| source as _)
     }
 }
 
 #[derive(Debug)]
-pub struct CellDecodeIssueBuilder {
+pub struct CellConversionErrorBuilder {
     reason: Box<str>,
     source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
-impl CellDecodeIssueBuilder {
+impl CellConversionErrorBuilder {
     pub fn source(
         mut self,
         source: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
@@ -61,8 +61,8 @@ impl CellDecodeIssueBuilder {
         self
     }
 
-    pub fn build(self) -> CellDecodeIssue {
-        CellDecodeIssue {
+    pub fn build(self) -> CellConversionError {
+        CellConversionError {
             reason: self.reason,
             source: self.source,
         }
@@ -78,7 +78,7 @@ pub struct CellDecodeError {
     target_type_name: Cow<'static, str>,
     actual_column_type: ColumnType,
     raw_value_preview: Option<Box<str>>,
-    issue: CellDecodeIssue,
+    issue: CellConversionError,
 }
 
 impl CellDecodeError {
@@ -89,7 +89,7 @@ impl CellDecodeError {
         target_type_name: impl Into<Cow<'static, str>>,
         actual_column_type: ColumnType,
         raw_value_preview: Option<&str>,
-        issue: CellDecodeIssue,
+        issue: CellConversionError,
     ) -> Self {
         Self {
             row_index,
@@ -127,7 +127,7 @@ impl CellDecodeError {
         self.raw_value_preview.as_deref()
     }
 
-    pub fn issue(&self) -> &CellDecodeIssue {
+    pub fn issue(&self) -> &CellConversionError {
         &self.issue
     }
 }

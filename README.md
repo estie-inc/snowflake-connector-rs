@@ -14,20 +14,20 @@ struct ExampleRow {
     value: String,
 }
 
-let session_config = SnowflakeSessionConfig::default()
+let session_config = SessionConfig::default()
     .with_role("ROLE")
     .with_warehouse("WAREHOUSE")
     .with_database("DATABASE")
     .with_schema("SCHEMA");
 
-let query_config = SnowflakeQueryConfig::default()
+let query_config = QueryConfig::default()
     .with_async_query_completion_timeout(std::time::Duration::from_secs(30));
 
-let client = SnowflakeClient::new(
-    SnowflakeClientConfig::new(
+let client = Client::new(
+    ClientConfig::new(
         "USERNAME",
         "ACCOUNT",
-        SnowflakeAuthConfig::password("PASSWORD"),
+        AuthConfig::password("PASSWORD"),
     )
     .with_session(session_config)
     .with_query(query_config),
@@ -91,22 +91,22 @@ assert_eq!(table.row_count(), 2);
 
 ## Authentication
 
-The authentication method is chosen with `SnowflakeAuthConfig`, passed to `SnowflakeClientConfig::new`.
+The authentication method is chosen with `AuthConfig`, passed to `ClientConfig::new`.
 
 ### Key-pair
 
 Key-pair (JWT) authentication. Recommended for programmatic and unattended access. Requires the `key-pair-auth` feature (enabled by default).
 
 ```rust
-use snowflake_connector_rs::{KeyPairAuthConfig, SnowflakeAuthConfig};
+use snowflake_connector_rs::{KeyPairConfig, AuthConfig};
 
 // Encrypted PKCS#8 PEM, with its passphrase:
-let auth = SnowflakeAuthConfig::key_pair(
-    KeyPairAuthConfig::encrypted_pem(pem, b"passphrase".to_vec()),
+let auth = AuthConfig::key_pair(
+    KeyPairConfig::from_encrypted_pem(pem, b"passphrase".to_vec()),
 );
 
 // Unencrypted PKCS#8 PEM:
-let auth = SnowflakeAuthConfig::key_pair(KeyPairAuthConfig::unencrypted_pem(pem));
+let auth = AuthConfig::key_pair(KeyPairConfig::from_pem(pem));
 ```
 
 ### OAuth
@@ -114,9 +114,9 @@ let auth = SnowflakeAuthConfig::key_pair(KeyPairAuthConfig::unencrypted_pem(pem)
 Authenticate with a Snowflake OAuth access token. Acquiring and refreshing the token is the caller's responsibility.
 
 ```rust
-use snowflake_connector_rs::SnowflakeAuthConfig;
+use snowflake_connector_rs::AuthConfig;
 
-let auth = SnowflakeAuthConfig::oauth("OAUTH_ACCESS_TOKEN");
+let auth = AuthConfig::oauth("OAUTH_ACCESS_TOKEN");
 ```
 
 ### Password and MFA
@@ -124,19 +124,19 @@ let auth = SnowflakeAuthConfig::oauth("OAUTH_ACCESS_TOKEN");
 Snowflake enforces MFA for password sign-ins. Without a passcode, login relies on an out-of-band approval (for example a Duo push) that must be approved interactively, so plain password auth is unsuitable for unattended use — prefer key-pair or OAuth there.
 
 ```rust
-use snowflake_connector_rs::{PasswordAuthConfig, SnowflakeAuthConfig};
+use snowflake_connector_rs::{PasswordConfig, AuthConfig};
 
 // Plain password (an interactive MFA approval may still be required).
-let auth = SnowflakeAuthConfig::password("PASSWORD");
+let auth = AuthConfig::password("PASSWORD");
 
 // TOTP passcode sent as a separate value.
-let auth = SnowflakeAuthConfig::password(
-    PasswordAuthConfig::new("PASSWORD").with_passcode("123456"),
+let auth = AuthConfig::password(
+    PasswordConfig::new("PASSWORD").with_passcode("123456"),
 );
 
 // Or the passcode already appended to the password.
-let auth = SnowflakeAuthConfig::password(
-    PasswordAuthConfig::new("PASSWORD123456").with_passcode_in_password(),
+let auth = AuthConfig::password(
+    PasswordConfig::new("PASSWORD123456").with_passcode_in_password(),
 );
 ```
 
@@ -154,28 +154,28 @@ Requires the `external-browser-sso` feature. Typical configurations:
 
 - Local default (auto browser launch, localhost callback, auto-picked port)
    ```rust
-   use snowflake_connector_rs::{ExternalBrowserConfig, SnowflakeAuthConfig};
-   let auth = SnowflakeAuthConfig::external_browser(ExternalBrowserConfig::default());
+   use snowflake_connector_rs::{ExternalBrowserConfig, AuthConfig};
+   let auth = AuthConfig::external_browser(ExternalBrowserConfig::default());
    ```
 - Docker/container setup (manual open with explicit callback bind address/port)
    ```rust
     use std::net::Ipv4Addr;
-    use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthConfig};
-    let external_browser = ExternalBrowserConfig::with_callback_listener(
+    use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, AuthConfig};
+    let external_browser = ExternalBrowserConfig::callback_listener(
         BrowserLaunchMode::Manual,
         Ipv4Addr::UNSPECIFIED.into(),
         3037,
     );
-    let auth = SnowflakeAuthConfig::external_browser(external_browser);
+    let auth = AuthConfig::external_browser(external_browser);
     ```
 - Without callback listener mode (manual redirected URL input)
    ```rust
     use std::num::NonZeroU16;
-    use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthConfig};
+    use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, AuthConfig};
     let redirect_port = NonZeroU16::new(3037).unwrap();
     let external_browser =
-        ExternalBrowserConfig::without_callback_listener(BrowserLaunchMode::Manual, redirect_port);
-    let auth = SnowflakeAuthConfig::external_browser(external_browser);
+        ExternalBrowserConfig::manual_redirect(BrowserLaunchMode::Manual, redirect_port);
+    let auth = AuthConfig::external_browser(external_browser);
     ```
 
 For Docker/container setup, make sure that:
@@ -185,7 +185,7 @@ For Docker/container setup, make sure that:
 
 `0.0.0.0` binds on all interfaces in the container. Use the minimum required network exposure for your environment.
 
-In `WithoutCallbackListener` mode:
+In `ManualRedirect` mode:
 
 - no local server is started, so `localhost:<redirect_port>` is not actually listened on by this connector.
 - a non-zero `redirect_port` is still required because Snowflake uses `BROWSER_MODE_REDIRECT_PORT` to construct the browser redirect URL.
@@ -199,12 +199,12 @@ To override the default Snowflake endpoint (e.g. for testing or non-default netw
 
 ```rust
 use url::Url;
-let auth = SnowflakeAuthConfig::password("PASSWORD");
-let endpoint = SnowflakeEndpointConfig::custom_base_url(
+let auth = AuthConfig::password("PASSWORD");
+let endpoint = EndpointConfig::custom_base_url(
     Url::parse("https://custom-host.example.com").unwrap(),
 );
-let client = SnowflakeClient::new(
-    SnowflakeClientConfig::new("USERNAME", "ACCOUNT", auth)
+let client = Client::new(
+    ClientConfig::new("USERNAME", "ACCOUNT", auth)
         .with_endpoint(endpoint),
 )?;
 ```
@@ -215,15 +215,15 @@ To route requests through an HTTP proxy:
 
 ```rust
 use url::Url;
-let auth = SnowflakeAuthConfig::password("PASSWORD");
-let proxy = SnowflakeProxyConfig::new(
+let auth = AuthConfig::password("PASSWORD");
+let proxy = ProxyConfig::new(
     Url::parse("http://proxy.example.com:8080").unwrap(),
 )
 .with_basic_auth("proxy_user", "proxy_pass");
 
-let transport = SnowflakeTransportConfig::default().with_proxy(proxy);
-let client = SnowflakeClient::new(
-    SnowflakeClientConfig::new("USERNAME", "ACCOUNT", auth)
+let transport = TransportConfig::default().with_proxy(proxy);
+let client = Client::new(
+    ClientConfig::new("USERNAME", "ACCOUNT", auth)
         .with_transport(transport),
 )?;
 ```

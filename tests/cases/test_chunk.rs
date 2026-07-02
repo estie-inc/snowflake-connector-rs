@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 
-use snowflake_connector_rs::{CollectOptions, Result, result::ColumnType};
+use snowflake_connector_rs::{CollectOptions, ColumnType, Result};
 
 use super::common;
 
@@ -71,10 +71,10 @@ async fn test_partial_typed_stream_then_collect_preserves_order() -> Result<()> 
         assert_eq!(columns.len(), 2);
         assert_eq!(columns[0].name(), "SEQ");
         assert!(matches!(columns[0].ty(), ColumnType::Fixed { .. }));
-        assert!(!columns[0].nullable());
+        assert!(!columns[0].is_nullable());
         assert_eq!(columns[1].name(), "PAD");
         assert!(matches!(columns[1].ty(), ColumnType::Text { .. }));
-        assert!(!columns[1].nullable());
+        assert!(!columns[1].is_nullable());
 
         let first_batch = result
             .next_table()

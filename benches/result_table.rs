@@ -15,7 +15,7 @@ use snowflake_connector_rs::bench_support::{
     parse_remote_chunk_result_table, parse_remote_chunk_result_table_async_with_workload,
     parse_statement_envelope,
 };
-use snowflake_connector_rs::{DynamicRow, ResultTable, result::Schema};
+use snowflake_connector_rs::{DynamicRow, ResultTable, Schema};
 
 #[derive(snowflake_connector_rs::FromRow)]
 struct BenchRow {

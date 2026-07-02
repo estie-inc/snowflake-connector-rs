@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::common;
 
-use snowflake_connector_rs::{Result, result::SnowflakeValue};
+use snowflake_connector_rs::{CellValue, Result};
 
 #[tokio::test]
 async fn test_session_parameters_support_bulk_and_incremental_configuration() -> Result<()> {
@@ -23,7 +23,7 @@ async fn test_session_parameters_support_bulk_and_incremental_configuration() ->
         .collect::<Vec<_>>()
         .await?;
     let value = rows[0].value("value").unwrap();
-    assert_eq!(value, &SnowflakeValue::String("48".to_owned()));
+    assert_eq!(value, &CellValue::String("48".to_owned()));
 
     let rows = session
         .query("SHOW PARAMETERS LIKE 'TIMEZONE' IN SESSION")
@@ -31,7 +31,7 @@ async fn test_session_parameters_support_bulk_and_incremental_configuration() ->
         .collect::<Vec<_>>()
         .await?;
     let value = rows[0].value("value").unwrap();
-    assert_eq!(value, &SnowflakeValue::String("Asia/Tokyo".to_owned()));
+    assert_eq!(value, &CellValue::String("Asia/Tokyo".to_owned()));
 
     Ok(())
 }

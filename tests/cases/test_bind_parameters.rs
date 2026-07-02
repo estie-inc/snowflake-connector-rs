@@ -2,9 +2,7 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
 use snowflake_connector_rs::{
     Result, Statement,
-    bind::{
-        Binary, Integer, RawBind, SnowflakeBindType, Time, TimestampLtz, TimestampNtz, TimestampTz,
-    },
+    bind::{Binary, BindType, Integer, RawBind, Time, TimestampLtz, TimestampNtz, TimestampTz},
 };
 
 use super::common;
@@ -134,7 +132,7 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
         .bind(case.nullable_text)
         .bind(case.bigint)
         .bind(case.wide_integer)
-        .bind(RawBind::new(SnowflakeBindType::DecFloat, case.decfloat))
+        .bind(RawBind::new(BindType::DecFloat, case.decfloat))
         .bind(Binary::new(case.binary));
         session.query(insert).await?;
     }
@@ -263,7 +261,7 @@ fn timestamp_tz_probe_value(offset: FixedOffset) -> DateTime<FixedOffset> {
 }
 
 async fn render_bound_timestamp_tz(
-    session: &snowflake_connector_rs::SnowflakeSession,
+    session: &snowflake_connector_rs::Session,
     offset: FixedOffset,
 ) -> Result<String> {
     let dt = timestamp_tz_probe_value(offset);

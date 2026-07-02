@@ -29,7 +29,7 @@ impl ColumnIndex {
 /// # Example
 ///
 /// ```
-/// use snowflake_connector_rs::result::ColumnType;
+/// use snowflake_connector_rs::ColumnType;
 ///
 /// // `ColumnType` values come from a query result's schema (`column.ty()`).
 /// // Read the reported metadata through its accessors:
@@ -242,7 +242,7 @@ impl Column {
         self.index
     }
     /// Whether the column may carry SQL `NULL`.
-    pub fn nullable(&self) -> bool {
+    pub fn is_nullable(&self) -> bool {
         self.nullable
     }
     /// The column's Snowflake type.
@@ -344,7 +344,7 @@ impl Schema {
     ///
     /// - [`SchemaError::MissingColumn`] when no column carries the name.
     /// - [`SchemaError::AmbiguousColumn`] when several columns share it.
-    pub fn column(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
+    pub fn column_index(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
         lookup_result(name, self.indices.get(name))
     }
 }
@@ -389,10 +389,10 @@ mod tests {
             ),
         ])
         .unwrap();
-        assert_eq!(schema.column("ID").unwrap().as_usize(), 0);
-        assert_eq!(schema.column("id").unwrap().as_usize(), 1);
+        assert_eq!(schema.column_index("ID").unwrap().as_usize(), 0);
+        assert_eq!(schema.column_index("id").unwrap().as_usize(), 1);
         assert!(matches!(
-            schema.column("Id"),
+            schema.column_index("Id"),
             Err(SchemaError::MissingColumn(error)) if error.name() == "Id"
         ));
     }
@@ -420,7 +420,7 @@ mod tests {
             ),
         ])
         .unwrap();
-        let err = schema.column("id").unwrap_err();
+        let err = schema.column_index("id").unwrap_err();
         match err {
             SchemaError::AmbiguousColumn(error) => {
                 assert_eq!(error.name(), "id");

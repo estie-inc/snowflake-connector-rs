@@ -3,7 +3,7 @@ use bytes::Bytes;
 use crate::{
     error::RowsetParseError,
     result::schema::Column,
-    result::{CellDecodeIssue, CellDecodeResult},
+    result::{CellConversionError, CellDecodeResult},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -182,11 +182,11 @@ impl<'a> CellRef<'a> {
 
     /// Returns the raw text when the cell is not SQL `NULL`.
     ///
-    /// `NULL` is reported as a [`CellDecodeIssue`](crate::result::CellDecodeIssue).
+    /// `NULL` is reported as a [`CellConversionError`](crate::CellConversionError).
     pub fn required_raw(self) -> CellDecodeResult<&'a str> {
         match self.raw {
             Some(s) => Ok(s),
-            None => Err(CellDecodeIssue::builder("value is NULL").build()),
+            None => Err(CellConversionError::builder("value is NULL").build()),
         }
     }
 }

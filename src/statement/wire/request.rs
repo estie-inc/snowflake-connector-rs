@@ -226,7 +226,7 @@ mod tests {
     use super::*;
     use crate::{
         IntoStatement, Statement,
-        bind::{Binary, RawBind, SnowflakeBindType, Time, TimestampLtz, TimestampNtz, TimestampTz},
+        bind::{Binary, BindType, RawBind, Time, TimestampLtz, TimestampNtz, TimestampTz},
         statement::builder::into_statement_parts,
     };
 
@@ -300,8 +300,7 @@ mod tests {
     fn raw_bind_decfloat_serializes_as_typed_value_and_null() {
         assert_eq!(
             wire_body(
-                Statement::new("SELECT ?")
-                    .bind(RawBind::new(SnowflakeBindType::DecFloat, "1.23e-40")),
+                Statement::new("SELECT ?").bind(RawBind::new(BindType::DecFloat, "1.23e-40")),
             ),
             json!({
                 "sqlText": "SELECT ?",
@@ -312,7 +311,7 @@ mod tests {
         );
 
         assert_eq!(
-            wire_body(Statement::new("SELECT ?").bind(RawBind::null(SnowflakeBindType::DecFloat))),
+            wire_body(Statement::new("SELECT ?").bind(RawBind::null(BindType::DecFloat))),
             json!({
                 "sqlText": "SELECT ?",
                 "bindings": {

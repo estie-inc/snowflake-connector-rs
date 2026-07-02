@@ -2,8 +2,7 @@ use super::common;
 
 use chrono::{NaiveDate, NaiveDateTime};
 use snowflake_connector_rs::{
-    Result,
-    result::{ColumnType, DecimalValue},
+    Result, {ColumnType, DecimalValue},
 };
 
 #[tokio::test]
@@ -105,25 +104,25 @@ async fn test_basic_operations() -> Result<()> {
     assert_eq!(id_column.name(), "ID");
     assert_eq!(id_column.index().as_usize(), 0);
     assert!(matches!(id_column.ty(), ColumnType::Fixed { .. }));
-    assert!(id_column.nullable());
+    assert!(id_column.is_nullable());
 
     let value_column = &columns[1];
     assert_eq!(value_column.name(), "VALUE");
     assert_eq!(value_column.index().as_usize(), 1);
     assert!(matches!(value_column.ty(), ColumnType::Text { .. }));
-    assert!(value_column.nullable());
+    assert!(value_column.is_nullable());
 
     let price_column = &columns[2];
     assert_eq!(price_column.name(), "PRICE");
     assert!(matches!(price_column.ty(), ColumnType::Fixed { .. }));
-    assert!(price_column.nullable());
+    assert!(price_column.is_nullable());
     assert_eq!(price_column.ty().precision(), Some(10));
     assert_eq!(price_column.ty().scale(), Some(2));
 
     let is_active_column = &columns[3];
     assert_eq!(is_active_column.name(), "IS_ACTIVE");
     assert!(matches!(is_active_column.ty(), ColumnType::Boolean));
-    assert!(is_active_column.nullable());
+    assert!(is_active_column.is_nullable());
 
     let date_column = &columns[4];
     assert_eq!(date_column.name(), "CREATED_DATE");

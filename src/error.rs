@@ -10,7 +10,9 @@ use std::{error::Error as StdError, fmt, sync::Arc};
 use reqwest::header::InvalidHeaderValue;
 use tokio::task::JoinError;
 
-pub use decode::CellDecodeError;
+pub use decode::{
+    CellConversionError, CellConversionErrorBuilder, CellDecodeError, CellDecodeResult,
+};
 pub(crate) use parse::RowsetParseError;
 pub(crate) use query_scoped::{QueryScopedError, QueryScopedRepr, QueryScopedResult};
 use repr::Repr;
@@ -146,10 +148,10 @@ impl Error {
     /// `None` does not mean "Snowflake did not assign a query ID". The
     /// accessor may return `None` when, for example, response parsing failed
     /// before the query ID could be extracted, or when another access path
-    /// (a live `ResultSet` / `ResultTable` receiver) was available to the caller.
+    /// (a live `ResultCursor` / `ResultTable` receiver) was available to the caller.
     ///
     /// If an API that reliably exposes the query ID is available (e.g.
-    /// `ResultSet::query_id`), prefer that. Use this accessor as a best-effort fallback.
+    /// `ResultCursor::query_id`), prefer that. Use this accessor as a best-effort fallback.
     pub fn query_id(&self) -> Option<&str> {
         match &*self.repr {
             Repr::Network { query_id, .. }
@@ -550,7 +552,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use crate::result::{
-        CellDecodeIssue, CellDecodeResult, CellRef, ColumnType, FromCell,
+        CellConversionError, CellDecodeResult, CellRef, ColumnType, FromCell,
         test_data::{make_result_table_from_rows, make_schema},
     };
 
@@ -562,7 +564,7 @@ mod tests {
     impl FromCell for NoSourceDecode {
         fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
             let _ = cell.required_raw()?;
-            Err(CellDecodeIssue::builder("bad value").build())
+            Err(CellConversionError::builder("bad value").build())
         }
     }
 
@@ -574,7 +576,7 @@ mod tests {
             let raw = cell.required_raw()?;
             raw.parse::<u32>()
                 .map(|_| Self)
-                .map_err(|e| CellDecodeIssue::builder("bad value").source(e).build())
+                .map_err(|e| CellConversionError::builder("bad value").source(e).build())
         }
     }
 
@@ -836,11 +838,13 @@ mod tests {
 
         assert_eq!(decode.issue().reason(), "bad value");
 
-        let issue = StdError::source(decode).expect("decode error should expose CellDecodeIssue");
+        let issue =
+            StdError::source(decode).expect("decode error should expose CellConversionError");
         assert_eq!(issue.to_string(), "bad value");
         assert!(StdError::source(issue).is_some());
 
-        let top = StdError::source(&err).expect("top-level Error should expose CellDecodeIssue");
+        let top =
+            StdError::source(&err).expect("top-level Error should expose CellConversionError");
         assert_eq!(top.to_string(), "bad value");
         assert!(StdError::source(top).is_some());
         assert_eq!(

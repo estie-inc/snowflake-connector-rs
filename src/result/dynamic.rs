@@ -4,7 +4,7 @@ use base64::Engine as _;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
 use crate::result::{
-    CellDecodeIssue, CellDecodeResult, FromRow, RowPlanContext,
+    CellConversionError, CellDecodeResult, FromRow, RowPlanContext,
     cell::CellRef,
     decode::{
         decode_hex, parse_time_seconds_and_nanos, parse_timestamp_epoch,
@@ -21,7 +21,7 @@ use crate::{
 ///
 /// Snowflake decimals can carry up to 38 digits of precision, which does not fit in any native Rust numeric type.
 /// `DecimalValue` therefore preserves the value as the exact string Snowflake delivered.
-/// The column's declared precision and scale are available on its [`ColumnType`](crate::result::ColumnType).
+/// The column's declared precision and scale are available on its [`ColumnType`](crate::ColumnType).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecimalValue {
     raw: Box<str>,
@@ -51,18 +51,18 @@ impl fmt::Display for DecimalValue {
 /// # Example
 ///
 /// ```
-/// use snowflake_connector_rs::result::SnowflakeValue;
+/// use snowflake_connector_rs::CellValue;
 ///
-/// let value = SnowflakeValue::Integer(42);
+/// let value = CellValue::Integer(42);
 /// match value {
-///     SnowflakeValue::Integer(n) => assert_eq!(n, 42),
-///     SnowflakeValue::Null => unreachable!(),
+///     CellValue::Integer(n) => assert_eq!(n, 42),
+///     CellValue::Null => unreachable!(),
 ///     other => panic!("unexpected variant: {other:?}"),
 /// }
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-pub enum SnowflakeValue {
+pub enum CellValue {
     /// SQL `NULL`.
     Null,
     /// `BOOLEAN`.
@@ -92,30 +92,30 @@ pub enum SnowflakeValue {
     Binary(Vec<u8>),
 }
 
-impl SnowflakeValue {
-    /// Returns `true` for [`SnowflakeValue::Null`].
+impl CellValue {
+    /// Returns `true` for [`CellValue::Null`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use snowflake_connector_rs::result::SnowflakeValue;
+    /// use snowflake_connector_rs::CellValue;
     ///
-    /// assert!(SnowflakeValue::Null.is_null());
-    /// assert!(!SnowflakeValue::Integer(0).is_null());
+    /// assert!(CellValue::Null.is_null());
+    /// assert!(!CellValue::Integer(0).is_null());
     /// ```
     pub fn is_null(&self) -> bool {
-        matches!(self, SnowflakeValue::Null)
+        matches!(self, CellValue::Null)
     }
 }
 
-/// A row decoded into the dynamic [`SnowflakeValue`] vocabulary.
+/// A row decoded into the dynamic [`CellValue`] vocabulary.
 ///
 /// Values are stored in column order and can be accessed by
 /// [`ColumnIndex`] or by raw column name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DynamicRow {
     schema: Arc<Schema>,
-    values: Box<[SnowflakeValue]>,
+    values: Box<[CellValue]>,
 }
 
 impl DynamicRow {
@@ -125,7 +125,7 @@ impl DynamicRow {
     }
 
     /// Borrow all decoded values in column order.
-    pub fn values(&self) -> &[SnowflakeValue] {
+    pub fn values(&self) -> &[CellValue] {
         &self.values
     }
 
@@ -135,8 +135,8 @@ impl DynamicRow {
     ///
     /// Returns [`SchemaError::MissingColumn`] when no column carries the
     /// name, or [`SchemaError::AmbiguousColumn`] when several do.
-    pub fn value(&self, name: &str) -> std::result::Result<&SnowflakeValue, SchemaError> {
-        let idx = self.schema.column(name)?;
+    pub fn value(&self, name: &str) -> std::result::Result<&CellValue, SchemaError> {
+        let idx = self.schema.column_index(name)?;
         self.value_at(idx)
     }
 
@@ -146,10 +146,7 @@ impl DynamicRow {
     ///
     /// Returns [`SchemaError::InvalidColumnIndex`] when `index` is out of
     /// range for this row's schema.
-    pub fn value_at(
-        &self,
-        index: ColumnIndex,
-    ) -> std::result::Result<&SnowflakeValue, SchemaError> {
+    pub fn value_at(&self, index: ColumnIndex) -> std::result::Result<&CellValue, SchemaError> {
         self.schema.column_at(index).ok_or_else(|| {
             SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(index, self.schema.len()))
         })?;
@@ -157,42 +154,39 @@ impl DynamicRow {
     }
 
     /// Move a value out of the row by raw label, replacing the slot with
-    /// [`SnowflakeValue::Null`].
+    /// [`CellValue::Null`].
     ///
     /// # Errors
     ///
     /// Returns [`SchemaError::MissingColumn`] when no column carries the
     /// name, or [`SchemaError::AmbiguousColumn`] when several do.
-    pub fn take(&mut self, name: &str) -> std::result::Result<SnowflakeValue, SchemaError> {
-        let idx = self.schema.column(name)?;
+    pub fn take(&mut self, name: &str) -> std::result::Result<CellValue, SchemaError> {
+        let idx = self.schema.column_index(name)?;
         self.take_at(idx)
     }
 
     /// Move a value out of the row by resolved index, replacing the slot
-    /// with [`SnowflakeValue::Null`].
+    /// with [`CellValue::Null`].
     ///
     /// # Errors
     ///
     /// Returns [`SchemaError::InvalidColumnIndex`] when `index` is out of
     /// range for this row's schema.
-    pub fn take_at(
-        &mut self,
-        index: ColumnIndex,
-    ) -> std::result::Result<SnowflakeValue, SchemaError> {
+    pub fn take_at(&mut self, index: ColumnIndex) -> std::result::Result<CellValue, SchemaError> {
         self.schema.column_at(index).ok_or_else(|| {
             SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(index, self.schema.len()))
         })?;
 
         Ok(mem::replace(
             &mut self.values[index.as_usize()],
-            SnowflakeValue::Null,
+            CellValue::Null,
         ))
     }
 
     /// Consume the row, returning the shared schema and the decoded values
     /// in column order.
     ///
-    pub fn into_parts(self) -> (Arc<Schema>, Box<[SnowflakeValue]>) {
+    pub fn into_parts(self) -> (Arc<Schema>, Box<[CellValue]>) {
         (self.schema, self.values)
     }
 
@@ -221,7 +215,7 @@ impl DynamicRow {
     }
 }
 
-impl SnowflakeValue {
+impl CellValue {
     /// Convert this value into a [`serde_json::Value`].
     ///
     /// Lossy in the cases where Snowflake's value range exceeds JSON's
@@ -231,29 +225,27 @@ impl SnowflakeValue {
     /// canonical string form, and `Binary` is base64-encoded.
     pub fn into_json_value(self) -> serde_json::Value {
         match self {
-            SnowflakeValue::Null => serde_json::Value::Null,
-            SnowflakeValue::Boolean(b) => serde_json::Value::Bool(b),
-            SnowflakeValue::Integer(i) => match serde_json::Number::from_i128(i) {
+            CellValue::Null => serde_json::Value::Null,
+            CellValue::Boolean(b) => serde_json::Value::Bool(b),
+            CellValue::Integer(i) => match serde_json::Number::from_i128(i) {
                 Some(n) => serde_json::Value::Number(n),
                 None => serde_json::Value::String(i.to_string()),
             },
-            SnowflakeValue::Float(f) => match serde_json::Number::from_f64(f) {
+            CellValue::Float(f) => match serde_json::Number::from_f64(f) {
                 Some(n) => serde_json::Value::Number(n),
                 None => serde_json::Value::String(f.to_string()),
             },
-            SnowflakeValue::Decimal(d) => serde_json::Value::String(d.raw().to_string()),
-            SnowflakeValue::String(s) => serde_json::Value::String(s),
-            SnowflakeValue::Date(d) => serde_json::Value::String(d.format("%Y-%m-%d").to_string()),
-            SnowflakeValue::Time(t) => {
-                serde_json::Value::String(t.format("%H:%M:%S%.f").to_string())
-            }
-            SnowflakeValue::TimestampNtz(dt) => {
+            CellValue::Decimal(d) => serde_json::Value::String(d.raw().to_string()),
+            CellValue::String(s) => serde_json::Value::String(s),
+            CellValue::Date(d) => serde_json::Value::String(d.format("%Y-%m-%d").to_string()),
+            CellValue::Time(t) => serde_json::Value::String(t.format("%H:%M:%S%.f").to_string()),
+            CellValue::TimestampNtz(dt) => {
                 serde_json::Value::String(dt.format("%Y-%m-%dT%H:%M:%S%.f").to_string())
             }
-            SnowflakeValue::TimestampLtz(dt) => serde_json::Value::String(dt.to_rfc3339()),
-            SnowflakeValue::TimestampTz(dt) => serde_json::Value::String(dt.to_rfc3339()),
-            SnowflakeValue::Json(v) => v,
-            SnowflakeValue::Binary(bytes) => {
+            CellValue::TimestampLtz(dt) => serde_json::Value::String(dt.to_rfc3339()),
+            CellValue::TimestampTz(dt) => serde_json::Value::String(dt.to_rfc3339()),
+            CellValue::Json(v) => v,
+            CellValue::Binary(bytes) => {
                 serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(&bytes))
             }
         }
@@ -264,7 +256,7 @@ impl FromRow for DynamicRow {
     type Plan = Arc<Schema>;
 
     fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
-        Ok(ctx.schema_arc())
+        Ok(ctx.shared_schema())
     }
 
     fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
@@ -276,7 +268,7 @@ impl FromRow for DynamicRow {
                     cell.row_index(),
                     cell.column().index(),
                     cell.column().name(),
-                    type_name::<SnowflakeValue>(),
+                    type_name::<CellValue>(),
                     cell.column().ty().clone(),
                     cell.raw(),
                     issue,
@@ -291,9 +283,9 @@ impl FromRow for DynamicRow {
     }
 }
 
-fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<SnowflakeValue> {
+fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<CellValue> {
     if cell.is_null() {
-        return Ok(SnowflakeValue::Null);
+        return Ok(CellValue::Null);
     }
 
     let raw = cell.raw().expect("non-null checked above");
@@ -302,30 +294,30 @@ fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<SnowflakeValue> {
     match ty {
         ColumnType::Boolean => {
             if raw == "1" || raw.eq_ignore_ascii_case("true") {
-                Ok(SnowflakeValue::Boolean(true))
+                Ok(CellValue::Boolean(true))
             } else if raw == "0" || raw.eq_ignore_ascii_case("false") {
-                Ok(SnowflakeValue::Boolean(false))
+                Ok(CellValue::Boolean(false))
             } else {
-                Err(CellDecodeIssue::builder(format!("'{raw}' is not bool")).build())
+                Err(CellConversionError::builder(format!("'{raw}' is not bool")).build())
             }
         }
         ColumnType::Fixed { scale, .. } => {
             if scale.unwrap_or(0) == 0 {
                 if let Ok(v) = raw.parse::<i128>() {
-                    return Ok(SnowflakeValue::Integer(v));
+                    return Ok(CellValue::Integer(v));
                 }
             }
-            Ok(SnowflakeValue::Decimal(DecimalValue::new(raw)))
+            Ok(CellValue::Decimal(DecimalValue::new(raw)))
         }
-        ColumnType::Real => raw.parse::<f64>().map(SnowflakeValue::Float).map_err(|e| {
-            CellDecodeIssue::builder(format!("parse error: {e}"))
+        ColumnType::Real => raw.parse::<f64>().map(CellValue::Float).map_err(|e| {
+            CellConversionError::builder(format!("parse error: {e}"))
                 .source(e)
                 .build()
         }),
-        ColumnType::Text { .. } => Ok(SnowflakeValue::String(raw.to_string())),
+        ColumnType::Text { .. } => Ok(CellValue::String(raw.to_string())),
         ColumnType::Date => {
             let days = raw.parse::<i64>().map_err(|e| {
-                CellDecodeIssue::builder(format!("'{raw}' not Date"))
+                CellConversionError::builder(format!("'{raw}' not Date"))
                     .source(e)
                     .build()
             })?;
@@ -335,8 +327,8 @@ fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<SnowflakeValue> {
             } else {
                 epoch.checked_sub_days(chrono::Days::new(days.unsigned_abs()))
             }
-            .ok_or_else(|| CellDecodeIssue::builder(format!("'{raw}' not Date")).build())?;
-            Ok(SnowflakeValue::Date(date))
+            .ok_or_else(|| CellConversionError::builder(format!("'{raw}' not Date")).build())?;
+            Ok(CellValue::Date(date))
         }
         ColumnType::Time { scale } => {
             let scale = match scale {
@@ -344,50 +336,51 @@ fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<SnowflakeValue> {
                 Some(s) if (0..=9).contains(s) => *s as usize,
                 Some(s) => {
                     return Err(
-                        CellDecodeIssue::builder(format!("invalid time scale: {s}")).build()
+                        CellConversionError::builder(format!("invalid time scale: {s}")).build(),
                     );
                 }
             };
             let (secs, nsec) = parse_time_seconds_and_nanos(raw, scale)
-                .map_err(|m| CellDecodeIssue::builder(m).build())?;
-            let t = NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
-                .ok_or_else(|| CellDecodeIssue::builder(format!("invalid time: {raw}")).build())?;
-            Ok(SnowflakeValue::Time(t))
+                .map_err(|m| CellConversionError::builder(m).build())?;
+            let t = NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec).ok_or_else(|| {
+                CellConversionError::builder(format!("invalid time: {raw}")).build()
+            })?;
+            Ok(CellValue::Time(t))
         }
         ColumnType::TimestampNtz { scale } => {
             let scale = i64::from(scale.unwrap_or(9));
             let dt = parse_timestamp_epoch(raw, scale)
-                .map_err(|m| CellDecodeIssue::builder(m).build())?;
-            Ok(SnowflakeValue::TimestampNtz(dt.naive_utc()))
+                .map_err(|m| CellConversionError::builder(m).build())?;
+            Ok(CellValue::TimestampNtz(dt.naive_utc()))
         }
         ColumnType::TimestampLtz { scale } => {
             let scale = i64::from(scale.unwrap_or(9));
             let dt = parse_timestamp_epoch(raw, scale)
-                .map_err(|m| CellDecodeIssue::builder(m).build())?;
-            Ok(SnowflakeValue::TimestampLtz(dt))
+                .map_err(|m| CellConversionError::builder(m).build())?;
+            Ok(CellValue::TimestampLtz(dt))
         }
         ColumnType::TimestampTz { scale } => {
             let scale = i64::from(scale.unwrap_or(9));
             let dt = parse_timestamp_tz_with_offset(raw, scale)
-                .map_err(|m| CellDecodeIssue::builder(m).build())?;
-            Ok(SnowflakeValue::TimestampTz(dt))
+                .map_err(|m| CellConversionError::builder(m).build())?;
+            Ok(CellValue::TimestampTz(dt))
         }
         ColumnType::Variant | ColumnType::Object | ColumnType::Array => {
             let v = serde_json::from_str(raw).map_err(|e| {
-                CellDecodeIssue::builder(format!("invalid json: {e}"))
+                CellConversionError::builder(format!("invalid json: {e}"))
                     .source(e)
                     .build()
             })?;
-            Ok(SnowflakeValue::Json(v))
+            Ok(CellValue::Json(v))
         }
         ColumnType::Binary { .. } => {
-            let bytes = decode_hex(raw).map_err(|m| CellDecodeIssue::builder(m).build())?;
-            Ok(SnowflakeValue::Binary(bytes))
+            let bytes = decode_hex(raw).map_err(|m| CellConversionError::builder(m).build())?;
+            Ok(CellValue::Binary(bytes))
         }
         ColumnType::Geography
         | ColumnType::Geometry
         | ColumnType::Vector
-        | ColumnType::Unknown { .. } => Ok(SnowflakeValue::String(raw.to_string())),
+        | ColumnType::Unknown { .. } => Ok(CellValue::String(raw.to_string())),
     }
 }
 
@@ -413,7 +406,7 @@ mod tests {
         for value in [r#"{"a":1}"#, "plain text"] {
             let row = one_cell_row(ColumnType::Text { length: None }, value);
             match row.value("PAYLOAD").unwrap() {
-                SnowflakeValue::String(actual) => assert_eq!(actual, value),
+                CellValue::String(actual) => assert_eq!(actual, value),
                 other => panic!("expected String, got {other:?}"),
             }
         }
@@ -423,7 +416,7 @@ mod tests {
     fn dynamic_row_decodes_variant_cells_as_json() {
         let row = one_cell_row(ColumnType::Variant, r#"{"a":1}"#);
         match row.value("PAYLOAD").unwrap() {
-            SnowflakeValue::Json(value) => assert_eq!(value["a"], 1),
+            CellValue::Json(value) => assert_eq!(value["a"], 1),
             other => panic!("expected Json, got {other:?}"),
         }
     }
@@ -442,7 +435,7 @@ mod tests {
         assert_eq!(decode.row_index(), 0);
         assert_eq!(decode.column_name(), "PAYLOAD");
         assert_eq!(decode.issue().reason(), "'maybe' is not bool");
-        assert!(decode.target_type_name().ends_with("SnowflakeValue"));
+        assert!(decode.target_type_name().ends_with("CellValue"));
         assert_eq!(decode.raw_value_preview(), Some("maybe"));
     }
 
@@ -484,21 +477,21 @@ mod tests {
         .unwrap();
         let row = table.dynamic_rows().unwrap().next().unwrap().unwrap();
 
-        assert_eq!(row.value("ID").unwrap(), &SnowflakeValue::Integer(1));
-        assert_eq!(row.value("id").unwrap(), &SnowflakeValue::Integer(2));
+        assert_eq!(row.value("ID").unwrap(), &CellValue::Integer(1));
+        assert_eq!(row.value("id").unwrap(), &CellValue::Integer(2));
     }
 
     #[test]
     fn dynamic_row_take_at_replaces_slots_with_null() {
         let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
-        let index = row.schema().column("PAYLOAD").unwrap();
+        let index = row.schema().column_index("PAYLOAD").unwrap();
 
         assert_eq!(
             row.take_at(index).unwrap(),
-            SnowflakeValue::String("value".into())
+            CellValue::String("value".into())
         );
-        assert_eq!(row.value_at(index).unwrap(), &SnowflakeValue::Null);
-        assert_eq!(row.take_at(index).unwrap(), SnowflakeValue::Null);
+        assert_eq!(row.value_at(index).unwrap(), &CellValue::Null);
+        assert_eq!(row.take_at(index).unwrap(), CellValue::Null);
     }
 
     #[test]
@@ -518,10 +511,10 @@ mod tests {
 
         assert_eq!(
             row.take("PAYLOAD").unwrap(),
-            SnowflakeValue::String("value".into())
+            CellValue::String("value".into())
         );
-        assert_eq!(row.value("PAYLOAD").unwrap(), &SnowflakeValue::Null,);
-        assert_eq!(row.take("PAYLOAD").unwrap(), SnowflakeValue::Null);
+        assert_eq!(row.value("PAYLOAD").unwrap(), &CellValue::Null,);
+        assert_eq!(row.take("PAYLOAD").unwrap(), CellValue::Null);
     }
 
     #[test]
@@ -568,10 +561,10 @@ mod tests {
         assert_eq!(
             walked,
             vec![
-                ("ID".to_string(), SnowflakeValue::Integer(1)),
+                ("ID".to_string(), CellValue::Integer(1)),
                 (
                     "PAYLOAD".to_string(),
-                    SnowflakeValue::String("value".to_string())
+                    CellValue::String("value".to_string())
                 ),
             ]
         );

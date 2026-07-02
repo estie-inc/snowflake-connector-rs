@@ -11,13 +11,13 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelik
 /// # Example
 ///
 /// ```
-/// use snowflake_connector_rs::bind::{RawBind, SnowflakeBindType};
+/// use snowflake_connector_rs::bind::{RawBind, BindType};
 ///
-/// let _ = RawBind::new(SnowflakeBindType::DecFloat, "1.23e-40");
+/// let _ = RawBind::new(BindType::DecFloat, "1.23e-40");
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum SnowflakeBindType {
+pub enum BindType {
     /// `FIXED` — integer NUMBER.
     Fixed,
     /// `REAL` — IEEE 754 floating-point.
@@ -44,7 +44,7 @@ pub enum SnowflakeBindType {
     DecFloat,
 }
 
-impl SnowflakeBindType {
+impl BindType {
     pub(crate) fn as_wire_str(self) -> &'static str {
         match self {
             Self::Fixed => "FIXED",
@@ -88,23 +88,23 @@ impl fmt::Debug for BindValue {
 /// Internal typed bind value used by [`IntoBind`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bind {
-    ty: SnowflakeBindType,
+    ty: BindType,
     value: Option<BindValue>,
 }
 
 impl Bind {
-    pub(crate) fn new(ty: SnowflakeBindType, value: BindValue) -> Self {
+    pub(crate) fn new(ty: BindType, value: BindValue) -> Self {
         Self {
             ty,
             value: Some(value),
         }
     }
 
-    pub(crate) fn null(ty: SnowflakeBindType) -> Self {
+    pub(crate) fn null(ty: BindType) -> Self {
         Self { ty, value: None }
     }
 
-    pub(crate) fn ty(&self) -> SnowflakeBindType {
+    pub(crate) fn ty(&self) -> BindType {
         self.ty
     }
 
@@ -529,7 +529,7 @@ pub(super) mod into_bind_sealed {
 
 pub(super) mod into_bind_nullable_sealed {
     pub trait Sealed {
-        const DEFAULT_TYPE: super::SnowflakeBindType;
+        const DEFAULT_TYPE: super::BindType;
     }
 }
 
@@ -540,7 +540,7 @@ where
     <T as into_bind_sealed::Sealed>::into_bind(value)
 }
 
-pub(crate) fn default_null_bind_type<T>() -> SnowflakeBindType
+pub(crate) fn default_null_bind_type<T>() -> BindType
 where
     T: IntoBindNullable,
 {
@@ -567,7 +567,7 @@ impl<T> into_bind_nullable_sealed::Sealed for Option<T>
 where
     T: IntoBindNullable,
 {
-    const DEFAULT_TYPE: SnowflakeBindType = <T as into_bind_nullable_sealed::Sealed>::DEFAULT_TYPE;
+    const DEFAULT_TYPE: BindType = <T as into_bind_nullable_sealed::Sealed>::DEFAULT_TYPE;
 }
 
 macro_rules! impl_fixed_into_bind {
@@ -577,14 +577,14 @@ macro_rules! impl_fixed_into_bind {
 
             impl into_bind_sealed::Sealed for $t {
                 fn into_bind(self) -> Bind {
-                    Bind::new(SnowflakeBindType::Fixed, BindValue::Fixed(i128::from(self)))
+                    Bind::new(BindType::Fixed, BindValue::Fixed(i128::from(self)))
                 }
             }
 
             impl IntoBindNullable for $t {}
 
             impl into_bind_nullable_sealed::Sealed for $t {
-                const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::Fixed;
+                const DEFAULT_TYPE: BindType = BindType::Fixed;
             }
         )+
     };
@@ -599,14 +599,14 @@ macro_rules! impl_real_into_bind {
 
             impl into_bind_sealed::Sealed for $t {
                 fn into_bind(self) -> Bind {
-                    Bind::new(SnowflakeBindType::Real, BindValue::$variant(self))
+                    Bind::new(BindType::Real, BindValue::$variant(self))
                 }
             }
 
             impl IntoBindNullable for $t {}
 
             impl into_bind_nullable_sealed::Sealed for $t {
-                const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::Real;
+                const DEFAULT_TYPE: BindType = BindType::Real;
             }
         )+
     };
@@ -618,163 +618,154 @@ impl IntoBind for bool {}
 
 impl into_bind_sealed::Sealed for bool {
     fn into_bind(self) -> Bind {
-        Bind::new(SnowflakeBindType::Boolean, BindValue::Bool(self))
+        Bind::new(BindType::Boolean, BindValue::Bool(self))
     }
 }
 
 impl IntoBindNullable for bool {}
 
 impl into_bind_nullable_sealed::Sealed for bool {
-    const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::Boolean;
+    const DEFAULT_TYPE: BindType = BindType::Boolean;
 }
 
 impl IntoBind for &'static str {}
 
 impl into_bind_sealed::Sealed for &'static str {
     fn into_bind(self) -> Bind {
-        Bind::new(SnowflakeBindType::Text, BindValue::Text(self.into()))
+        Bind::new(BindType::Text, BindValue::Text(self.into()))
     }
 }
 
 impl IntoBindNullable for &'static str {}
 
 impl into_bind_nullable_sealed::Sealed for &'static str {
-    const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::Text;
+    const DEFAULT_TYPE: BindType = BindType::Text;
 }
 
 impl IntoBind for String {}
 
 impl into_bind_sealed::Sealed for String {
     fn into_bind(self) -> Bind {
-        Bind::new(SnowflakeBindType::Text, BindValue::Text(self.into()))
+        Bind::new(BindType::Text, BindValue::Text(self.into()))
     }
 }
 
 impl IntoBindNullable for String {}
 
 impl into_bind_nullable_sealed::Sealed for String {
-    const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::Text;
+    const DEFAULT_TYPE: BindType = BindType::Text;
 }
 
 impl IntoBind for Cow<'static, str> {}
 
 impl into_bind_sealed::Sealed for Cow<'static, str> {
     fn into_bind(self) -> Bind {
-        Bind::new(SnowflakeBindType::Text, BindValue::Text(self))
+        Bind::new(BindType::Text, BindValue::Text(self))
     }
 }
 
 impl IntoBindNullable for Cow<'static, str> {}
 
 impl into_bind_nullable_sealed::Sealed for Cow<'static, str> {
-    const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::Text;
+    const DEFAULT_TYPE: BindType = BindType::Text;
 }
 
 impl IntoBind for NaiveDate {}
 
 impl into_bind_sealed::Sealed for NaiveDate {
     fn into_bind(self) -> Bind {
-        Bind::new(SnowflakeBindType::Date, BindValue::Date(self))
+        Bind::new(BindType::Date, BindValue::Date(self))
     }
 }
 
 impl IntoBindNullable for NaiveDate {}
 
 impl into_bind_nullable_sealed::Sealed for NaiveDate {
-    const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::Date;
+    const DEFAULT_TYPE: BindType = BindType::Date;
 }
 
 impl IntoBind for TimestampNtz {}
 
 impl into_bind_sealed::Sealed for TimestampNtz {
     fn into_bind(self) -> Bind {
-        Bind::new(
-            SnowflakeBindType::TimestampNtz,
-            BindValue::TimestampNtz(self.0),
-        )
+        Bind::new(BindType::TimestampNtz, BindValue::TimestampNtz(self.0))
     }
 }
 
 impl IntoBindNullable for TimestampNtz {}
 
 impl into_bind_nullable_sealed::Sealed for TimestampNtz {
-    const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::TimestampNtz;
+    const DEFAULT_TYPE: BindType = BindType::TimestampNtz;
 }
 
 impl IntoBind for TimestampLtz {}
 
 impl into_bind_sealed::Sealed for TimestampLtz {
     fn into_bind(self) -> Bind {
-        Bind::new(
-            SnowflakeBindType::TimestampLtz,
-            BindValue::TimestampLtz(self.0),
-        )
+        Bind::new(BindType::TimestampLtz, BindValue::TimestampLtz(self.0))
     }
 }
 
 impl IntoBindNullable for TimestampLtz {}
 
 impl into_bind_nullable_sealed::Sealed for TimestampLtz {
-    const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::TimestampLtz;
+    const DEFAULT_TYPE: BindType = BindType::TimestampLtz;
 }
 
 impl IntoBind for Binary {}
 
 impl into_bind_sealed::Sealed for Binary {
     fn into_bind(self) -> Bind {
-        Bind::new(SnowflakeBindType::Binary, BindValue::Binary(self.0))
+        Bind::new(BindType::Binary, BindValue::Binary(self.0))
     }
 }
 
 impl IntoBindNullable for Binary {}
 
 impl into_bind_nullable_sealed::Sealed for Binary {
-    const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::Binary;
+    const DEFAULT_TYPE: BindType = BindType::Binary;
 }
 
 impl IntoBind for Integer {}
 
 impl into_bind_sealed::Sealed for Integer {
     fn into_bind(self) -> Bind {
-        Bind::new(SnowflakeBindType::Fixed, BindValue::Fixed(self.0))
+        Bind::new(BindType::Fixed, BindValue::Fixed(self.0))
     }
 }
 
 impl IntoBindNullable for Integer {}
 
 impl into_bind_nullable_sealed::Sealed for Integer {
-    const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::Fixed;
+    const DEFAULT_TYPE: BindType = BindType::Fixed;
 }
 
 impl IntoBind for TimestampTz {}
 
 impl into_bind_sealed::Sealed for TimestampTz {
     fn into_bind(self) -> Bind {
-        Bind::new(
-            SnowflakeBindType::TimestampTz,
-            BindValue::TimestampTz(self.0),
-        )
+        Bind::new(BindType::TimestampTz, BindValue::TimestampTz(self.0))
     }
 }
 
 impl IntoBindNullable for TimestampTz {}
 
 impl into_bind_nullable_sealed::Sealed for TimestampTz {
-    const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::TimestampTz;
+    const DEFAULT_TYPE: BindType = BindType::TimestampTz;
 }
 
 impl IntoBind for Time {}
 
 impl into_bind_sealed::Sealed for Time {
     fn into_bind(self) -> Bind {
-        Bind::new(SnowflakeBindType::Time, BindValue::Time(self.0))
+        Bind::new(BindType::Time, BindValue::Time(self.0))
     }
 }
 
 impl IntoBindNullable for Time {}
 
 impl into_bind_nullable_sealed::Sealed for Time {
-    const DEFAULT_TYPE: SnowflakeBindType = SnowflakeBindType::Time;
+    const DEFAULT_TYPE: BindType = BindType::Time;
 }
 
 const _: fn() = || {
@@ -799,11 +790,7 @@ mod tests {
 
     const OUT_OF_RANGE_ABS: i128 = 100_000_000_000_000_000_000_000_000_000_000_000_000_i128;
 
-    fn assert_bind_value(
-        bind: Bind,
-        expected_ty: SnowflakeBindType,
-        expected_value: Option<BindValue>,
-    ) {
+    fn assert_bind_value(bind: Bind, expected_ty: BindType, expected_value: Option<BindValue>) {
         assert_eq!(bind.ty(), expected_ty);
         assert_eq!(bind.value(), expected_value.as_ref());
     }
@@ -831,19 +818,11 @@ mod tests {
     fn option_bind_preserves_underlying_type() {
         assert_bind_value(
             encode_bind(Some("hello")),
-            SnowflakeBindType::Text,
+            BindType::Text,
             Some(BindValue::Text(Cow::Borrowed("hello"))),
         );
-        assert_bind_value(
-            encode_bind(None::<&'static str>),
-            SnowflakeBindType::Text,
-            None,
-        );
-        assert_bind_value(
-            encode_bind(None::<NaiveDate>),
-            SnowflakeBindType::Date,
-            None,
-        );
+        assert_bind_value(encode_bind(None::<&'static str>), BindType::Text, None);
+        assert_bind_value(encode_bind(None::<NaiveDate>), BindType::Date, None);
     }
 
     #[test]
@@ -851,17 +830,17 @@ mod tests {
         let cases = [
             (
                 encode_bind(42_i64),
-                SnowflakeBindType::Fixed,
+                BindType::Fixed,
                 Some(BindValue::Fixed(42)),
             ),
             (
                 encode_bind(1.5_f64),
-                SnowflakeBindType::Real,
+                BindType::Real,
                 Some(BindValue::Real64(1.5)),
             ),
             (
                 encode_bind(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()),
-                SnowflakeBindType::Date,
+                BindType::Date,
                 Some(BindValue::Date(
                     NaiveDate::from_ymd_opt(2024, 6, 15).unwrap(),
                 )),
@@ -876,7 +855,7 @@ mod tests {
                     )
                     .unwrap(),
                 ),
-                SnowflakeBindType::TimestampNtz,
+                BindType::TimestampNtz,
                 Some(BindValue::TimestampNtz(
                     NaiveDate::from_ymd_opt(2024, 6, 15)
                         .unwrap()
@@ -895,7 +874,7 @@ mod tests {
                     )
                     .unwrap(),
                 ),
-                SnowflakeBindType::TimestampLtz,
+                BindType::TimestampLtz,
                 Some(BindValue::TimestampLtz(
                     NaiveDate::from_ymd_opt(2024, 6, 15)
                         .unwrap()
@@ -906,7 +885,7 @@ mod tests {
             ),
             (
                 encode_bind(true),
-                SnowflakeBindType::Boolean,
+                BindType::Boolean,
                 Some(BindValue::Bool(true)),
             ),
         ];
@@ -919,7 +898,7 @@ mod tests {
     #[test]
     fn string_literal_bind_uses_borrowed_cow() {
         let bind = encode_bind("hello");
-        assert_eq!(bind.ty(), SnowflakeBindType::Text);
+        assert_eq!(bind.ty(), BindType::Text);
         match bind.value() {
             Some(BindValue::Text(text)) => {
                 assert!(matches!(text, Cow::Borrowed("hello")));
@@ -938,12 +917,12 @@ mod tests {
     fn wrapper_into_bind_stores_binary_integer_timestamp_tz_and_time() {
         assert_bind_value(
             encode_bind(Binary::new(b"Hello".as_slice())),
-            SnowflakeBindType::Binary,
+            BindType::Binary,
             Some(BindValue::Binary(b"Hello".to_vec())),
         );
         assert_bind_value(
             encode_bind(Integer::try_from(123_i128).unwrap()),
-            SnowflakeBindType::Fixed,
+            BindType::Fixed,
             Some(BindValue::Fixed(123)),
         );
         assert_bind_value(
@@ -958,7 +937,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            SnowflakeBindType::TimestampTz,
+            BindType::TimestampTz,
             Some(BindValue::TimestampTz(
                 NaiveDate::from_ymd_opt(2024, 6, 15)
                     .unwrap()
@@ -970,7 +949,7 @@ mod tests {
         );
         assert_bind_value(
             encode_bind(Time::try_from(NaiveTime::from_hms_opt(12, 34, 56).unwrap()).unwrap()),
-            SnowflakeBindType::Time,
+            BindType::Time,
             Some(BindValue::Time(
                 NaiveTime::from_hms_opt(12, 34, 56).unwrap(),
             )),
@@ -980,7 +959,7 @@ mod tests {
     #[test]
     fn real_bind_preserves_original_float_values() {
         let nan_bind = encode_bind(f64::NAN);
-        assert_eq!(nan_bind.ty(), SnowflakeBindType::Real);
+        assert_eq!(nan_bind.ty(), BindType::Real);
         match nan_bind.value() {
             Some(BindValue::Real64(value)) => assert!(value.is_nan()),
             other => panic!("expected f64 NaN bind, got {other:?}"),
@@ -988,17 +967,17 @@ mod tests {
 
         assert_bind_value(
             encode_bind(f64::INFINITY),
-            SnowflakeBindType::Real,
+            BindType::Real,
             Some(BindValue::Real64(f64::INFINITY)),
         );
         assert_bind_value(
             encode_bind(f64::NEG_INFINITY),
-            SnowflakeBindType::Real,
+            BindType::Real,
             Some(BindValue::Real64(f64::NEG_INFINITY)),
         );
         assert_bind_value(
             encode_bind(0.0_f64),
-            SnowflakeBindType::Real,
+            BindType::Real,
             Some(BindValue::Real64(0.0)),
         );
     }
@@ -1013,13 +992,13 @@ mod tests {
         ] {
             assert_bind_value(
                 encode_bind(value),
-                SnowflakeBindType::Fixed,
+                BindType::Fixed,
                 Some(BindValue::Fixed(expected.parse().unwrap())),
             );
         }
         assert_bind_value(
             encode_bind(u64::MAX),
-            SnowflakeBindType::Fixed,
+            BindType::Fixed,
             Some(BindValue::Fixed(18_446_744_073_709_551_615_i128)),
         );
     }
@@ -1096,7 +1075,7 @@ mod tests {
         );
         assert_bind_value(
             east,
-            SnowflakeBindType::TimestampTz,
+            BindType::TimestampTz,
             Some(BindValue::TimestampTz(
                 NaiveDate::from_ymd_opt(2024, 6, 15)
                     .unwrap()
@@ -1120,7 +1099,7 @@ mod tests {
         );
         assert_bind_value(
             west,
-            SnowflakeBindType::TimestampTz,
+            BindType::TimestampTz,
             Some(BindValue::TimestampTz(
                 NaiveDate::from_ymd_opt(2024, 6, 15)
                     .unwrap()

@@ -3,7 +3,7 @@ use std::iter::repeat_n;
 use chrono::{DateTime, Days, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
 use crate::result::{
-    CellDecodeIssue, CellDecodeResult,
+    CellConversionError, CellDecodeResult,
     cell::CellRef,
     dynamic::DecimalValue,
     plan::RowPlanContext,
@@ -17,8 +17,8 @@ const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 /// Decode a single result-set cell into a Rust value.
 ///
 /// Implementations exist for primitive Rust types,
-/// [`SnowflakeValue`](crate::result::SnowflakeValue),
-/// [`DecimalValue`](crate::result::DecimalValue), and `Option<T>`.
+/// [`CellValue`](crate::CellValue),
+/// [`DecimalValue`](crate::DecimalValue), and `Option<T>`.
 /// Implement it yourself when adapting Snowflake values into domain types.
 ///
 /// # Example
@@ -26,8 +26,8 @@ const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 /// A custom decoder that wraps `f64` for type safety:
 ///
 /// ```
-/// use snowflake_connector_rs::result::{
-///     CellDecodeIssue, CellDecodeResult, CellRef, FromCell,
+/// use snowflake_connector_rs::{
+///     CellConversionError, CellDecodeResult, CellRef, FromCell,
 /// };
 ///
 /// struct CelsiusTemp(f64);
@@ -36,7 +36,7 @@ const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 ///     fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
 ///         let raw = cell.required_raw()?;
 ///         raw.parse::<f64>().map(CelsiusTemp).map_err(|e| {
-///             CellDecodeIssue::builder("not a valid temperature")
+///             CellConversionError::builder("not a valid temperature")
 ///                 .source(e)
 ///                 .build()
 ///         })
@@ -47,7 +47,7 @@ pub trait FromCell: Sized {
     /// Decode a single cell into `Self`.
     ///
     /// Implementations should reject `NULL` for non-`Option` targets and
-    /// describe conversion failures with [`CellDecodeIssue`].
+    /// describe conversion failures with [`CellConversionError`].
     ///
     /// # Errors
     ///
@@ -67,7 +67,7 @@ pub trait FromCell: Sized {
 /// ```
 /// use snowflake_connector_rs::{
 ///     FromRow, Result,
-///     result::{ColumnIndex, RowPlanContext, RowRef},
+///     {ColumnIndex, RowPlanContext, RowRef},
 /// };
 ///
 /// struct UserRow {
@@ -86,8 +86,8 @@ pub trait FromCell: Sized {
 ///     fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
 ///         let schema = ctx.schema();
 ///         Ok(UserRowPlan {
-///             id: schema.column("ID")?,
-///             name: schema.column("NAME")?,
+///             id: schema.column_index("ID")?,
+///             name: schema.column_index("NAME")?,
 ///         })
 ///     }
 ///
@@ -159,7 +159,7 @@ fn ensure_column_type(cell: CellRef<'_>, ok: bool) -> CellDecodeResult<()> {
     if ok {
         Ok(())
     } else {
-        Err(CellDecodeIssue::builder(format!(
+        Err(CellConversionError::builder(format!(
             "incompatible column type: {:?}",
             cell.column().ty()
         ))
@@ -176,7 +176,7 @@ macro_rules! impl_int_from_cell {
                     ColumnType::Fixed { scale, .. } => {
                         let s = scale.unwrap_or(0);
                         if s != 0 {
-                            return Err(CellDecodeIssue::builder(format!(
+                            return Err(CellConversionError::builder(format!(
                                 "integer cannot decode FIXED with scale {s}"
                             ))
                             .build());
@@ -189,7 +189,7 @@ macro_rules! impl_int_from_cell {
                 }
                 let raw = cell.required_raw()?;
                 raw.parse::<$t>().map_err(|e| {
-                    CellDecodeIssue::builder(format!("parse error: {e}"))
+                    CellConversionError::builder(format!("parse error: {e}"))
                         .source(e)
                         .build()
                 })
@@ -221,7 +221,7 @@ impl FromCell for f64 {
 
         let raw = cell.required_raw()?;
         raw.parse::<f64>().map_err(|e| {
-            CellDecodeIssue::builder(format!("parse error: {e}"))
+            CellConversionError::builder(format!("parse error: {e}"))
                 .source(e)
                 .build()
         })
@@ -240,7 +240,7 @@ impl FromCell for f32 {
 
         let raw = cell.required_raw()?;
         raw.parse::<f32>().map_err(|e| {
-            CellDecodeIssue::builder(format!("parse error: {e}"))
+            CellConversionError::builder(format!("parse error: {e}"))
                 .source(e)
                 .build()
         })
@@ -271,7 +271,7 @@ impl FromCell for bool {
         } else if raw == "0" || raw.eq_ignore_ascii_case("false") {
             Ok(false)
         } else {
-            Err(CellDecodeIssue::builder(format!("'{raw}' is not bool")).build())
+            Err(CellConversionError::builder(format!("'{raw}' is not bool")).build())
         }
     }
 }
@@ -282,7 +282,7 @@ impl FromCell for NaiveDate {
 
         let raw = cell.required_raw()?;
         let days = raw.parse::<i64>().map_err(|e| {
-            CellDecodeIssue::builder(format!("'{raw}' is not Date"))
+            CellConversionError::builder(format!("'{raw}' is not Date"))
                 .source(e)
                 .build()
         })?;
@@ -292,13 +292,13 @@ impl FromCell for NaiveDate {
             unix_epoch
                 .checked_add_days(Days::new(days as u64))
                 .ok_or_else(|| {
-                    CellDecodeIssue::builder(format!("'{raw}' is not a valid date")).build()
+                    CellConversionError::builder(format!("'{raw}' is not a valid date")).build()
                 })
         } else {
             unix_epoch
                 .checked_sub_days(Days::new(days.unsigned_abs()))
                 .ok_or_else(|| {
-                    CellDecodeIssue::builder(format!("'{raw}' is not a valid date")).build()
+                    CellConversionError::builder(format!("'{raw}' is not a valid date")).build()
                 })
         }
     }
@@ -315,17 +315,17 @@ impl FromCell for NaiveTime {
                 Some(s) if (0..=9).contains(&s) => s as usize,
                 Some(s) => {
                     return Err(
-                        CellDecodeIssue::builder(format!("invalid time scale: {s}")).build()
+                        CellConversionError::builder(format!("invalid time scale: {s}")).build(),
                     );
                 }
             },
             _ => 0,
         };
         let (secs, nsec) = parse_time_seconds_and_nanos(raw, scale)
-            .map_err(|m| CellDecodeIssue::builder(m).build())?;
+            .map_err(|m| CellConversionError::builder(m).build())?;
 
         NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
-            .ok_or_else(|| CellDecodeIssue::builder(format!("invalid time: {raw}")).build())
+            .ok_or_else(|| CellConversionError::builder(format!("invalid time: {raw}")).build())
     }
 }
 
@@ -341,7 +341,7 @@ impl FromCell for NaiveDateTime {
 
         parse_timestamp_epoch(raw, scale)
             .map(|dt| dt.naive_utc())
-            .map_err(|m| CellDecodeIssue::builder(m).build())
+            .map_err(|m| CellConversionError::builder(m).build())
     }
 }
 
@@ -351,12 +351,11 @@ impl FromCell for DateTime<Utc> {
         let scale = timestamp_scale(cell.column().ty()).unwrap_or(9);
 
         match cell.column().ty() {
-            ColumnType::TimestampLtz { .. } => {
-                parse_timestamp_epoch(raw, scale).map_err(|m| CellDecodeIssue::builder(m).build())
-            }
+            ColumnType::TimestampLtz { .. } => parse_timestamp_epoch(raw, scale)
+                .map_err(|m| CellConversionError::builder(m).build()),
             ColumnType::TimestampTz { .. } => parse_timestamp_tz_as_utc(raw, scale)
-                .map_err(|m| CellDecodeIssue::builder(m).build()),
-            other => Err(CellDecodeIssue::builder(format!(
+                .map_err(|m| CellConversionError::builder(m).build()),
+            other => Err(CellConversionError::builder(format!(
                 "unsupported column type for DateTime<Utc>: {other:?}"
             ))
             .build()),
@@ -371,8 +370,8 @@ impl FromCell for DateTime<FixedOffset> {
 
         match cell.column().ty() {
             ColumnType::TimestampTz { .. } => parse_timestamp_tz_with_offset(raw, scale)
-                .map_err(|m| CellDecodeIssue::builder(m).build()),
-            other => Err(CellDecodeIssue::builder(format!(
+                .map_err(|m| CellConversionError::builder(m).build()),
+            other => Err(CellConversionError::builder(format!(
                 "unsupported column type for DateTime<FixedOffset>: {other:?}"
             ))
             .build()),
@@ -392,7 +391,7 @@ impl FromCell for serde_json::Value {
 
         let raw = cell.required_raw()?;
         serde_json::from_str(raw).map_err(|e| {
-            CellDecodeIssue::builder(format!("invalid json: {e}"))
+            CellConversionError::builder(format!("invalid json: {e}"))
                 .source(e)
                 .build()
         })
@@ -407,7 +406,7 @@ impl FromCell for Vec<u8> {
         )?;
 
         let raw = cell.required_raw()?;
-        decode_hex(raw).map_err(|m| CellDecodeIssue::builder(m).build())
+        decode_hex(raw).map_err(|m| CellConversionError::builder(m).build())
     }
 }
 
@@ -957,7 +956,7 @@ mod tests {
         fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
             let raw = cell.required_raw()?;
             raw.parse::<f64>().map(|_| CelsiusTemp).map_err(|e| {
-                CellDecodeIssue::builder("not a valid temperature")
+                CellConversionError::builder("not a valid temperature")
                     .source(e)
                     .build()
             })
@@ -970,7 +969,7 @@ mod tests {
     impl FromCell for AlwaysFails {
         fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
             let _ = cell.required_raw()?;
-            Err(CellDecodeIssue::builder("always fails").build())
+            Err(CellConversionError::builder("always fails").build())
         }
     }
 

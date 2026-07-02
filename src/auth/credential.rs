@@ -2,10 +2,10 @@
 use chrono::Utc;
 
 use crate::{
-    Result, SnowflakeAuthConfig,
+    AuthConfig, Result,
     auth::{
         client::AuthApiClient,
-        config::{PasscodeMode, SnowflakeAuthConfigKind},
+        config::{AuthConfigKind, PasscodeMode},
         wire::{LoginCredentialWire, PasscodeWire},
     },
 };
@@ -81,14 +81,14 @@ pub(crate) trait LoginCredentialProvider {
     ) -> Result<PreparedLoginCredential>;
 }
 
-impl LoginCredentialProvider for SnowflakeAuthConfig {
+impl LoginCredentialProvider for AuthConfig {
     async fn prepare<'a>(
         &'a self,
         _client: &'a AuthApiClient,
         _context: LoginContext<'a>,
     ) -> Result<PreparedLoginCredential> {
         match self.kind() {
-            SnowflakeAuthConfigKind::Password(config) => Ok(PreparedLoginCredential::Password {
+            AuthConfigKind::Password(config) => Ok(PreparedLoginCredential::Password {
                 password: config.password().to_owned(),
                 passcode: config.passcode().map(|passcode| match passcode {
                     PasscodeMode::Separate(code) => PreparedPasscode::Separate(code.clone()),
@@ -96,18 +96,18 @@ impl LoginCredentialProvider for SnowflakeAuthConfig {
                 }),
             }),
             #[cfg(feature = "key-pair-auth")]
-            SnowflakeAuthConfigKind::KeyPair(config) => prepare_jwt_credential(
+            AuthConfigKind::KeyPair(config) => prepare_jwt_credential(
                 config.pem(),
                 config.password(),
                 _context.username,
                 _context.account,
                 Utc::now().timestamp(),
             ),
-            SnowflakeAuthConfigKind::OAuth(config) => {
+            AuthConfigKind::OAuth(config) => {
                 Ok(PreparedLoginCredential::OAuth(config.token().to_owned()))
             }
             #[cfg(feature = "external-browser-sso")]
-            SnowflakeAuthConfigKind::ExternalBrowser(config) => {
+            AuthConfigKind::ExternalBrowser(config) => {
                 let credential =
                     acquire_external_browser_credential(_client, _context, config).await?;
                 Ok(PreparedLoginCredential::ExternalBrowser {
@@ -137,10 +137,10 @@ mod tests {
 
     use super::*;
 
-    use crate::PasswordAuthConfig;
+    use crate::PasswordConfig;
 
     #[cfg(feature = "key-pair-auth")]
-    use crate::KeyPairAuthConfig;
+    use crate::KeyPairConfig;
 
     #[cfg(feature = "key-pair-auth")]
     const ENCRYPTED_TEST_PEM: &str = include_str!("./test_snowflake_key.p8");
@@ -156,7 +156,7 @@ mod tests {
 
     #[tokio::test]
     async fn password_auth_is_prepared_as_password_credential() {
-        let auth = SnowflakeAuthConfig::password("secret");
+        let auth = AuthConfig::password("secret");
         let credential = auth
             .prepare(
                 &dummy_client(),
@@ -179,9 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn password_auth_with_passcode_is_prepared_with_separate_passcode() {
-        let auth = SnowflakeAuthConfig::password(
-            PasswordAuthConfig::new("secret").with_passcode("123456"),
-        );
+        let auth = AuthConfig::password(PasswordConfig::new("secret").with_passcode("123456"));
         let credential = auth
             .prepare(
                 &dummy_client(),
@@ -204,9 +202,8 @@ mod tests {
 
     #[tokio::test]
     async fn password_auth_with_passcode_in_password_is_prepared_accordingly() {
-        let auth = SnowflakeAuthConfig::password(
-            PasswordAuthConfig::new("secret123456").with_passcode_in_password(),
-        );
+        let auth =
+            AuthConfig::password(PasswordConfig::new("secret123456").with_passcode_in_password());
         let credential = auth
             .prepare(
                 &dummy_client(),
@@ -229,7 +226,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_auth_is_prepared_as_oauth_credential() {
-        let auth = SnowflakeAuthConfig::oauth("oauth-token");
+        let auth = AuthConfig::oauth("oauth-token");
         let credential = auth
             .prepare(
                 &dummy_client(),
@@ -248,7 +245,7 @@ mod tests {
     }
 
     #[cfg(feature = "key-pair-auth")]
-    async fn assert_key_pair_auth_prepares_jwt(auth: SnowflakeAuthConfig) {
+    async fn assert_key_pair_auth_prepares_jwt(auth: AuthConfig) {
         let credential = auth
             .prepare(
                 &dummy_client(),
@@ -272,7 +269,7 @@ mod tests {
     #[cfg(feature = "key-pair-auth")]
     #[tokio::test]
     async fn encrypted_key_pair_auth_is_prepared_as_jwt_credential() {
-        let auth = SnowflakeAuthConfig::key_pair(KeyPairAuthConfig::encrypted_pem(
+        let auth = AuthConfig::key_pair(KeyPairConfig::from_encrypted_pem(
             ENCRYPTED_TEST_PEM,
             b"12345".to_vec(),
         ));
@@ -283,8 +280,7 @@ mod tests {
     #[cfg(feature = "key-pair-auth")]
     #[tokio::test]
     async fn unencrypted_key_pair_auth_is_prepared_as_jwt_credential() {
-        let auth =
-            SnowflakeAuthConfig::key_pair(KeyPairAuthConfig::unencrypted_pem(UNENCRYPTED_TEST_PEM));
+        let auth = AuthConfig::key_pair(KeyPairConfig::from_pem(UNENCRYPTED_TEST_PEM));
 
         assert_key_pair_auth_prepares_jwt(auth).await;
     }
