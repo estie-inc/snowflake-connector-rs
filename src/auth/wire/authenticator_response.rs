@@ -22,14 +22,14 @@ struct RawExternalBrowserChallenge {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct AuthenticatorResponse {
+struct AuthenticatorResponseEnvelope {
     data: Option<RawExternalBrowserChallenge>,
     message: Option<String>,
     success: bool,
 }
 
 pub(crate) fn parse_authenticator_response(body: &str) -> Result<ExternalBrowserChallenge> {
-    let parsed: AuthenticatorResponse =
+    let parsed: AuthenticatorResponseEnvelope =
         serde_json::from_str(body).map_err(|e| ProtocolError::json_parse(e, body))?;
     if !parsed.success {
         return Err(AuthError::login_rejected(parsed.message).into());
