@@ -6,8 +6,8 @@ use crate::{
         cell::{CellBlock, CellRef},
         decode::{FromCell, FromRow},
         plan::RowPlanContext,
-        result_table::{ResultTable, ResultTableStorage},
         schema::{Column, ColumnIndex, Schema},
+        table::{ResultTable, ResultTableStorage},
     },
 };
 
@@ -180,7 +180,7 @@ mod tests {
     use super::*;
     use crate::result_table::{
         ColumnType,
-        result_table::{ResultTable, ResultTableStorage},
+        table::{ResultTable, ResultTableStorage},
         test_data::{make_result_table_from_rows, make_schema},
     };
 
