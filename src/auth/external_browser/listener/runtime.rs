@@ -146,9 +146,9 @@ fn log_connection_task_result(join_result: Option<Result<ConnectionTaskResult, J
 }
 
 pub(super) fn bind_listener(
-    cfg: &super::ListenerConfig,
+    config: &super::ListenerConfig,
 ) -> Result<(TcpListener, SocketAddr), ListenerError> {
-    let target_addr = SocketAddr::new(cfg.host, cfg.port);
+    let target_addr = SocketAddr::new(config.host, config.port);
 
     let domain = match target_addr {
         SocketAddr::V4(_) => Domain::IPV4,

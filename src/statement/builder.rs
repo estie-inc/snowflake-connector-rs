@@ -1,3 +1,7 @@
+// `pub(crate)` `StatementParts` is exposed through the sealed (unnameable) `IntoStatement` supertrait; callers cannot name it,
+// so this leak is intentional.
+#![allow(private_interfaces)]
+
 use std::borrow::Cow;
 
 use indexmap::IndexMap;
@@ -321,7 +325,7 @@ where
 
 #[doc(hidden)]
 #[derive(Debug)]
-pub struct StatementParts(StatementPartsRepr);
+pub(crate) struct StatementParts(StatementPartsRepr);
 
 #[derive(Debug)]
 pub(crate) enum StatementPartsRepr {

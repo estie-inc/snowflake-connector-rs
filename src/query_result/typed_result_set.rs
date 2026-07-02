@@ -45,6 +45,11 @@ impl<T: FromRow> TypedResultCursor<T> {
         self.inner.is_exhausted()
     }
 
+    /// Return the underlying [`ResultCursor`], discarding the decode plan.
+    pub fn into_inner(self) -> ResultCursor {
+        self.inner
+    }
+
     /// Fetch the next partition as a typed table.
     ///
     /// # Cancellation safety

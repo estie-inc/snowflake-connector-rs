@@ -209,8 +209,11 @@ impl SessionConfig {
         &self.session_parameters
     }
 
-    pub fn with_session_parameters(mut self, params: HashMap<String, serde_json::Value>) -> Self {
-        self.session_parameters = params;
+    pub fn with_session_parameters(
+        mut self,
+        session_parameters: HashMap<String, serde_json::Value>,
+    ) -> Self {
+        self.session_parameters = session_parameters;
         self
     }
 
