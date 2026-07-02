@@ -29,6 +29,7 @@ impl CollectOptions {
         }
     }
 
+    /// Overrides the connection's default prefetch concurrency for this collect call.
     pub fn with_prefetch_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
         self.prefetch_concurrency = Some(concurrency);
         self
