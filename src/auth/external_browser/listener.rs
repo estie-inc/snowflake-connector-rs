@@ -1,5 +1,5 @@
 mod handler;
-mod runtime;
+mod server;
 
 use std::{
     error::Error,
@@ -14,7 +14,7 @@ use tokio::{
 
 use super::payload::BrowserCallbackPayload;
 
-use runtime::{ListenerRuntime, bind_listener, build_origin};
+use server::{ListenerServer, bind_listener, build_origin};
 
 type ListenerError = Box<dyn Error + Send + Sync>;
 
@@ -133,7 +133,7 @@ pub(crate) async fn spawn_listener(
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (payload_tx, payload_rx) = watch::channel(None);
     let handle = tokio::spawn(
-        ListenerRuntime::new(
+        ListenerServer::new(
             listener,
             expected_origin,
             config.application,
@@ -162,7 +162,7 @@ mod tests {
         time::{Duration, sleep},
     };
 
-    use super::runtime::bind_listener;
+    use super::server::bind_listener;
     use super::*;
 
     async fn read_http_response(stream: &mut TcpStream) -> io::Result<String> {

@@ -12,10 +12,7 @@ use tokio::{
     task::{JoinError, JoinSet},
 };
 
-use super::super::payload::BrowserCallbackPayload;
-
-use super::ListenerError;
-use super::handler::CallbackHandler;
+use super::{super::payload::BrowserCallbackPayload, ListenerError, handler::CallbackHandler};
 
 type ConnectionTaskResult = Result<(), ListenerError>;
 
@@ -57,14 +54,14 @@ impl ConnectionTasks {
     }
 }
 
-pub(super) struct ListenerRuntime {
+pub(super) struct ListenerServer {
     listener: TcpListener,
     shared: Arc<CallbackHandler>,
     shutdown: oneshot::Receiver<()>,
     connections: ConnectionTasks,
 }
 
-impl ListenerRuntime {
+impl ListenerServer {
     pub(super) fn new(
         listener: TcpListener,
         expected_origin: String,

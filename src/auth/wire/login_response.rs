@@ -15,14 +15,14 @@ struct LoginResponseData {
 }
 
 #[derive(serde::Deserialize)]
-struct Response {
+struct LoginResponseEnvelope {
     data: Option<LoginResponseData>,
     message: Option<String>,
     success: bool,
 }
 
 pub(crate) fn parse_login_response(body: &str) -> Result<LoginSession> {
-    let parsed: Response =
+    let parsed: LoginResponseEnvelope =
         serde_json::from_str(body).map_err(|e| ProtocolError::json_parse(e, body))?;
     if !parsed.success {
         return Err(AuthError::login_rejected(parsed.message).into());
