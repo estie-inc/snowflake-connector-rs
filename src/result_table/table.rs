@@ -5,7 +5,7 @@ use bytes::Bytes;
 use crate::{
     Result,
     error::RowsetParseError,
-    result::{
+    result_table::{
         DynamicRow, FromRow,
         cell::{Cell, CellBlock, RawSpan, StringArenaBuilder},
         row::Rows,
@@ -286,7 +286,7 @@ impl ResultTableBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::result::schema::{Column, ColumnType};
+    use crate::result_table::schema::{Column, ColumnType};
 
     fn dummy_schema(n: usize) -> Arc<Schema> {
         let cols = (0..n)

@@ -3,11 +3,11 @@ use std::sync::Arc;
 use crate::{
     chunk::ChunkDownloader,
     error::QueryScopedResult,
-    result::{ResultTable, Schema},
+    result_table::{ResultTable, Schema},
     runtime::BlockingParseLimiter,
 };
 
-use super::{lease::ResolvedLease, partition::PartitionSpec, snapshot::ResultSnapshot};
+use super::{download_lease::ResolvedLease, partition::PartitionSpec, snapshot::ResultSnapshot};
 
 #[derive(Clone)]
 pub(crate) struct FetchContext {

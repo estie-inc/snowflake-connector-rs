@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::result::Schema;
+use crate::result_table::Schema;
 
 /// Schema context for building a row decode plan.
 #[derive(Clone, Copy)]

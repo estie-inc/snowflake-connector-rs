@@ -2,8 +2,8 @@ use std::{fmt, sync::Arc};
 
 use crate::{
     ClientShared, IntoStatement, Result,
-    query_result::{ResultCursor, TypedResultCursor},
-    result::{FromRow, RowPlanContext},
+    result_cursor::{ResultCursor, TypedResultCursor},
+    result_table::{FromRow, RowPlanContext},
     statement::{StatementExecutor, builder::into_statement_parts},
 };
 

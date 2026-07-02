@@ -3,7 +3,7 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use crate::{
     chunk::ChunkDownloader,
     error::{ProtocolError, QueryScopedError, QueryScopedResult, ServerError, SessionExpiredError},
-    query_result::{
+    result_cursor::{
         CollectPolicy, InlineRowset, ResultCursor,
         partition::PartitionCursor,
         partition_source::{PartitionSource, StaticPartitionSource},

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::result::ColumnIndex;
+use crate::result_table::ColumnIndex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]

@@ -2,23 +2,23 @@ mod cell;
 mod decode;
 mod dynamic;
 mod plan;
-mod result_table;
 mod row;
 mod schema;
-mod typed_result_table;
+mod table;
+mod typed_table;
 
 pub use cell::CellRef;
 pub use decode::{FromCell, FromRow};
 pub use dynamic::{CellValue, DecimalValue, DynamicRow};
 pub use plan::RowPlanContext;
-pub use result_table::ResultTable;
 pub use row::{RowRef, Rows};
 pub use schema::{Column, ColumnIndex, ColumnType, Schema};
-pub use typed_result_table::TypedResultTable;
+pub use table::ResultTable;
+pub use typed_table::TypedResultTable;
 
 pub use crate::error::decode::{CellConversionError, CellDecodeResult};
 pub(crate) use cell::RawSpan;
-pub(crate) use result_table::ResultTableBuilder;
+pub(crate) use table::ResultTableBuilder;
 
 #[cfg(any(test, feature = "bench-internals"))]
 #[doc(hidden)]
@@ -26,8 +26,8 @@ pub mod test_data {
     use std::sync::Arc;
 
     use super::{
-        result_table::{ResultTable, ResultTableBuilder},
         schema::{Column, ColumnType, Schema},
+        table::{ResultTable, ResultTableBuilder},
     };
 
     pub fn make_schema(columns: Vec<(String, ColumnType, bool)>) -> Arc<Schema> {

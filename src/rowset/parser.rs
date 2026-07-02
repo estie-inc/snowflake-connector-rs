@@ -19,7 +19,7 @@ use crate::{
     error::{
         InternalError, QueryScopedError, QueryScopedRepr, QueryScopedResult, RowsetParseError,
     },
-    result::{RawSpan, ResultTable, ResultTableBuilder, Schema},
+    result_table::{RawSpan, ResultTable, ResultTableBuilder, Schema},
     runtime::BlockingParseLimiter,
 };
 
@@ -549,7 +549,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        result::{ColumnType, test_data::make_schema},
+        result_table::{ColumnType, test_data::make_schema},
         rowset::workload::{
             BLOCKING_GZIP_COMPRESSED_BYTES, BLOCKING_PARSE_BYTES, BLOCKING_PARSE_CELLS,
             ParseExecution, should_spawn_blocking_parse,

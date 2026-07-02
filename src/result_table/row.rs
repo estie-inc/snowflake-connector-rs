@@ -2,12 +2,12 @@ use std::{any::type_name, marker::PhantomData, sync::Arc};
 
 use crate::{
     CellDecodeError, Error, InvalidColumnIndexError, Result, SchemaError,
-    result::{
+    result_table::{
         cell::{CellBlock, CellRef},
         decode::{FromCell, FromRow},
         plan::RowPlanContext,
-        result_table::{ResultTable, ResultTableStorage},
         schema::{Column, ColumnIndex, Schema},
+        table::{ResultTable, ResultTableStorage},
     },
 };
 
@@ -178,9 +178,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::result::{
+    use crate::result_table::{
         ColumnType,
-        result_table::{ResultTable, ResultTableStorage},
+        table::{ResultTable, ResultTableStorage},
         test_data::{make_result_table_from_rows, make_schema},
     };
 

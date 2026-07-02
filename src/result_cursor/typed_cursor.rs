@@ -2,10 +2,10 @@ use std::{fmt, marker::PhantomData, sync::Arc};
 
 use crate::{
     Result,
-    result::{FromRow, Schema, TypedResultTable},
+    result_table::{FromRow, Schema, TypedResultTable},
 };
 
-use super::result_set::{CollectOptions, ResultCursor};
+use super::cursor::{CollectOptions, ResultCursor};
 
 /// Typed wrapper over a [`ResultCursor`] that owns a precomputed decode plan.
 pub struct TypedResultCursor<T: FromRow> {

@@ -551,7 +551,7 @@ mod tests {
 
     use tokio::net::TcpListener;
 
-    use crate::result::{
+    use crate::result_table::{
         CellConversionError, CellDecodeResult, CellRef, ColumnType, FromCell,
         test_data::{make_result_table_from_rows, make_schema},
     };

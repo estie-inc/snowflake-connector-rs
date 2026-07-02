@@ -7,8 +7,8 @@ use tokio::time::sleep;
 
 use crate::{
     error::{NetworkError, QueryScopedError, QueryScopedResult, TimeoutError},
-    query_result::partition_source::FetchContext,
-    result::{ResultTable, Schema},
+    result_cursor::partition_source::FetchContext,
+    result_table::{ResultTable, Schema},
     rowset::{ParseWorkload, parser::parse_remote_chunk_result_table_async},
 };
 

@@ -2,7 +2,7 @@ use std::iter::repeat_n;
 
 use chrono::{DateTime, Days, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
-use crate::result::{
+use crate::result_table::{
     CellConversionError, CellDecodeResult,
     cell::CellRef,
     dynamic::DecimalValue,
@@ -741,7 +741,7 @@ mod tests {
     use super::*;
     use crate::{
         ResultTable,
-        result::test_data::{make_result_table_from_rows, make_schema},
+        result_table::test_data::{make_result_table_from_rows, make_schema},
         rowset::parser::parse_inline_result_table,
     };
 
