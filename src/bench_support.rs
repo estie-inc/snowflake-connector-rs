@@ -15,16 +15,16 @@ use crate::{
 pub use crate::result::test_data::{column_type, make_result_table_from_rows, make_schema};
 
 #[derive(Debug, Clone)]
-pub struct StatementEnvelopeParts {
+pub struct StatementEnvelopeSummary {
     pub rowset_bytes: Option<Bytes>,
     pub row_type_count: usize,
     pub chunk_count: usize,
 }
 
-pub fn parse_statement_envelope(body: Bytes) -> Result<StatementEnvelopeParts> {
+pub fn parse_statement_envelope(body: Bytes) -> Result<StatementEnvelopeSummary> {
     let response = parse_response(body)?;
     let Some(data) = response.data else {
-        return Ok(StatementEnvelopeParts {
+        return Ok(StatementEnvelopeSummary {
             rowset_bytes: None,
             row_type_count: 0,
             chunk_count: 0,
@@ -32,7 +32,7 @@ pub fn parse_statement_envelope(body: Bytes) -> Result<StatementEnvelopeParts> {
     };
     let row_type_count = data.row_types.as_ref().map_or(0, Vec::len);
     let chunk_count = data.chunks.as_ref().map_or(0, Vec::len);
-    Ok(StatementEnvelopeParts {
+    Ok(StatementEnvelopeSummary {
         rowset_bytes: data.row_set_bytes,
         row_type_count,
         chunk_count,
