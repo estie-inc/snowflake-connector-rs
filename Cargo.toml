@@ -32,7 +32,7 @@ members = [
 
 [dependencies]
 base64 = "0.22"
-bytes = "1.11"
+bytes = "1.12"
 chrono = { version = "0.4", default-features = false, features = [
     "clock",
     "std",
@@ -72,7 +72,7 @@ sha2 = { version = "0.11", optional = true, default-features = false, features =
 ] }
 
 http-body-util = { version = "0.1", optional = true }
-hyper = { version = "1.9", optional = true, features = [
+hyper = { version = "1.10", optional = true, features = [
     "http1",
     "server",
 ] }
