@@ -1,0 +1,5 @@
+error: field-level `positional` is not supported; use container-level `#[snowflake(positional)]` instead
+ --> tests/derive_compile_fail/field_positional_rejected.rs:5:17
+  |
+5 |     #[snowflake(positional)]
+  |                 ^^^^^^^^^^

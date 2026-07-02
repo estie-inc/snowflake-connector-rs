@@ -2,7 +2,7 @@ use syn::{DeriveInput, Field, LitStr, Path, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RenameAll {
-    ScreamingSnake,
+    ScreamingSnakeCase,
     None,
 }
 
@@ -10,9 +10,9 @@ pub(crate) struct ContainerAttrs {
     /// Effective field-name conversion.
     pub(crate) rename_all: RenameAll,
     /// `true` only if the user wrote `#[snowflake(rename_all = "...")]`
-    /// explicitly. Used to reject `by_position` + explicit `rename_all`.
+    /// explicitly. Used to reject `positional` + explicit `rename_all`.
     pub(crate) rename_all_explicit: bool,
-    pub(crate) by_position: bool,
+    pub(crate) positional: bool,
     pub(crate) crate_path: Path,
     pub(crate) crate_path_explicit: bool,
 }
@@ -20,9 +20,9 @@ pub(crate) struct ContainerAttrs {
 impl Default for ContainerAttrs {
     fn default() -> Self {
         Self {
-            rename_all: RenameAll::ScreamingSnake,
+            rename_all: RenameAll::ScreamingSnakeCase,
             rename_all_explicit: false,
-            by_position: false,
+            positional: false,
             crate_path: syn::parse_str("::snowflake_connector_rs").expect("default path"),
             crate_path_explicit: false,
         }
@@ -36,7 +36,7 @@ pub(crate) struct FieldAttrs {
 
 pub(crate) fn parse_container_attrs(input: &DeriveInput) -> Result<ContainerAttrs> {
     let mut out = ContainerAttrs::default();
-    let mut by_position_seen = false;
+    let mut positional_seen = false;
 
     for attr in &input.attrs {
         if !attr.path().is_ident("snowflake") {
@@ -51,7 +51,7 @@ pub(crate) fn parse_container_attrs(input: &DeriveInput) -> Result<ContainerAttr
 
                 let value: LitStr = meta.value()?.parse()?;
                 out.rename_all = match value.value().as_str() {
-                    "SCREAMING_SNAKE_CASE" => RenameAll::ScreamingSnake,
+                    "SCREAMING_SNAKE_CASE" => RenameAll::ScreamingSnakeCase,
                     "none" => RenameAll::None,
                     _ => {
                         return Err(meta.error(
@@ -61,13 +61,13 @@ pub(crate) fn parse_container_attrs(input: &DeriveInput) -> Result<ContainerAttr
                 };
 
                 out.rename_all_explicit = true;
-            } else if meta.path.is_ident("by_position") {
-                if by_position_seen {
-                    return Err(meta.error("duplicate `by_position`"));
+            } else if meta.path.is_ident("positional") {
+                if positional_seen {
+                    return Err(meta.error("duplicate `positional`"));
                 }
 
-                by_position_seen = true;
-                out.by_position = true;
+                positional_seen = true;
+                out.positional = true;
             } else if meta.path.is_ident("crate") {
                 if out.crate_path_explicit {
                     return Err(meta.error("duplicate `crate`"));
@@ -76,7 +76,7 @@ pub(crate) fn parse_container_attrs(input: &DeriveInput) -> Result<ContainerAttr
                 let value: LitStr = meta.value()?.parse()?;
                 let s = value.value();
                 if s.is_empty() {
-                    return Err(meta.error("crate path must not be empty"));
+                    return Err(meta.error("crate path cannot be empty"));
                 }
 
                 let path: Path = syn::parse_str(&s).map_err(|e| meta.error(e.to_string()))?;
@@ -89,10 +89,10 @@ pub(crate) fn parse_container_attrs(input: &DeriveInput) -> Result<ContainerAttr
         })?;
     }
 
-    if out.by_position && out.rename_all_explicit {
+    if out.positional && out.rename_all_explicit {
         return Err(syn::Error::new(
             input.ident.span(),
-            "`by_position` cannot be combined with `rename_all`",
+            "`positional` cannot be combined with `rename_all`",
         ));
     }
 
@@ -115,9 +115,9 @@ pub(crate) fn parse_field_attrs(field: &Field) -> Result<FieldAttrs> {
 
                 let value: LitStr = meta.value()?.parse()?;
                 out.rename = Some(value.value());
-            } else if meta.path.is_ident("by_position") {
+            } else if meta.path.is_ident("positional") {
                 return Err(meta.error(
-                    "field-level `by_position` is not supported; use container-level `#[snowflake(by_position)]` instead",
+                    "field-level `positional` is not supported; use container-level `#[snowflake(positional)]` instead",
                 ));
             } else {
                 return Err(meta.error("unknown field attribute"));

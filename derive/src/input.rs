@@ -102,11 +102,11 @@ fn parse_named(named: &syn::FieldsNamed, container: &ContainerAttrs) -> Result<V
         let ident = field.ident.clone().expect("named");
         let plan_ident = format_ident!("__plan_{}", ident);
 
-        let lookup = if container.by_position {
+        let lookup = if container.positional {
             if field_rename.is_some() {
                 return Err(syn::Error::new(
                     field.span(),
-                    "container `by_position` cannot be combined with field `rename`",
+                    "container `positional` cannot be combined with field `rename`",
                 ));
             }
             FieldLookup::Position(i)
@@ -136,7 +136,7 @@ fn parse_unnamed(
     if container.rename_all_explicit {
         return Err(syn::Error::new(
             unnamed.paren_token.span.span(),
-            "`rename_all` cannot be applied to a tuple struct (implicit `by_position`)",
+            "`rename_all` cannot be applied to a tuple struct (implicit `positional`)",
         ));
     }
 
@@ -153,7 +153,7 @@ fn parse_unnamed(
         if field_attrs.rename.is_some() {
             return Err(syn::Error::new(
                 field.span(),
-                "tuple struct fields cannot use rename",
+                "`rename` cannot be applied to tuple struct fields",
             ));
         }
 

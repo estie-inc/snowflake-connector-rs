@@ -1,4 +1,4 @@
-error: `rename_all` cannot be applied to a tuple struct (implicit `by_position`)
+error: `rename_all` cannot be applied to a tuple struct (implicit `positional`)
  --> tests/derive_compile_fail/tuple_struct_with_rename_all_none.rs:5:11
   |
 5 | struct Bad(i64, String);

@@ -1,0 +1,5 @@
+error: `positional` cannot be combined with `rename_all`
+ --> tests/derive_compile_fail/positional_with_rename_all_none.rs:5:8
+  |
+5 | struct Bad(i64, String);
+  |        ^^^
