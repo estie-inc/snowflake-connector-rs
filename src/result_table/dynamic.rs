@@ -3,7 +3,7 @@ use std::{any::type_name, fmt, mem, sync::Arc};
 use base64::Engine as _;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
-use crate::result::{
+use crate::result_table::{
     CellConversionError, CellDecodeResult, FromRow, RowPlanContext,
     cell::CellRef,
     decode::{
@@ -389,7 +389,7 @@ mod tests {
     use std::ptr;
 
     use super::*;
-    use crate::result::{
+    use crate::result_table::{
         ColumnType,
         test_data::{make_result_table_from_rows, make_schema},
     };

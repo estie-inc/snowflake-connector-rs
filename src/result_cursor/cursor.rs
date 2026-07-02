@@ -5,7 +5,7 @@ use bytes::Bytes;
 use crate::{
     Result,
     error::QueryScopedResult,
-    result::{DynamicRow, ResultTable, Schema},
+    result_table::{DynamicRow, ResultTable, Schema},
     rowset::parser::parse_inline_result_table_async,
     runtime::QueryRuntime,
 };
@@ -323,14 +323,14 @@ mod tests {
     use crate::{
         ErrorKind, MissingColumnError, SchemaError,
         error::QueryScopedRepr,
-        query_result::{
+        result_cursor::{
             TypedResultCursor,
             collect::CollectPolicy,
             partition::{PartitionCursor, PartitionSpec},
             partition_source::tests::{BlockingFetchProbe, FakePartitionSource, FakeResponse},
             snapshot::{ResultIdentity, ResultSnapshot},
         },
-        result::{
+        result_table::{
             CellConversionError, CellDecodeResult, CellRef, Column, ColumnIndex, ColumnType,
             DynamicRow, FromCell, FromRow, RowPlanContext, RowRef, Schema,
         },

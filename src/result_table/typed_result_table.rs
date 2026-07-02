@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, sync::Arc};
 
-use crate::result::{FromRow, ResultTable, Rows, Schema};
+use crate::result_table::{FromRow, ResultTable, Rows, Schema};
 
 /// A [`ResultTable`] paired with a pre-built decode plan for row type `T`.
 pub struct TypedResultTable<T: FromRow> {

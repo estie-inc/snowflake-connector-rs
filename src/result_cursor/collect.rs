@@ -4,7 +4,7 @@ use tokio::task::JoinSet;
 
 use crate::{
     error::{InternalError, QueryScopedError, QueryScopedResult},
-    result::ResultTable,
+    result_table::ResultTable,
     runtime::BlockingParseLimiter,
 };
 

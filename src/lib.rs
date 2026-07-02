@@ -68,8 +68,8 @@ pub mod bind;
 mod chunk;
 mod config;
 mod error;
-mod query_result;
-mod result;
+mod result_cursor;
+mod result_table;
 mod rowset;
 mod runtime;
 mod session;
@@ -89,8 +89,8 @@ pub use error::{
     CellDecodeResult, ColumnCountMismatchError, DuplicateColumnNameError, Error, ErrorKind,
     InvalidColumnIndexError, MissingColumnError, Result, SchemaError,
 };
-pub use query_result::{CollectOptions, ResultCursor, TypedResultCursor};
-pub use result::{
+pub use result_cursor::{CollectOptions, ResultCursor, TypedResultCursor};
+pub use result_table::{
     CellRef, CellValue, Column, ColumnIndex, ColumnType, DecimalValue, DynamicRow, FromCell,
     FromRow, ResultTable, RowPlanContext, RowRef, Rows, Schema, TypedResultTable,
 };

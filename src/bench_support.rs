@@ -7,12 +7,12 @@ use bytes::Bytes;
 
 use crate::{
     Result, ResultTable,
-    result::Schema,
+    result_table::Schema,
     rowset::{self, parser},
     statement::parse_response,
 };
 
-pub use crate::result::test_data::{column_type, make_result_table_from_rows, make_schema};
+pub use crate::result_table::test_data::{column_type, make_result_table_from_rows, make_schema};
 
 #[derive(Debug, Clone)]
 pub struct StatementEnvelopeSummary {

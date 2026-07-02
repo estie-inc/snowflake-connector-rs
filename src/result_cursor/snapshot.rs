@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{query_result::partition::PartitionSpec, result::Schema};
+use crate::{result_cursor::partition::PartitionSpec, result_table::Schema};
 
 pub(crate) struct ResultIdentity {
     pub(crate) query_id: Arc<str>,

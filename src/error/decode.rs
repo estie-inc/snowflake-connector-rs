@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::result::{ColumnIndex, ColumnType};
+use crate::result_table::{ColumnIndex, ColumnType};
 
 use super::{VALUE_PREVIEW_MAX_CHARS, truncate_preview_chars};
 

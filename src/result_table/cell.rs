@@ -2,8 +2,8 @@ use bytes::Bytes;
 
 use crate::{
     error::RowsetParseError,
-    result::schema::Column,
-    result::{CellConversionError, CellDecodeResult},
+    result_table::schema::Column,
+    result_table::{CellConversionError, CellDecodeResult},
 };
 
 #[derive(Clone, Copy, Debug)]
