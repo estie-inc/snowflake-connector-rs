@@ -286,14 +286,10 @@ mod tests {
 
     fn text_row_type(name: &str) -> RawQueryResponseRowType {
         RawQueryResponseRowType {
-            database: String::new(),
             name: name.to_string(),
             nullable: false,
             scale: None,
-            byte_length: Some(16),
             length: Some(16),
-            schema: String::new(),
-            table: String::new(),
             precision: None,
             data_type: "text".to_string(),
         }
@@ -301,7 +297,6 @@ mod tests {
 
     fn whitespace_empty_inline_response(rowset: &'static [u8]) -> RawQueryResponse {
         RawQueryResponse {
-            parameters: None,
             query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: None,
@@ -533,7 +528,6 @@ mod tests {
             runtime,
         };
         let response = RawQueryResponse {
-            parameters: None,
             query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: Some(BLOCKING_PARSE_CELLS as i64),
@@ -577,7 +571,6 @@ mod tests {
             runtime,
         };
         let response = RawQueryResponse {
-            parameters: None,
             query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: Some(BLOCKING_PARSE_CELLS as i64),
@@ -616,7 +609,6 @@ mod tests {
             runtime,
         };
         let response = RawQueryResponse {
-            parameters: None,
             query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: Some(BLOCKING_PARSE_CELLS as i64),

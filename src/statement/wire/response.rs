@@ -25,25 +25,19 @@ pub(crate) struct SnowflakeResponse {
     pub(crate) code: Option<String>,
 }
 
+// Response metadata the runtime ignores is omitted from the deserialize DTOs:
+// - data.parameters: [{ "name": "...", "value": ... }]
+// - data.rowtype[]: { "database": "...", "schema": "...", "table": "...", "byteLength": ... }
 #[derive(Debug)]
 pub(crate) struct RawQueryResponse {
-    #[allow(unused)]
-    pub(crate) parameters: Option<Vec<RawQueryResponseParameter>>,
     pub(crate) query_id: Arc<str>,
     pub(crate) get_result_url: Option<String>,
-    #[allow(unused)]
     pub(crate) returned: Option<i64>,
-    #[allow(unused)]
     pub(crate) total: Option<i64>,
-
     pub(crate) row_set_bytes: Option<Bytes>,
-
     pub(crate) row_types: Option<Vec<RawQueryResponseRowType>>,
-
     pub(crate) chunk_headers: Option<HashMap<String, String>>,
-
     pub(crate) qrmk: Option<String>,
-
     pub(crate) chunks: Option<Vec<RawQueryResponseChunk>>,
     pub(crate) query_result_format: Option<String>,
 }
@@ -60,7 +54,6 @@ struct BorrowedSnowflakeResponse<'a> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BorrowedRawQueryResponse<'a> {
-    parameters: Option<Vec<RawQueryResponseParameter>>,
     query_id: Option<String>,
     get_result_url: Option<String>,
     returned: Option<i64>,
@@ -93,7 +86,6 @@ pub(crate) fn parse_response(body: Bytes) -> std::result::Result<SnowflakeRespon
                 .map(|row_set| row_set_bytes_from_raw_value(&body, row_set))
                 .transpose()?;
             Ok::<RawQueryResponse, ProtocolError>(RawQueryResponse {
-                parameters: d.parameters,
                 query_id: d
                     .query_id
                     .map(Arc::from)
@@ -159,31 +151,14 @@ fn strip_utf8_bom(bytes: &[u8]) -> &[u8] {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RawQueryResponseRowType {
-    #[allow(unused)]
-    pub(crate) database: String,
     pub(crate) name: String,
     pub(crate) nullable: bool,
     pub(crate) scale: Option<u8>,
-    #[allow(unused)]
-    pub(crate) byte_length: Option<i64>,
     pub(crate) length: Option<u32>,
-    #[allow(unused)]
-    pub(crate) schema: String,
-    #[allow(unused)]
-    pub(crate) table: String,
     pub(crate) precision: Option<u8>,
 
     #[serde(rename = "type")]
     pub(crate) data_type: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RawQueryResponseParameter {
-    #[allow(unused)]
-    pub(crate) name: String,
-    #[allow(unused)]
-    pub(crate) value: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,6 +215,45 @@ mod tests {
         );
         let resp = parse_response(body).unwrap();
         assert_eq!(resp.code.as_deref(), Some("390112"));
+    }
+
+    #[test]
+    fn parse_response_ignores_unconsumed_metadata_fields() {
+        // Unconsumed keys must be skipped while the consumed rowtype metadata still parses.
+        let body = Bytes::from(
+            r#"{
+                "data": {
+                    "queryId": "q1",
+                    "parameters": [{"name": "TIMEZONE", "value": "UTC"}],
+                    "rowset": [["x"]],
+                    "rowtype": [{
+                        "name": "COL",
+                        "nullable": true,
+                        "scale": 0,
+                        "length": 16,
+                        "precision": 38,
+                        "type": "fixed",
+                        "database": "DB",
+                        "schema": "SC",
+                        "table": "TBL",
+                        "byteLength": 16
+                    }],
+                    "queryResultFormat": "json"
+                },
+                "success": true
+            }"#,
+        );
+        let resp = parse_response(body).unwrap();
+        let data = resp.data.expect("data");
+        let row_types = data.row_types.expect("row_types");
+        assert_eq!(row_types.len(), 1);
+        let row_type = &row_types[0];
+        assert_eq!(row_type.name, "COL");
+        assert!(row_type.nullable);
+        assert_eq!(row_type.scale, Some(0));
+        assert_eq!(row_type.length, Some(16));
+        assert_eq!(row_type.precision, Some(38));
+        assert_eq!(row_type.data_type, "fixed");
     }
 
     #[test]
