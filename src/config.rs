@@ -242,6 +242,7 @@ impl SnowflakeQueryConfig {
         self
     }
 
+    /// Sets the default number of partitions fetched concurrently during collection. Defaults to `8`.
     pub fn with_collect_prefetch_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
         self.collect_prefetch_concurrency = concurrency;
         self
