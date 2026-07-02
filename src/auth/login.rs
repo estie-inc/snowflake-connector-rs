@@ -3,7 +3,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    ClientConfig, ClientShared, Result, SessionConfig,
+    ClientLoginConfig, ClientShared, InitialSessionConfig, Result,
     auth::credential::{LoginCredentialProvider, PreparedLoginCredential},
 };
 
@@ -14,14 +14,14 @@ use super::{
 };
 
 /// Login to Snowflake and return a session token.
-pub(crate) async fn login(config: &ClientConfig, shared: Arc<ClientShared>) -> Result<String> {
+pub(crate) async fn login(login: &ClientLoginConfig, shared: Arc<ClientShared>) -> Result<String> {
     let client = AuthApiClient::new(shared);
     let context = LoginContext {
-        username: config.username(),
-        account: config.account(),
+        username: login.username(),
+        account: login.account(),
     };
-    let credential = config.auth().prepare(&client, context).await?;
-    let request = build_login_request(context, config.session(), &credential);
+    let credential = login.auth().prepare(&client, context).await?;
+    let request = build_login_request(context, login.initial_session(), &credential);
 
     let session = client.login(request).await?;
     Ok(session.token)
@@ -29,17 +29,17 @@ pub(crate) async fn login(config: &ClientConfig, shared: Arc<ClientShared>) -> R
 
 fn build_login_request<'a>(
     context: LoginContext<'a>,
-    session_config: &'a SessionConfig,
+    initial_session: &'a InitialSessionConfig,
     credential: &'a PreparedLoginCredential,
 ) -> LoginRequest<'a> {
-    let session_parameters = session_config.session_parameters();
+    let session_parameters = initial_session.session_parameters();
 
     LoginRequest {
         query: LoginQuery {
-            warehouse: session_config.warehouse(),
-            database_name: session_config.database(),
-            schema_name: session_config.schema(),
-            role_name: session_config.role(),
+            warehouse: initial_session.warehouse(),
+            database_name: initial_session.database(),
+            schema_name: initial_session.schema(),
+            role_name: initial_session.role(),
             request_id: credential.requires_request_id().then(Uuid::new_v4),
         },
         body: LoginBody {
@@ -58,6 +58,7 @@ mod tests {
     use reqwest::Url;
 
     use super::*;
+    use crate::SessionConfig;
 
     fn query_string(query: &LoginQuery<'_>) -> Option<String> {
         reqwest::Client::new()
@@ -72,7 +73,8 @@ mod tests {
 
     #[test]
     fn password_login_request_omits_request_id() {
-        let session = SessionConfig::default().with_warehouse("warehouse");
+        let session =
+            InitialSessionConfig::from(SessionConfig::default().with_warehouse("warehouse"));
         let credential = PreparedLoginCredential::Password {
             password: "secret".to_string(),
             passcode: None,
@@ -96,7 +98,8 @@ mod tests {
     #[cfg(feature = "external-browser-sso")]
     #[test]
     fn external_browser_login_request_includes_request_id() {
-        let session = SessionConfig::default().with_warehouse("warehouse");
+        let session =
+            InitialSessionConfig::from(SessionConfig::default().with_warehouse("warehouse"));
         let credential = PreparedLoginCredential::ExternalBrowser {
             token: "browser-token".to_string(),
             proof_key: None,

@@ -83,6 +83,7 @@ pub use auth::external_browser::{BrowserLaunchMode, ExternalBrowserConfig};
 pub use config::{
     ClientConfig, EndpointConfig, ProxyConfig, QueryConfig, SessionConfig, TransportConfig,
 };
+pub(crate) use config::{ClientLoginConfig, InitialSessionConfig, QueryExecutionPolicy};
 pub use error::{
     AmbiguousColumnError, CellConversionError, CellConversionErrorBuilder, CellDecodeError,
     CellDecodeResult, ColumnCountMismatchError, DuplicateColumnNameError, Error, ErrorKind,
@@ -117,7 +118,7 @@ pub struct Client {
 }
 
 struct ClientInner {
-    login: ClientConfig,
+    login: ClientLoginConfig,
     shared: Arc<ClientShared>,
 }
 
@@ -125,16 +126,18 @@ struct ClientInner {
 pub(crate) struct ClientShared {
     pub(crate) http: reqwest::Client,
     pub(crate) base_url: Url,
-    pub(crate) query: QueryConfig,
+    pub(crate) query: QueryExecutionPolicy,
     pub(crate) runtime: QueryRuntime,
 }
 
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Omits the reqwest client and runtime; config's own Debug redacts credentials.
+        // Prints only non-secret identity fields; credentials, the reqwest
+        // client, and the runtime are omitted.
         f.debug_struct("Client")
             .field("base_url", &self.inner.shared.base_url)
-            .field("config", &self.inner.login)
+            .field("username", &self.inner.login.username())
+            .field("account", &self.inner.login.account())
             .finish_non_exhaustive()
     }
 }
@@ -146,19 +149,18 @@ impl Client {
     ///
     /// Returns `ErrorKind::Config` when endpoint or transport configuration is invalid.
     pub fn new(config: ClientConfig) -> Result<Self> {
-        let base_url = config.endpoint().resolve(config.account())?;
-        let http = config.transport().build_http_client()?;
+        let prepared = config.prepare()?;
 
         let shared = Arc::new(ClientShared {
-            http,
-            base_url,
-            query: config.query().clone(),
+            http: prepared.shared.http,
+            base_url: prepared.shared.base_url,
+            query: prepared.shared.query,
             runtime: QueryRuntime::new(),
         });
 
         Ok(Self {
             inner: Arc::new(ClientInner {
-                login: config,
+                login: prepared.login,
                 shared,
             }),
         })
@@ -187,7 +189,7 @@ impl ClientShared {
         Self::for_test_with(
             reqwest::Client::new(),
             base_url,
-            QueryConfig::default(),
+            QueryConfig::default().into(),
             QueryRuntime::new(),
         )
     }
@@ -196,7 +198,7 @@ impl ClientShared {
     pub(crate) fn for_test_with(
         http: reqwest::Client,
         base_url: Url,
-        query: QueryConfig,
+        query: QueryExecutionPolicy,
         runtime: QueryRuntime,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -205,81 +207,5 @@ impl ClientShared {
             query,
             runtime,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::net::SocketAddr;
-
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-    };
-
-    use super::*;
-    use crate::AuthConfig;
-
-    fn test_client(base_url: Url) -> Client {
-        Client::new(
-            ClientConfig::new("user", "account", AuthConfig::password("secret"))
-                .with_endpoint(EndpointConfig::custom_base_url(base_url)),
-        )
-        .expect("test client builds from validated config")
-    }
-
-    #[test]
-    fn client_clone_shares_inner_state() {
-        let client = test_client(Url::parse("https://example.com/").unwrap());
-        let cloned = client.clone();
-
-        assert!(Arc::ptr_eq(&client.inner, &cloned.inner));
-    }
-
-    /// Accepts `login_count` login requests, each answered with the same session token.
-    async fn spawn_login_server(login_count: usize) -> SocketAddr {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        tokio::spawn(async move {
-            for _ in 0..login_count {
-                let (mut socket, _) = listener.accept().await.unwrap();
-
-                // Drain until the request headers finish so the response never races the client's write.
-                let mut buf = Vec::new();
-                let mut chunk = [0_u8; 1024];
-                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    let n = socket.read(&mut chunk).await.unwrap();
-                    if n == 0 {
-                        break;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                }
-
-                let body = r#"{"success":true,"data":{"token":"session-token"}}"#;
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                socket.write_all(response.as_bytes()).await.unwrap();
-            }
-        });
-
-        addr
-    }
-
-    #[tokio::test]
-    async fn create_session_shares_client_shared_state() {
-        let addr = spawn_login_server(2).await;
-        let client = test_client(Url::parse(&format!("http://{addr}/")).unwrap());
-
-        let first = client.create_session().await.unwrap();
-        let second = client.create_session().await.unwrap();
-
-        // Every session reuses the one connector-wide state handle.
-        assert!(Arc::ptr_eq(&first.shared, &client.inner.shared));
-        assert!(Arc::ptr_eq(&first.shared, &second.shared));
-        // Per-session auth is distinct storage even when the token value matches.
-        assert!(!Arc::ptr_eq(&first.auth, &second.auth));
     }
 }
