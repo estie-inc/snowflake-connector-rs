@@ -1,4 +1,6 @@
 mod collect;
+pub(crate) mod lease;
+pub(crate) mod partition;
 pub(crate) mod partition_source;
 mod result_set;
 pub(crate) mod snapshot;

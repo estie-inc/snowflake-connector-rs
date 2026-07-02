@@ -12,8 +12,9 @@ use crate::{
 
 use super::{
     collect::{CollectPolicy, CollectWindow},
+    partition::{PartitionCursor, PartitionSpec},
     partition_source::{PartitionSource, remote_fetch_context},
-    snapshot::{PartitionCursor, PartitionSpec, ResultSnapshot},
+    snapshot::ResultSnapshot,
 };
 
 /// Options for controlling how result-set collection fetches remaining partitions.
@@ -325,8 +326,9 @@ mod tests {
         query_result::{
             TypedResultCursor,
             collect::CollectPolicy,
+            partition::{PartitionCursor, PartitionSpec},
             partition_source::tests::{BlockingFetchProbe, FakePartitionSource, FakeResponse},
-            snapshot::{PartitionCursor, PartitionSpec, ResultIdentity, ResultSnapshot},
+            snapshot::{ResultIdentity, ResultSnapshot},
         },
         result::{
             CellConversionError, CellDecodeResult, CellRef, Column, ColumnIndex, ColumnType,
