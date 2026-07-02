@@ -1,8 +1,7 @@
 use std::env;
 
 use snowflake_connector_rs::{
-    ExternalBrowserConfig, SnowflakeAuthConfig, SnowflakeClient, SnowflakeClientConfig,
-    SnowflakeSessionConfig,
+    AuthConfig, Client, ClientConfig, ExternalBrowserConfig, SessionConfig,
 };
 
 #[tokio::main]
@@ -14,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = env::var("SNOWFLAKE_DATABASE").ok();
     let schema = env::var("SNOWFLAKE_SCHEMA").ok();
 
-    let mut session_config = SnowflakeSessionConfig::default();
+    let mut session_config = SessionConfig::default();
     if let Some(warehouse) = warehouse {
         session_config = session_config.with_warehouse(warehouse);
     }
@@ -28,11 +27,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_config = session_config.with_role(role);
     }
 
-    let client = SnowflakeClient::new(
-        SnowflakeClientConfig::new(
+    let client = Client::new(
+        ClientConfig::new(
             &username,
             &account,
-            SnowflakeAuthConfig::external_browser(ExternalBrowserConfig::default()),
+            AuthConfig::external_browser(ExternalBrowserConfig::default()),
         )
         .with_session(session_config),
     )?;

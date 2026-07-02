@@ -5,13 +5,13 @@
 //!
 //! ```rust,no_run
 //! # use snowflake_connector_rs::{
-//! #     Result, SnowflakeAuthConfig, SnowflakeClient, SnowflakeClientConfig,
+//! #     Result, AuthConfig, Client, ClientConfig,
 //! # };
 //! # async fn run() -> Result<()> {
-//! let client = SnowflakeClient::new(SnowflakeClientConfig::new(
+//! let client = Client::new(ClientConfig::new(
 //!     "USERNAME",
 //!     "ACCOUNT",
-//!     SnowflakeAuthConfig::password("PASSWORD"),
+//!     AuthConfig::password("PASSWORD"),
 //! ))?;
 //! let session = client.create_session().await?;
 //!
@@ -69,29 +69,32 @@ mod chunk;
 mod config;
 mod error;
 mod query_result;
-pub mod result;
+mod result;
 mod rowset;
 mod runtime;
 mod session;
 mod statement;
 
 #[cfg(feature = "key-pair-auth")]
-pub use auth::config::KeyPairAuthConfig;
-pub use auth::config::{PasswordAuthConfig, SnowflakeAuthConfig};
+pub use auth::config::KeyPairConfig;
+pub use auth::config::{AuthConfig, PasswordConfig};
 #[cfg(feature = "external-browser-sso")]
 pub use auth::external_browser::{BrowserLaunchMode, ExternalBrowserConfig};
 pub use config::{
-    SnowflakeClientConfig, SnowflakeEndpointConfig, SnowflakeProxyConfig, SnowflakeQueryConfig,
-    SnowflakeSessionConfig, SnowflakeTransportConfig,
+    ClientConfig, EndpointConfig, ProxyConfig, QueryConfig, SessionConfig, TransportConfig,
 };
 pub use error::{
-    AmbiguousColumnError, CellDecodeError, ColumnCountMismatchError, DuplicateColumnNameError,
-    Error, ErrorKind, InvalidColumnIndexError, MissingColumnError, Result, SchemaError,
+    AmbiguousColumnError, CellConversionError, CellConversionErrorBuilder, CellDecodeError,
+    CellDecodeResult, ColumnCountMismatchError, DuplicateColumnNameError, Error, ErrorKind,
+    InvalidColumnIndexError, MissingColumnError, Result, SchemaError,
 };
-pub use query_result::{CollectOptions, ResultSet, TypedResultSet};
-pub use result::{DynamicRow, FromCell, FromRow, ResultTable, TypedResultTable};
+pub use query_result::{CollectOptions, ResultCursor, TypedResultCursor};
+pub use result::{
+    CellRef, CellValue, Column, ColumnIndex, ColumnType, DecimalValue, DynamicRow, FromCell,
+    FromRow, ResultTable, RowPlanContext, RowRef, Rows, Schema, TypedResultTable,
+};
 use runtime::QueryRuntime;
-pub use session::SnowflakeSession;
+pub use session::Session;
 pub use statement::builder::{IntoStatement, NamedBinds, PositionalBinds, Statement, UnboundBinds};
 
 #[cfg(feature = "derive")]
@@ -108,30 +111,30 @@ use url::Url;
 use auth::login;
 
 #[derive(Clone)]
-pub struct SnowflakeClient {
+pub struct Client {
     http: reqwest::Client,
-    config: SnowflakeClientConfig,
+    config: ClientConfig,
     base_url: Url,
     runtime: QueryRuntime,
 }
 
-impl fmt::Debug for SnowflakeClient {
+impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Omits the reqwest client and runtime; config's own Debug redacts credentials.
-        f.debug_struct("SnowflakeClient")
+        f.debug_struct("Client")
             .field("base_url", &self.base_url)
             .field("config", &self.config)
             .finish_non_exhaustive()
     }
 }
 
-impl SnowflakeClient {
+impl Client {
     /// Build a client from validated configuration.
     ///
     /// # Errors
     ///
     /// Returns `ErrorKind::Config` when endpoint or transport configuration is invalid.
-    pub fn new(config: SnowflakeClientConfig) -> Result<Self> {
+    pub fn new(config: ClientConfig) -> Result<Self> {
         let base_url = config.endpoint().resolve(config.account())?;
         let http = config.transport().build_http_client()?;
 
@@ -150,9 +153,9 @@ impl SnowflakeClient {
     /// Returns `ErrorKind::Config`, `ErrorKind::Auth`, `ErrorKind::Network`,
     /// `ErrorKind::Timeout`, `ErrorKind::Protocol`, or `ErrorKind::Internal`
     /// depending on how session establishment fails.
-    pub async fn create_session(&self) -> Result<SnowflakeSession> {
+    pub async fn create_session(&self) -> Result<Session> {
         let session_token = login(&self.http, &self.config, &self.base_url).await?;
-        Ok(SnowflakeSession {
+        Ok(Session {
             http: self.http.clone(),
             base_url: self.base_url.clone(),
             session_token,

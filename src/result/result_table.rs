@@ -84,7 +84,7 @@ impl ResultTable {
         &self.storage
     }
 
-    pub(crate) fn schema_arc(&self) -> &Arc<Schema> {
+    pub(crate) fn shared_schema(&self) -> &Arc<Schema> {
         &self.schema
     }
 

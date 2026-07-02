@@ -1,8 +1,8 @@
-use super::bind::{Bind, BindValue, IntoBind, SnowflakeBindType, into_bind_sealed};
+use super::bind::{Bind, BindType, BindValue, IntoBind, into_bind_sealed};
 
 /// Escape hatch for binding values when the typed wrappers don't fit.
 ///
-/// You pick the [`SnowflakeBindType`] and supply the value already encoded
+/// You pick the [`BindType`] and supply the value already encoded
 /// as a string in the form documented by Snowflake's SQL API. Typical use
 /// is binding `DECFLOAT` (no typed wrapper exists for it).
 ///
@@ -12,15 +12,15 @@ use super::bind::{Bind, BindValue, IntoBind, SnowflakeBindType, into_bind_sealed
 /// # Examples
 ///
 /// ```
-/// use snowflake_connector_rs::bind::{RawBind, SnowflakeBindType};
+/// use snowflake_connector_rs::bind::{RawBind, BindType};
 ///
-/// let payload = RawBind::new(SnowflakeBindType::DecFloat, "1.23e-40");
-/// let typed_null = RawBind::null(SnowflakeBindType::DecFloat);
+/// let payload = RawBind::new(BindType::DecFloat, "1.23e-40");
+/// let typed_null = RawBind::null(BindType::DecFloat);
 /// # let _ = (payload, typed_null);
 /// ```
 #[derive(Debug, Clone)]
 pub struct RawBind {
-    ty: SnowflakeBindType,
+    ty: BindType,
     value: Option<String>,
 }
 
@@ -34,11 +34,11 @@ impl RawBind {
     /// # Examples
     ///
     /// ```
-    /// use snowflake_connector_rs::bind::{RawBind, SnowflakeBindType};
+    /// use snowflake_connector_rs::bind::{RawBind, BindType};
     ///
-    /// let _ = RawBind::new(SnowflakeBindType::Text, "hello");
+    /// let _ = RawBind::new(BindType::Text, "hello");
     /// ```
-    pub fn new(ty: SnowflakeBindType, value: impl Into<String>) -> Self {
+    pub fn new(ty: BindType, value: impl Into<String>) -> Self {
         Self {
             ty,
             value: Some(value.into()),
@@ -50,11 +50,11 @@ impl RawBind {
     /// # Examples
     ///
     /// ```
-    /// use snowflake_connector_rs::bind::{RawBind, SnowflakeBindType};
+    /// use snowflake_connector_rs::bind::{RawBind, BindType};
     ///
-    /// let _ = RawBind::null(SnowflakeBindType::TimestampNtz);
+    /// let _ = RawBind::null(BindType::TimestampNtz);
     /// ```
-    pub fn null(ty: SnowflakeBindType) -> Self {
+    pub fn null(ty: BindType) -> Self {
         Self { ty, value: None }
     }
 }
@@ -84,13 +84,13 @@ mod tests {
     fn raw_bind_preserves_explicit_wire_type_and_payload() {
         for (bind, expected_ty, expected_value) in [
             (
-                encode_bind(RawBind::new(SnowflakeBindType::Text, "x")),
-                SnowflakeBindType::Text,
+                encode_bind(RawBind::new(BindType::Text, "x")),
+                BindType::Text,
                 "x",
             ),
             (
-                encode_bind(RawBind::new(SnowflakeBindType::DecFloat, "1.23e-40")),
-                SnowflakeBindType::DecFloat,
+                encode_bind(RawBind::new(BindType::DecFloat, "1.23e-40")),
+                BindType::DecFloat,
                 "1.23e-40",
             ),
         ] {
@@ -105,13 +105,10 @@ mod tests {
     #[test]
     fn raw_bind_preserves_explicit_wire_type_for_typed_nulls() {
         for (bind, expected_ty) in [
+            (encode_bind(RawBind::null(BindType::Text)), BindType::Text),
             (
-                encode_bind(RawBind::null(SnowflakeBindType::Text)),
-                SnowflakeBindType::Text,
-            ),
-            (
-                encode_bind(RawBind::null(SnowflakeBindType::DecFloat)),
-                SnowflakeBindType::DecFloat,
+                encode_bind(RawBind::null(BindType::DecFloat)),
+                BindType::DecFloat,
             ),
         ] {
             assert_eq!(bind.ty(), expected_ty);

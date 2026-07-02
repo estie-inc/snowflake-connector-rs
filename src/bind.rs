@@ -9,7 +9,7 @@
 //! ```
 //! use snowflake_connector_rs::{
 //!     Statement,
-//!     bind::{Binary, Integer, RawBind, SnowflakeBindType},
+//!     bind::{Binary, Integer, RawBind, BindType},
 //! };
 //!
 //! let stmt = Statement::new("INSERT INTO t (id, payload, big_num) SELECT ?, ?, ?")
@@ -19,12 +19,12 @@
 //!
 //! // Bind a DECFLOAT via the escape hatch.
 //! let _ = Statement::new("SELECT ?")
-//!     .bind(RawBind::new(SnowflakeBindType::DecFloat, "1.23e-40"));
+//!     .bind(RawBind::new(BindType::DecFloat, "1.23e-40"));
 //! # let _ = stmt;
 //! ```
 
 pub use crate::statement::bind::{
-    Binary, BindName, Integer, IntoBind, IntoBindNullable, SnowflakeBindType, Time, TimestampLtz,
+    Binary, BindName, BindType, Integer, IntoBind, IntoBindNullable, Time, TimestampLtz,
     TimestampNtz, TimestampTz,
 };
 pub use crate::statement::raw::RawBind;

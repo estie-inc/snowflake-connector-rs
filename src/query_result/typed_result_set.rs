@@ -5,27 +5,27 @@ use crate::{
     result::{FromRow, Schema, TypedResultTable},
 };
 
-use super::result_set::{CollectOptions, ResultSet};
+use super::result_set::{CollectOptions, ResultCursor};
 
-/// Typed wrapper over a [`ResultSet`] that owns a precomputed decode plan.
-pub struct TypedResultSet<T: FromRow> {
-    inner: ResultSet,
+/// Typed wrapper over a [`ResultCursor`] that owns a precomputed decode plan.
+pub struct TypedResultCursor<T: FromRow> {
+    inner: ResultCursor,
     plan: Arc<T::Plan>,
     _marker: PhantomData<fn() -> T>,
 }
 
-impl<T: FromRow> fmt::Debug for TypedResultSet<T> {
+impl<T: FromRow> fmt::Debug for TypedResultCursor<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // No `T: Debug` bound: surface the same shape as `ResultSet`.
-        f.debug_struct("TypedResultSet")
+        // No `T: Debug` bound: surface the same shape as `ResultCursor`.
+        f.debug_struct("TypedResultCursor")
             .field("query_id", &self.query_id())
             .field("is_exhausted", &self.is_exhausted())
             .finish_non_exhaustive()
     }
 }
 
-impl<T: FromRow> TypedResultSet<T> {
-    pub(crate) fn new(inner: ResultSet, plan: T::Plan) -> Self {
+impl<T: FromRow> TypedResultCursor<T> {
+    pub(crate) fn new(inner: ResultCursor, plan: T::Plan) -> Self {
         Self {
             inner,
             plan: Arc::new(plan),
@@ -71,7 +71,7 @@ impl<T: FromRow> TypedResultSet<T> {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`TypedResultSet::collect_table`].
+    /// Returns the same errors as [`TypedResultCursor::collect_table`].
     /// Decoding rows then propagates any error returned by [`FromRow::from_row_with_plan`] for `T`.
     ///
     /// Built-in and derive-based row types typically use `ErrorKind::Decode` for per-row conversion failures; inspect the
@@ -83,11 +83,11 @@ impl<T: FromRow> TypedResultSet<T> {
 
     /// Consume this result set and decode all rows into any collection implementing [`FromIterator<T>`](FromIterator).
     ///
-    /// The target collection is inferred from context, as with [`TypedResultSet::collect`].
+    /// The target collection is inferred from context, as with [`TypedResultCursor::collect`].
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`TypedResultSet::collect_table_with_options`].
+    /// Returns the same errors as [`TypedResultCursor::collect_table_with_options`].
     /// Decoding rows then propagates any error returned by [`FromRow::from_row_with_plan`] for `T`.
     ///
     /// Built-in and derive-based row types typically use `ErrorKind::Decode` for per-row conversion failures; inspect the

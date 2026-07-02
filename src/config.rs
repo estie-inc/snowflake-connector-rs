@@ -2,18 +2,18 @@ use std::{collections::HashMap, fmt, num::NonZeroUsize, time::Duration};
 
 use url::Url;
 
-use crate::{Result, SnowflakeAuthConfig, error::ConfigError};
+use crate::{AuthConfig, Result, error::ConfigError};
 
-/// Top-level configuration for a [`SnowflakeClient`](crate::SnowflakeClient).
+/// Top-level configuration for a [`Client`](crate::Client).
 #[derive(Clone, Debug)]
-pub struct SnowflakeClientConfig {
+pub struct ClientConfig {
     username: String,
     account: String,
-    auth: SnowflakeAuthConfig,
-    session: SnowflakeSessionConfig,
-    query: SnowflakeQueryConfig,
-    endpoint: SnowflakeEndpointConfig,
-    transport: SnowflakeTransportConfig,
+    auth: AuthConfig,
+    session: SessionConfig,
+    query: QueryConfig,
+    endpoint: EndpointConfig,
+    transport: TransportConfig,
 }
 
 /// Server-side session context sent to Snowflake at login time.
@@ -23,7 +23,7 @@ pub struct SnowflakeClientConfig {
 /// database, schema, and role). They correspond directly to Snowflake's
 /// session-level settings and do not affect client-side behavior.
 #[derive(Default, Clone, Debug)]
-pub struct SnowflakeSessionConfig {
+pub struct SessionConfig {
     warehouse: Option<String>,
     database: Option<String>,
     schema: Option<String>,
@@ -39,12 +39,12 @@ const DEFAULT_COLLECT_PREFETCH_CONCURRENCY: usize = 8;
 /// how long to poll for the completion of an async query. These settings are
 /// enforced entirely on the client side and are never sent to Snowflake.
 #[derive(Clone, Debug)]
-pub struct SnowflakeQueryConfig {
+pub struct QueryConfig {
     async_query_completion_timeout: Option<Duration>,
     collect_prefetch_concurrency: NonZeroUsize,
 }
 
-impl Default for SnowflakeQueryConfig {
+impl Default for QueryConfig {
     fn default() -> Self {
         Self {
             async_query_completion_timeout: None,
@@ -62,7 +62,7 @@ impl Default for SnowflakeQueryConfig {
 /// when connecting through a PrivateLink endpoint or a local test server.
 #[non_exhaustive]
 #[derive(Default, Clone, Debug)]
-pub enum SnowflakeEndpointConfig {
+pub enum EndpointConfig {
     #[default]
     AccountDefault,
     CustomBaseUrl(Url),
@@ -73,27 +73,27 @@ pub enum SnowflakeEndpointConfig {
 /// Configures how requests are physically delivered to Snowflake,
 /// independent of which endpoint they target.
 #[derive(Default, Clone, Debug)]
-pub struct SnowflakeTransportConfig {
-    proxy: Option<SnowflakeProxyConfig>,
+pub struct TransportConfig {
+    proxy: Option<ProxyConfig>,
 }
 
-/// Configuration for an HTTP proxy used by [`SnowflakeTransportConfig`].
+/// Configuration for an HTTP proxy used by [`TransportConfig`].
 ///
 /// Specifies the proxy URL and optional authentication credentials.
 /// Only HTTP and HTTPS proxy schemes are accepted.
 #[derive(Clone, Debug)]
-pub struct SnowflakeProxyConfig {
+pub struct ProxyConfig {
     url: Url,
-    auth: SnowflakeProxyAuth,
+    auth: ProxyAuth,
 }
 
 #[derive(Clone)]
-pub(crate) enum SnowflakeProxyAuth {
+pub(crate) enum ProxyAuth {
     None,
     Basic { username: String, password: String },
 }
 
-impl fmt::Debug for SnowflakeProxyAuth {
+impl fmt::Debug for ProxyAuth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::None => f.write_str("None"),
@@ -106,39 +106,35 @@ impl fmt::Debug for SnowflakeProxyAuth {
     }
 }
 
-impl SnowflakeClientConfig {
-    pub fn new(
-        username: impl Into<String>,
-        account: impl Into<String>,
-        auth: SnowflakeAuthConfig,
-    ) -> Self {
+impl ClientConfig {
+    pub fn new(username: impl Into<String>, account: impl Into<String>, auth: AuthConfig) -> Self {
         Self {
             username: username.into(),
             account: account.into(),
             auth,
-            session: SnowflakeSessionConfig::default(),
-            query: SnowflakeQueryConfig::default(),
-            endpoint: SnowflakeEndpointConfig::default(),
-            transport: SnowflakeTransportConfig::default(),
+            session: SessionConfig::default(),
+            query: QueryConfig::default(),
+            endpoint: EndpointConfig::default(),
+            transport: TransportConfig::default(),
         }
     }
 
-    pub fn with_session(mut self, session: SnowflakeSessionConfig) -> Self {
+    pub fn with_session(mut self, session: SessionConfig) -> Self {
         self.session = session;
         self
     }
 
-    pub fn with_query(mut self, query: SnowflakeQueryConfig) -> Self {
+    pub fn with_query(mut self, query: QueryConfig) -> Self {
         self.query = query;
         self
     }
 
-    pub fn with_endpoint(mut self, endpoint: SnowflakeEndpointConfig) -> Self {
+    pub fn with_endpoint(mut self, endpoint: EndpointConfig) -> Self {
         self.endpoint = endpoint;
         self
     }
 
-    pub fn with_transport(mut self, transport: SnowflakeTransportConfig) -> Self {
+    pub fn with_transport(mut self, transport: TransportConfig) -> Self {
         self.transport = transport;
         self
     }
@@ -151,28 +147,28 @@ impl SnowflakeClientConfig {
         &self.account
     }
 
-    pub(crate) fn auth(&self) -> &SnowflakeAuthConfig {
+    pub(crate) fn auth(&self) -> &AuthConfig {
         &self.auth
     }
 
-    pub(crate) fn session(&self) -> &SnowflakeSessionConfig {
+    pub(crate) fn session(&self) -> &SessionConfig {
         &self.session
     }
 
-    pub(crate) fn query(&self) -> &SnowflakeQueryConfig {
+    pub(crate) fn query(&self) -> &QueryConfig {
         &self.query
     }
 
-    pub(crate) fn endpoint(&self) -> &SnowflakeEndpointConfig {
+    pub(crate) fn endpoint(&self) -> &EndpointConfig {
         &self.endpoint
     }
 
-    pub(crate) fn transport(&self) -> &SnowflakeTransportConfig {
+    pub(crate) fn transport(&self) -> &TransportConfig {
         &self.transport
     }
 }
 
-impl SnowflakeSessionConfig {
+impl SessionConfig {
     pub(crate) fn warehouse(&self) -> Option<&str> {
         self.warehouse.as_deref()
     }
@@ -228,7 +224,7 @@ impl SnowflakeSessionConfig {
     }
 }
 
-impl SnowflakeQueryConfig {
+impl QueryConfig {
     pub(crate) fn async_query_completion_timeout(&self) -> Option<Duration> {
         self.async_query_completion_timeout
     }
@@ -249,7 +245,7 @@ impl SnowflakeQueryConfig {
     }
 }
 
-impl SnowflakeEndpointConfig {
+impl EndpointConfig {
     pub fn custom_base_url(url: Url) -> Self {
         Self::CustomBaseUrl(url)
     }
@@ -293,8 +289,8 @@ fn validate_custom_base_url(mut url: Url) -> Result<Url> {
     Ok(url)
 }
 
-impl SnowflakeTransportConfig {
-    pub fn with_proxy(mut self, proxy: SnowflakeProxyConfig) -> Self {
+impl TransportConfig {
+    pub fn with_proxy(mut self, proxy: ProxyConfig) -> Self {
         self.proxy = Some(proxy);
         self
     }
@@ -328,11 +324,11 @@ impl SnowflakeTransportConfig {
     }
 }
 
-impl SnowflakeProxyConfig {
+impl ProxyConfig {
     pub fn new(url: Url) -> Self {
         Self {
             url,
-            auth: SnowflakeProxyAuth::None,
+            auth: ProxyAuth::None,
         }
     }
 
@@ -341,7 +337,7 @@ impl SnowflakeProxyConfig {
         username: impl Into<String>,
         password: impl Into<String>,
     ) -> Self {
-        self.auth = SnowflakeProxyAuth::Basic {
+        self.auth = ProxyAuth::Basic {
             username: username.into(),
             password: password.into(),
         };
@@ -353,7 +349,7 @@ impl SnowflakeProxyConfig {
         let mut proxy =
             reqwest::Proxy::all(url.as_str()).map_err(ConfigError::client_builder_failure)?;
 
-        if let SnowflakeProxyAuth::Basic { username, password } = &self.auth {
+        if let ProxyAuth::Basic { username, password } = &self.auth {
             proxy = proxy.basic_auth(username, password);
         }
 
@@ -374,7 +370,7 @@ fn validate_proxy_url(url: Url) -> Result<Url> {
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(ConfigError::invalid_url(
-            "proxy URL must not contain credentials; use SnowflakeProxyConfig::with_basic_auth() instead",
+            "proxy URL must not contain credentials; use ProxyConfig::with_basic_auth() instead",
         )
         .into());
     }
@@ -392,7 +388,7 @@ mod tests {
 
     #[test]
     fn proxy_debug_redacts_basic_auth_password() {
-        let proxy = SnowflakeProxyConfig::new(Url::parse("http://proxy.example.com:8080").unwrap())
+        let proxy = ProxyConfig::new(Url::parse("http://proxy.example.com:8080").unwrap())
             .with_basic_auth("proxy_user", "s3cr3t-proxy-pass");
         let rendered = format!("{proxy:?}");
 
@@ -413,9 +409,9 @@ mod tests {
     #[test]
     fn proxy_urls_with_supported_schemes_build_successfully() {
         for proxy in [
-            SnowflakeProxyConfig::new(Url::parse("http://proxy.example.com:8080").unwrap()),
-            SnowflakeProxyConfig::new(Url::parse("https://proxy.example.com:8080").unwrap()),
-            SnowflakeProxyConfig::new(Url::parse("http://proxy.example.com:8080").unwrap())
+            ProxyConfig::new(Url::parse("http://proxy.example.com:8080").unwrap()),
+            ProxyConfig::new(Url::parse("https://proxy.example.com:8080").unwrap()),
+            ProxyConfig::new(Url::parse("http://proxy.example.com:8080").unwrap())
                 .with_basic_auth("user", "pass"),
         ] {
             assert!(proxy.to_reqwest_proxy().is_ok());
@@ -423,7 +419,7 @@ mod tests {
     }
 
     fn assert_proxy_rejected(url: &str, expected: &str) {
-        let proxy = SnowflakeProxyConfig::new(Url::parse(url).unwrap());
+        let proxy = ProxyConfig::new(Url::parse(url).unwrap());
         let err = proxy.to_reqwest_proxy().unwrap_err();
         assert!(
             format!("{err}").contains(expected),
@@ -448,7 +444,7 @@ mod tests {
 
     #[test]
     fn no_proxy_builds_client_successfully() {
-        let transport = SnowflakeTransportConfig::default();
+        let transport = TransportConfig::default();
         assert!(transport.build_http_client().is_ok());
     }
 
@@ -522,7 +518,7 @@ mod tests {
 
     #[test]
     fn endpoint_account_default_resolves() {
-        let endpoint = SnowflakeEndpointConfig::AccountDefault;
+        let endpoint = EndpointConfig::AccountDefault;
         let url = endpoint.resolve("myaccount").unwrap();
         assert_eq!(url.as_str(), "https://myaccount.snowflakecomputing.com/");
     }
@@ -530,7 +526,7 @@ mod tests {
     #[test]
     fn endpoint_custom_base_url_resolves() {
         let base = Url::parse("https://custom.example.com").unwrap();
-        let endpoint = SnowflakeEndpointConfig::custom_base_url(base);
+        let endpoint = EndpointConfig::custom_base_url(base);
         let url = endpoint.resolve("ignored").unwrap();
         assert_eq!(url.as_str(), "https://custom.example.com/");
     }

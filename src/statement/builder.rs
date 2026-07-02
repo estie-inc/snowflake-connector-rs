@@ -26,8 +26,8 @@ pub struct PositionalBinds(Vec<Bind>);
 pub struct NamedBinds(IndexMap<BindName, Bind>);
 
 /// Builder for a SQL statement and its bind values, accepted by
-/// [`SnowflakeSession::query`](crate::SnowflakeSession::query) /
-/// [`SnowflakeSession::query_as`](crate::SnowflakeSession::query_as).
+/// [`Session::query`](crate::Session::query) /
+/// [`Session::query_as`](crate::Session::query_as).
 ///
 /// A `Statement` is in one of three bind modes captured by the typestate
 /// parameter `M`:
@@ -278,20 +278,20 @@ impl From<String> for Statement<UnboundBinds> {
 }
 
 /// Marker trait for values accepted by
-/// [`SnowflakeSession::query`](crate::SnowflakeSession::query) /
-/// [`SnowflakeSession::query_as`](crate::SnowflakeSession::query_as).
+/// [`Session::query`](crate::Session::query) /
+/// [`Session::query_as`](crate::Session::query_as).
 ///
 /// # Example
 ///
 /// ```no_run
 /// use snowflake_connector_rs::{
-///     Result, SnowflakeAuthConfig, SnowflakeClient, SnowflakeClientConfig, Statement,
+///     Result, AuthConfig, Client, ClientConfig, Statement,
 /// };
 /// # async fn run() -> Result<()> {
-/// # let client = SnowflakeClient::new(SnowflakeClientConfig::new(
+/// # let client = Client::new(ClientConfig::new(
 /// #     "USER",
 /// #     "ACCOUNT",
-/// #     SnowflakeAuthConfig::password("PW"),
+/// #     AuthConfig::password("PW"),
 /// # ))?;
 /// let session = client.create_session().await?;
 ///

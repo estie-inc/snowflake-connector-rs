@@ -3,9 +3,8 @@ use std::env;
 use url::Url;
 
 use snowflake_connector_rs::{
-    ExternalBrowserConfig, FromRow, Result, SnowflakeAuthConfig, SnowflakeClient,
-    SnowflakeClientConfig, SnowflakeEndpointConfig, SnowflakeQueryConfig, SnowflakeSession,
-    SnowflakeSessionConfig,
+    AuthConfig, Client, ClientConfig, EndpointConfig, ExternalBrowserConfig, FromRow, QueryConfig,
+    Result, Session, SessionConfig,
 };
 
 #[derive(Debug, PartialEq, FromRow)]
@@ -47,7 +46,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn async_main() -> Result<()> {
-    let client = connect_with_configs(session_config(), SnowflakeQueryConfig::default())?;
+    let client = connect_with_configs(session_config(), QueryConfig::default())?;
     let session = client.create_session().await?;
 
     run_default_mapping_example(&session).await?;
@@ -59,7 +58,7 @@ async fn async_main() -> Result<()> {
     Ok(())
 }
 
-async fn run_default_mapping_example(session: &SnowflakeSession) -> Result<()> {
+async fn run_default_mapping_example(session: &Session) -> Result<()> {
     // Default field-name mapping uses compile-time SCREAMING_SNAKE_CASE labels.
     let rows = session
         .query_as(r#"SELECT 1 AS id, 'alice' AS user_name, NULL::STRING AS note"#)
@@ -78,7 +77,7 @@ async fn run_default_mapping_example(session: &SnowflakeSession) -> Result<()> {
     Ok(())
 }
 
-async fn run_rename_all_none_example(session: &SnowflakeSession) -> Result<()> {
+async fn run_rename_all_none_example(session: &Session) -> Result<()> {
     // Lowercase quoted labels can opt out of the default renaming rule.
     let rows = session
         .query_as(r#"SELECT 'TIMEZONE' AS "name", 'Asia/Tokyo' AS "value""#)
@@ -96,7 +95,7 @@ async fn run_rename_all_none_example(session: &SnowflakeSession) -> Result<()> {
     Ok(())
 }
 
-async fn run_exact_rename_example(session: &SnowflakeSession) -> Result<()> {
+async fn run_exact_rename_example(session: &Session) -> Result<()> {
     // `rename` targets the exact raw label, including spaces.
     let rows = session
         .query_as(r#"SELECT 'Alice Example' AS "display name""#)
@@ -113,7 +112,7 @@ async fn run_exact_rename_example(session: &SnowflakeSession) -> Result<()> {
     Ok(())
 }
 
-async fn run_position_examples(session: &SnowflakeSession) -> Result<()> {
+async fn run_position_examples(session: &Session) -> Result<()> {
     // Tuple structs decode by position automatically; named structs opt in with
     // container-level `#[snowflake(by_position)]`.
     let tuple_rows = session
@@ -142,7 +141,7 @@ async fn run_position_examples(session: &SnowflakeSession) -> Result<()> {
     Ok(())
 }
 
-async fn run_streaming_example(session: &SnowflakeSession) -> Result<()> {
+async fn run_streaming_example(session: &Session) -> Result<()> {
     // Typed results can be streamed table by table instead of collected eagerly.
     let mut result = session
         .query_as::<DefaultLabels, _>(
@@ -164,9 +163,9 @@ async fn run_streaming_example(session: &SnowflakeSession) -> Result<()> {
 }
 
 fn connect_with_configs(
-    session_config: SnowflakeSessionConfig,
-    query_config: SnowflakeQueryConfig,
-) -> Result<SnowflakeClient> {
+    session_config: SessionConfig,
+    query_config: QueryConfig,
+) -> Result<Client> {
     let username = env::var("SNOWFLAKE_USERNAME").expect("set SNOWFLAKE_USERNAME");
     let account = env::var("SNOWFLAKE_ACCOUNT").expect("set SNOWFLAKE_ACCOUNT");
     let host = env::var("SNOWFLAKE_HOST").ok();
@@ -175,10 +174,10 @@ fn connect_with_configs(
         .and_then(|var| var.parse().ok());
     let protocol = env::var("SNOWFLAKE_PROTOCOL").ok();
 
-    let mut client_config = SnowflakeClientConfig::new(
+    let mut client_config = ClientConfig::new(
         &username,
         &account,
-        SnowflakeAuthConfig::external_browser(ExternalBrowserConfig::default()),
+        AuthConfig::external_browser(ExternalBrowserConfig::default()),
     )
     .with_session(session_config)
     .with_query(query_config);
@@ -191,19 +190,19 @@ fn connect_with_configs(
             url.set_port(Some(port))
                 .map_err(|_| snowflake_connector_rs::Error::other("invalid base url port"))?;
         }
-        client_config = client_config.with_endpoint(SnowflakeEndpointConfig::custom_base_url(url));
+        client_config = client_config.with_endpoint(EndpointConfig::custom_base_url(url));
     }
 
-    SnowflakeClient::new(client_config)
+    Client::new(client_config)
 }
 
-fn session_config() -> SnowflakeSessionConfig {
+fn session_config() -> SessionConfig {
     let role = env::var("SNOWFLAKE_ROLE").ok();
     let warehouse = env::var("SNOWFLAKE_WAREHOUSE").ok();
     let database = env::var("SNOWFLAKE_DATABASE").ok();
     let schema = env::var("SNOWFLAKE_SCHEMA").ok();
 
-    let mut session_config = SnowflakeSessionConfig::default();
+    let mut session_config = SessionConfig::default();
     if let Some(warehouse) = warehouse {
         session_config = session_config.with_warehouse(warehouse);
     }

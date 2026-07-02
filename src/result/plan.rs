@@ -19,7 +19,7 @@ impl<'a> RowPlanContext<'a> {
     }
 
     /// Returns the shared `Arc<Schema>`.
-    pub fn schema_arc(&self) -> Arc<Schema> {
+    pub fn shared_schema(&self) -> Arc<Schema> {
         Arc::clone(self.schema)
     }
 }

@@ -2,7 +2,7 @@ use reqwest::{Client, Url};
 use uuid::Uuid;
 
 use crate::{
-    Result, SnowflakeClientConfig, SnowflakeSessionConfig,
+    ClientConfig, Result, SessionConfig,
     auth::credential::{LoginCredentialProvider, PreparedLoginCredential},
 };
 
@@ -13,11 +13,7 @@ use super::{
 };
 
 /// Login to Snowflake and return a session token.
-pub(crate) async fn login(
-    http: &Client,
-    config: &SnowflakeClientConfig,
-    base_url: &Url,
-) -> Result<String> {
+pub(crate) async fn login(http: &Client, config: &ClientConfig, base_url: &Url) -> Result<String> {
     let client = AuthApiClient::new(http.clone(), base_url.clone());
     let context = LoginContext {
         username: config.username(),
@@ -32,7 +28,7 @@ pub(crate) async fn login(
 
 fn build_login_request<'a>(
     context: LoginContext<'a>,
-    session_config: &'a SnowflakeSessionConfig,
+    session_config: &'a SessionConfig,
     credential: &'a PreparedLoginCredential,
 ) -> LoginRequest<'a> {
     let session_parameters = session_config.session_parameters();
@@ -75,7 +71,7 @@ mod tests {
 
     #[test]
     fn password_login_request_omits_request_id() {
-        let session = SnowflakeSessionConfig::default().with_warehouse("warehouse");
+        let session = SessionConfig::default().with_warehouse("warehouse");
         let credential = PreparedLoginCredential::Password {
             password: "secret".to_string(),
             passcode: None,
@@ -99,7 +95,7 @@ mod tests {
     #[cfg(feature = "external-browser-sso")]
     #[test]
     fn external_browser_login_request_includes_request_id() {
-        let session = SnowflakeSessionConfig::default().with_warehouse("warehouse");
+        let session = SessionConfig::default().with_warehouse("warehouse");
         let credential = PreparedLoginCredential::ExternalBrowser {
             token: "browser-token".to_string(),
             proof_key: None,

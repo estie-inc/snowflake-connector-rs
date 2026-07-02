@@ -43,7 +43,7 @@ impl Default for CollectOptions {
 }
 
 /// A query result as a cursor over its remaining partitions.
-pub struct ResultSet {
+pub struct ResultCursor {
     snapshot: Arc<ResultSnapshot>,
     cursor: PartitionCursor,
     inline_rowset: Option<InlineRowset>,
@@ -52,9 +52,9 @@ pub struct ResultSet {
     default_collect_policy: CollectPolicy,
 }
 
-impl fmt::Debug for ResultSet {
+impl fmt::Debug for ResultCursor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ResultSet")
+        f.debug_struct("ResultCursor")
             .field("query_id", &self.query_id())
             .field("is_exhausted", &self.is_exhausted())
             .finish_non_exhaustive()
@@ -75,7 +75,7 @@ impl InlineRowset {
     }
 }
 
-impl ResultSet {
+impl ResultCursor {
     pub(crate) fn new(
         snapshot: Arc<ResultSnapshot>,
         cursor: PartitionCursor,
@@ -102,7 +102,7 @@ impl ResultSet {
         &self.snapshot.schema
     }
 
-    pub(crate) fn schema_arc(&self) -> &Arc<Schema> {
+    pub(crate) fn shared_schema(&self) -> &Arc<Schema> {
         &self.snapshot.schema
     }
 
@@ -221,7 +221,7 @@ impl ResultSet {
 
     /// Consume this result set and decode all rows into any collection implementing [`FromIterator<DynamicRow>`](FromIterator).
     ///
-    /// The target collection is inferred from context, as with [`ResultSet::collect`].
+    /// The target collection is inferred from context, as with [`ResultCursor::collect`].
     ///
     /// # Errors
     ///
@@ -323,13 +323,13 @@ mod tests {
         ErrorKind, MissingColumnError, SchemaError,
         error::QueryScopedRepr,
         query_result::{
-            TypedResultSet,
+            TypedResultCursor,
             collect::CollectPolicy,
             partition_source::tests::{BlockingFetchProbe, FakePartitionSource, FakeResponse},
             snapshot::{PartitionCursor, PartitionSpec, ResultIdentity, ResultSnapshot},
         },
         result::{
-            CellDecodeIssue, CellDecodeResult, CellRef, Column, ColumnIndex, ColumnType,
+            CellConversionError, CellDecodeResult, CellRef, Column, ColumnIndex, ColumnType,
             DynamicRow, FromCell, FromRow, RowPlanContext, RowRef, Schema,
         },
         rowset::BLOCKING_PARSE_CELLS,
@@ -447,9 +447,9 @@ mod tests {
         PartitionSource::Fake(FakePartitionSource::new(map))
     }
 
-    fn build_result_set(snapshot: Arc<ResultSnapshot>, source: PartitionSource) -> ResultSet {
+    fn build_result_set(snapshot: Arc<ResultSnapshot>, source: PartitionSource) -> ResultCursor {
         let total = snapshot.partitions.len();
-        ResultSet::new(
+        ResultCursor::new(
             snapshot,
             PartitionCursor::new(total),
             None,
@@ -464,10 +464,10 @@ mod tests {
     }
 
     fn build_typed_result_set<T: FromRow>(
-        result_set: ResultSet,
-    ) -> crate::Result<TypedResultSet<T>> {
-        let plan = T::build_plan(RowPlanContext::new(result_set.schema_arc()))?;
-        Ok(TypedResultSet::new(result_set, plan))
+        result_set: ResultCursor,
+    ) -> crate::Result<TypedResultCursor<T>> {
+        let plan = T::build_plan(RowPlanContext::new(result_set.shared_schema()))?;
+        Ok(TypedResultCursor::new(result_set, plan))
     }
 
     #[derive(Debug)]
@@ -510,7 +510,7 @@ mod tests {
     impl FromCell for DecodeErrorCell {
         fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
             let _ = cell.required_raw()?;
-            Err(CellDecodeIssue::builder("simulated decode failure").build())
+            Err(CellConversionError::builder("simulated decode failure").build())
         }
     }
 
@@ -594,7 +594,7 @@ mod tests {
         let snapshot = snapshot_with_inline(2);
         let source = fake_source(vec![(1, vec![ok_rows(1)]), (2, vec![ok_rows(1)])]);
         let total = snapshot.partitions.len();
-        let mut rs = ResultSet::new(
+        let mut rs = ResultCursor::new(
             snapshot,
             PartitionCursor::new(total),
             Some(inline_rowset(br#"[["10"],["11"]]"#, Some(2))),
@@ -617,7 +617,7 @@ mod tests {
         let snapshot = snapshot_with_inline(2);
         let source = fake_source(vec![(1, vec![ok_rows(3)]), (2, vec![ok_rows(2)])]);
         let total = snapshot.partitions.len();
-        let rs = ResultSet::new(
+        let rs = ResultCursor::new(
             snapshot,
             PartitionCursor::new(total),
             Some(inline_rowset(br#"[["10"],["11"]]"#, Some(2))),
@@ -633,7 +633,7 @@ mod tests {
     async fn next_table_inline_parse_failure_does_not_advance_cursor() {
         let snapshot = snapshot_with_inline(0);
         let total = snapshot.partitions.len();
-        let mut rs = ResultSet::new(
+        let mut rs = ResultCursor::new(
             snapshot,
             PartitionCursor::new(total),
             Some(inline_rowset(br#"[["10"]"#, Some(1))),
@@ -673,7 +673,7 @@ mod tests {
             })
             .collect();
         let source = PartitionSource::Fake(FakePartitionSource::new(map));
-        let rs = ResultSet::new(
+        let rs = ResultCursor::new(
             snapshot,
             PartitionCursor::new(4),
             None,
@@ -699,7 +699,7 @@ mod tests {
         let fetch_count = source.fetch_count();
         let runtime = QueryRuntime::with_blocking_parse_concurrency(NonZeroUsize::new(1).unwrap());
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
-        let rs = ResultSet::new(
+        let rs = ResultCursor::new(
             snapshot,
             PartitionCursor::new(total),
             Some(inline_rowset(br#"[["10"]]"#, Some(BLOCKING_PARSE_CELLS))),

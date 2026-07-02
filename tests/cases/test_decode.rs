@@ -2,7 +2,7 @@ use super::common;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
-use snowflake_connector_rs::{Result, SchemaError, result::SnowflakeValue};
+use snowflake_connector_rs::{CellValue, Result, SchemaError};
 
 #[tokio::test]
 async fn test_decode() -> Result<()> {
@@ -31,7 +31,7 @@ async fn test_decode() -> Result<()> {
     let status = row.value("status").unwrap();
     assert_eq!(
         status,
-        &SnowflakeValue::String("Table EXAMPLE successfully created.".to_owned()),
+        &CellValue::String("Table EXAMPLE successfully created.".to_owned()),
     );
 
     let query = "
@@ -52,7 +52,7 @@ async fn test_decode() -> Result<()> {
 
     let row = table.dynamic_rows()?.next().unwrap()?;
     let number_of_rows_inserted = row.value("number of rows inserted").unwrap();
-    assert_eq!(number_of_rows_inserted, &SnowflakeValue::Integer(1));
+    assert_eq!(number_of_rows_inserted, &CellValue::Integer(1));
 
     let table = session
         .query_as::<(
@@ -129,10 +129,10 @@ async fn test_dynamic_row_value_resolves_escaped_identifiers() -> Result<()> {
 
     let row = table.dynamic_rows()?.next().unwrap()?;
 
-    assert_eq!(row.value("ID").unwrap(), &SnowflakeValue::Integer(1));
-    assert_eq!(row.value("id").unwrap(), &SnowflakeValue::Integer(2));
-    assert_eq!(row.value("my column").unwrap(), &SnowflakeValue::Integer(3));
-    assert_eq!(row.value("MixedCase").unwrap(), &SnowflakeValue::Integer(4));
+    assert_eq!(row.value("ID").unwrap(), &CellValue::Integer(1));
+    assert_eq!(row.value("id").unwrap(), &CellValue::Integer(2));
+    assert_eq!(row.value("my column").unwrap(), &CellValue::Integer(3));
+    assert_eq!(row.value("MixedCase").unwrap(), &CellValue::Integer(4));
 
     assert!(matches!(
         row.value("MIXEDCASE"),

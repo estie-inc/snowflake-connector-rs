@@ -4,13 +4,13 @@ use crate::{
     chunk::ChunkDownloader,
     error::{ProtocolError, QueryScopedError, QueryScopedResult, ServerError, SessionExpiredError},
     query_result::{
-        CollectPolicy, InlineRowset, ResultSet,
+        CollectPolicy, InlineRowset, ResultCursor,
         partition_source::{PartitionSource, StaticPartitionSource},
         snapshot::PartitionCursor,
     },
     runtime::QueryRuntime,
     statement::StatementParts,
-    {Error, Result, SnowflakeSession},
+    {Error, Result, Session},
 };
 
 use super::{
@@ -58,7 +58,7 @@ impl QueryScopedResponse {
 }
 
 impl StatementExecutor {
-    pub(crate) fn new(sess: &SnowflakeSession) -> Self {
+    pub(crate) fn new(sess: &Session) -> Self {
         let timeout = sess
             .query
             .async_query_completion_timeout()
@@ -76,7 +76,7 @@ impl StatementExecutor {
         }
     }
 
-    pub(crate) async fn execute(self, parts: StatementParts) -> Result<ResultSet> {
+    pub(crate) async fn execute(self, parts: StatementParts) -> Result<ResultCursor> {
         let response = QueryScopedResponse::from_submit(self.api.submit(&parts).await?)?;
         self.execute_query_scoped(response)
             .await
@@ -86,7 +86,7 @@ impl StatementExecutor {
     async fn execute_query_scoped(
         self,
         response: QueryScopedResponse,
-    ) -> QueryScopedResult<ResultSet> {
+    ) -> QueryScopedResult<ResultCursor> {
         let (query_id, mut response) = response.into_parts();
 
         let response_code = response.code.as_deref();
@@ -155,7 +155,7 @@ impl StatementExecutor {
         self.build_result_set(data)
     }
 
-    fn build_result_set(self, data: RawQueryResponse) -> QueryScopedResult<ResultSet> {
+    fn build_result_set(self, data: RawQueryResponse) -> QueryScopedResult<ResultCursor> {
         let manifest = ResultManifest::try_from(data)?;
         let cursor = PartitionCursor::new(manifest.snapshot.partitions.len());
 
@@ -168,7 +168,7 @@ impl StatementExecutor {
             PartitionSource::Static(StaticPartitionSource::new(manifest.lease, downloader));
         let default_collect_policy = CollectPolicy::new(self.default_collect_concurrency);
 
-        Ok(ResultSet::new(
+        Ok(ResultCursor::new(
             manifest.snapshot,
             cursor,
             inline_rowset,
@@ -195,7 +195,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ErrorKind, SnowflakeQueryConfig, Statement,
+        ErrorKind, QueryConfig, Statement,
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
         statement::{
@@ -312,11 +312,11 @@ mod tests {
     }
 
     async fn execute_single_response_err(body: &'static str) -> crate::Error {
-        let session = SnowflakeSession {
+        let session = Session {
             http: Client::new(),
             base_url: spawn_single_response_server(body),
             session_token: "test-token".to_string(),
-            query: SnowflakeQueryConfig::default(),
+            query: QueryConfig::default(),
             runtime: QueryRuntime::new(),
         };
 
@@ -332,11 +332,11 @@ mod tests {
     #[test]
     fn statement_executor_reuses_session_query_runtime() {
         let runtime = QueryRuntime::with_blocking_parse_concurrency(NonZeroUsize::new(1).unwrap());
-        let session = SnowflakeSession {
+        let session = Session {
             http: Client::new(),
             base_url: Url::parse("https://example.com/").unwrap(),
             session_token: "test-token".to_string(),
-            query: SnowflakeQueryConfig::default(),
+            query: QueryConfig::default(),
             runtime: runtime.clone(),
         };
 
@@ -421,13 +421,13 @@ mod tests {
 
     #[tokio::test]
     async fn execute_unsupported_result_format_preserves_query_id() {
-        let session = SnowflakeSession {
+        let session = Session {
             http: Client::new(),
             base_url: spawn_single_response_server(
                 r#"{"success":true,"data":{"queryId":"query-id","queryResultFormat":"arrow"}}"#,
             ),
             session_token: "test-token".to_string(),
-            query: SnowflakeQueryConfig::default(),
+            query: QueryConfig::default(),
             runtime: QueryRuntime::new(),
         };
 
@@ -446,13 +446,13 @@ mod tests {
 
     #[tokio::test]
     async fn execute_session_expired_preserves_snowflake_fields() {
-        let session = SnowflakeSession {
+        let session = Session {
             http: Client::new(),
             base_url: spawn_single_response_server(
                 r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":{"queryId":"query-id"}}"#,
             ),
             session_token: "test-token".to_string(),
-            query: SnowflakeQueryConfig::default(),
+            query: QueryConfig::default(),
             runtime: QueryRuntime::new(),
         };
 
@@ -476,13 +476,13 @@ mod tests {
 
     #[tokio::test]
     async fn execute_session_expired_without_query_id_preserves_snowflake_fields() {
-        let session = SnowflakeSession {
+        let session = Session {
             http: Client::new(),
             base_url: spawn_single_response_server(
                 r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":null}"#,
             ),
             session_token: "test-token".to_string(),
-            query: SnowflakeQueryConfig::default(),
+            query: QueryConfig::default(),
             runtime: QueryRuntime::new(),
         };
 
@@ -506,13 +506,13 @@ mod tests {
 
     #[tokio::test]
     async fn execute_server_error_preserves_query_id() {
-        let session = SnowflakeSession {
+        let session = Session {
             http: Client::new(),
             base_url: spawn_single_response_server(
                 r#"{"code":"123456","message":"statement failed","success":false,"data":{"queryId":"query-id"}}"#,
             ),
             session_token: "test-token".to_string(),
-            query: SnowflakeQueryConfig::default(),
+            query: QueryConfig::default(),
             runtime: QueryRuntime::new(),
         };
 
@@ -532,11 +532,11 @@ mod tests {
 
     #[tokio::test]
     async fn execute_network_failure_has_no_query_id() {
-        let session = SnowflakeSession {
+        let session = Session {
             http: Client::new(),
             base_url: spawn_disconnect_server(),
             session_token: "test-token".to_string(),
-            query: SnowflakeQueryConfig::default(),
+            query: QueryConfig::default(),
             runtime: QueryRuntime::new(),
         };
 

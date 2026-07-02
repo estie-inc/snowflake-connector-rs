@@ -14,13 +14,13 @@ pub enum BrowserLaunchMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WithCallbackListenerConfig {
+pub(crate) struct CallbackListenerConfig {
     browser_launch_mode: BrowserLaunchMode,
     callback_socket_addr: IpAddr,
     callback_socket_port: u16,
 }
 
-impl Default for WithCallbackListenerConfig {
+impl Default for CallbackListenerConfig {
     /// Returns the default callback-listener configuration.
     ///
     /// - `browser_launch_mode = BrowserLaunchMode::Auto`
@@ -35,7 +35,7 @@ impl Default for WithCallbackListenerConfig {
     }
 }
 
-impl WithCallbackListenerConfig {
+impl CallbackListenerConfig {
     pub(crate) fn new(
         browser_launch_mode: BrowserLaunchMode,
         callback_socket_addr: IpAddr,
@@ -62,12 +62,12 @@ impl WithCallbackListenerConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WithoutCallbackListenerConfig {
+pub(crate) struct ManualRedirectConfig {
     browser_launch_mode: BrowserLaunchMode,
     redirect_port: NonZeroU16,
 }
 
-impl WithoutCallbackListenerConfig {
+impl ManualRedirectConfig {
     pub(crate) fn new(browser_launch_mode: BrowserLaunchMode, redirect_port: NonZeroU16) -> Self {
         Self {
             browser_launch_mode,
@@ -85,20 +85,20 @@ impl WithoutCallbackListenerConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Configuration for [`SnowflakeAuthConfig::external_browser`](crate::SnowflakeAuthConfig::external_browser).
+/// Configuration for [`AuthConfig::external_browser`](crate::AuthConfig::external_browser).
 ///
-/// Use [`ExternalBrowserConfig::with_callback_listener`] or
-/// [`ExternalBrowserConfig::without_callback_listener`] to choose the
+/// Use [`ExternalBrowserConfig::callback_listener`] or
+/// [`ExternalBrowserConfig::manual_redirect`] to choose the
 /// authentication mode.
-/// For end-to-end setup examples, see [`SnowflakeAuthConfig::external_browser`](crate::SnowflakeAuthConfig::external_browser).
+/// For end-to-end setup examples, see [`AuthConfig::external_browser`](crate::AuthConfig::external_browser).
 pub struct ExternalBrowserConfig {
     mode: ExternalBrowserMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ExternalBrowserMode {
-    WithCallbackListener(WithCallbackListenerConfig),
-    WithoutCallbackListener(WithoutCallbackListenerConfig),
+    CallbackListener(CallbackListenerConfig),
+    ManualRedirect(ManualRedirectConfig),
 }
 
 impl Default for ExternalBrowserConfig {
@@ -110,7 +110,7 @@ impl Default for ExternalBrowserConfig {
     /// - `callback_socket_port = 0` (OS-selected ephemeral port)
     fn default() -> Self {
         Self {
-            mode: ExternalBrowserMode::WithCallbackListener(WithCallbackListenerConfig::default()),
+            mode: ExternalBrowserMode::CallbackListener(CallbackListenerConfig::default()),
         }
     }
 }
@@ -127,13 +127,13 @@ impl ExternalBrowserConfig {
     ///   (for example `127.0.0.1` or `0.0.0.0`).
     /// - `callback_socket_port`: bind port for the callback listener.
     ///   Use `0` to let the OS pick an available ephemeral port.
-    pub fn with_callback_listener(
+    pub fn callback_listener(
         browser_launch_mode: BrowserLaunchMode,
         callback_socket_addr: IpAddr,
         callback_socket_port: u16,
     ) -> Self {
         Self {
-            mode: ExternalBrowserMode::WithCallbackListener(WithCallbackListenerConfig::new(
+            mode: ExternalBrowserMode::CallbackListener(CallbackListenerConfig::new(
                 browser_launch_mode,
                 callback_socket_addr,
                 callback_socket_port,
@@ -154,12 +154,12 @@ impl ExternalBrowserConfig {
     ///   It is still required because Snowflake uses this value to construct the
     ///   browser redirect URL that you later paste into the terminal; the connector
     ///   then extracts the token from that pasted URL.
-    pub fn without_callback_listener(
+    pub fn manual_redirect(
         browser_launch_mode: BrowserLaunchMode,
         redirect_port: NonZeroU16,
     ) -> Self {
         Self {
-            mode: ExternalBrowserMode::WithoutCallbackListener(WithoutCallbackListenerConfig::new(
+            mode: ExternalBrowserMode::ManualRedirect(ManualRedirectConfig::new(
                 browser_launch_mode,
                 redirect_port,
             )),

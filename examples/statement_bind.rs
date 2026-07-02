@@ -3,9 +3,8 @@ use std::env;
 use chrono::{FixedOffset, NaiveDate};
 
 use snowflake_connector_rs::{
-    ExternalBrowserConfig, SnowflakeAuthConfig, SnowflakeClient, SnowflakeClientConfig,
-    SnowflakeSession, SnowflakeSessionConfig, Statement,
-    bind::{Binary, Integer, RawBind, SnowflakeBindType, TimestampTz},
+    AuthConfig, Client, ClientConfig, ExternalBrowserConfig, Session, SessionConfig, Statement,
+    bind::{Binary, BindType, Integer, RawBind, TimestampTz},
 };
 
 #[tokio::main]
@@ -111,7 +110,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     id = ?
                 ",
             )
-            .bind(RawBind::new(SnowflakeBindType::Text, r#"{"k":"v2"}"#))
+            .bind(RawBind::new(BindType::Text, r#"{"k":"v2"}"#))
             .bind(1_i64),
         )
         .await?;
@@ -138,7 +137,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn build_session() -> std::result::Result<SnowflakeSession, Box<dyn std::error::Error>> {
+async fn build_session() -> std::result::Result<Session, Box<dyn std::error::Error>> {
     let username = env::var("SNOWFLAKE_USERNAME")?;
     let account = env::var("SNOWFLAKE_ACCOUNT")?;
     let role = env::var("SNOWFLAKE_ROLE").ok();
@@ -146,7 +145,7 @@ async fn build_session() -> std::result::Result<SnowflakeSession, Box<dyn std::e
     let database = env::var("SNOWFLAKE_DATABASE").ok();
     let schema = env::var("SNOWFLAKE_SCHEMA").ok();
 
-    let mut session_config = SnowflakeSessionConfig::default();
+    let mut session_config = SessionConfig::default();
     if let Some(value) = warehouse {
         session_config = session_config.with_warehouse(value);
     }
@@ -160,11 +159,11 @@ async fn build_session() -> std::result::Result<SnowflakeSession, Box<dyn std::e
         session_config = session_config.with_role(value);
     }
 
-    let client = SnowflakeClient::new(
-        SnowflakeClientConfig::new(
+    let client = Client::new(
+        ClientConfig::new(
             &username,
             &account,
-            SnowflakeAuthConfig::external_browser(ExternalBrowserConfig::default()),
+            AuthConfig::external_browser(ExternalBrowserConfig::default()),
         )
         .with_session(session_config),
     )?;

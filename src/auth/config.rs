@@ -4,41 +4,41 @@ use std::fmt;
 use crate::auth::external_browser::ExternalBrowserConfig;
 
 #[derive(Clone)]
-pub struct SnowflakeAuthConfig {
-    kind: SnowflakeAuthConfigKind,
+pub struct AuthConfig {
+    kind: AuthConfigKind,
 }
 
 #[derive(Clone)]
-pub(crate) enum SnowflakeAuthConfigKind {
-    Password(PasswordAuthConfig),
+pub(crate) enum AuthConfigKind {
+    Password(PasswordConfig),
     #[cfg(feature = "key-pair-auth")]
-    KeyPair(KeyPairAuthConfig),
-    OAuth(OAuthAuthConfig),
+    KeyPair(KeyPairConfig),
+    OAuth(OAuthConfig),
     #[cfg(feature = "external-browser-sso")]
     ExternalBrowser(ExternalBrowserConfig),
 }
 
-impl SnowflakeAuthConfig {
+impl AuthConfig {
     /// Username/password authentication, optionally with an MFA passcode.
     ///
-    /// Pass a `&str`/`String`, or a [`PasswordAuthConfig`] to attach a TOTP passcode.
-    pub fn password(config: impl Into<PasswordAuthConfig>) -> Self {
+    /// Pass a `&str`/`String`, or a [`PasswordConfig`] to attach a TOTP passcode.
+    pub fn password(config: impl Into<PasswordConfig>) -> Self {
         Self {
-            kind: SnowflakeAuthConfigKind::Password(config.into()),
+            kind: AuthConfigKind::Password(config.into()),
         }
     }
 
     #[cfg(feature = "key-pair-auth")]
-    pub fn key_pair(config: KeyPairAuthConfig) -> Self {
+    pub fn key_pair(config: KeyPairConfig) -> Self {
         Self {
-            kind: SnowflakeAuthConfigKind::KeyPair(config),
+            kind: AuthConfigKind::KeyPair(config),
         }
     }
 
     /// Authenticate with a Snowflake OAuth access token. Acquiring and refreshing the token is the caller's responsibility.
     pub fn oauth(token: impl Into<String>) -> Self {
         Self {
-            kind: SnowflakeAuthConfigKind::OAuth(OAuthAuthConfig::new(token)),
+            kind: AuthConfigKind::OAuth(OAuthConfig::new(token)),
         }
     }
 
@@ -53,66 +53,64 @@ impl SnowflakeAuthConfig {
     /// ### Default (auto browser launch, localhost callback with auto-picked port)
     ///
     /// ```rust
-    /// use snowflake_connector_rs::{ExternalBrowserConfig, SnowflakeAuthConfig};
+    /// use snowflake_connector_rs::{ExternalBrowserConfig, AuthConfig};
     ///
-    /// let auth = SnowflakeAuthConfig::external_browser(ExternalBrowserConfig::default());
+    /// let auth = AuthConfig::external_browser(ExternalBrowserConfig::default());
     /// ```
     ///
     /// ### Docker/container mode (manual open + explicit callback bind address/port)
     ///
     /// ```rust
     /// use std::net::Ipv4Addr;
-    /// use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthConfig};
+    /// use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, AuthConfig};
     ///
-    /// let external_browser = ExternalBrowserConfig::with_callback_listener(
+    /// let external_browser = ExternalBrowserConfig::callback_listener(
     ///     BrowserLaunchMode::Manual,
     ///     Ipv4Addr::UNSPECIFIED.into(),
     ///     3037,
     /// );
-    /// let auth = SnowflakeAuthConfig::external_browser(external_browser);
+    /// let auth = AuthConfig::external_browser(external_browser);
     /// ```
     ///
     /// ### Without callback listener mode (manual redirected-URL input)
     ///
     /// ```rust
     /// use std::num::NonZeroU16;
-    /// use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, SnowflakeAuthConfig};
+    /// use snowflake_connector_rs::{BrowserLaunchMode, ExternalBrowserConfig, AuthConfig};
     ///
     /// let redirect_port = NonZeroU16::new(3037).unwrap();
     /// let external_browser =
-    ///     ExternalBrowserConfig::without_callback_listener(BrowserLaunchMode::Manual, redirect_port);
-    /// let auth = SnowflakeAuthConfig::external_browser(external_browser);
+    ///     ExternalBrowserConfig::manual_redirect(BrowserLaunchMode::Manual, redirect_port);
+    /// let auth = AuthConfig::external_browser(external_browser);
     /// ```
     pub fn external_browser(config: ExternalBrowserConfig) -> Self {
         Self {
-            kind: SnowflakeAuthConfigKind::ExternalBrowser(config),
+            kind: AuthConfigKind::ExternalBrowser(config),
         }
     }
 
-    pub(crate) fn kind(&self) -> &SnowflakeAuthConfigKind {
+    pub(crate) fn kind(&self) -> &AuthConfigKind {
         &self.kind
     }
 }
 
-impl fmt::Debug for SnowflakeAuthConfig {
+impl fmt::Debug for AuthConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind() {
-            SnowflakeAuthConfigKind::Password(config) => f
-                .debug_tuple("SnowflakeAuthConfig::Password")
-                .field(config)
-                .finish(),
+            AuthConfigKind::Password(config) => {
+                f.debug_tuple("AuthConfig::Password").field(config).finish()
+            }
             #[cfg(feature = "key-pair-auth")]
-            SnowflakeAuthConfigKind::KeyPair(config) => f
-                .debug_tuple("SnowflakeAuthConfig::KeyPair")
-                .field(config)
-                .finish(),
-            SnowflakeAuthConfigKind::OAuth(_) => f
-                .debug_tuple("SnowflakeAuthConfig::OAuth")
+            AuthConfigKind::KeyPair(config) => {
+                f.debug_tuple("AuthConfig::KeyPair").field(config).finish()
+            }
+            AuthConfigKind::OAuth(_) => f
+                .debug_tuple("AuthConfig::OAuth")
                 .field(&"<redacted>")
                 .finish(),
             #[cfg(feature = "external-browser-sso")]
-            SnowflakeAuthConfigKind::ExternalBrowser(config) => f
-                .debug_tuple("SnowflakeAuthConfig::ExternalBrowser")
+            AuthConfigKind::ExternalBrowser(config) => f
+                .debug_tuple("AuthConfig::ExternalBrowser")
                 .field(config)
                 .finish(),
         }
@@ -121,7 +119,7 @@ impl fmt::Debug for SnowflakeAuthConfig {
 
 /// Password authentication, optionally carrying an MFA passcode.
 #[derive(Clone)]
-pub struct PasswordAuthConfig {
+pub struct PasswordConfig {
     password: String,
     passcode: Option<PasscodeMode>,
 }
@@ -132,7 +130,7 @@ pub(crate) enum PasscodeMode {
     InPassword,
 }
 
-impl PasswordAuthConfig {
+impl PasswordConfig {
     /// Password without an MFA passcode.
     pub fn new(password: impl Into<String>) -> Self {
         Self {
@@ -147,7 +145,7 @@ impl PasswordAuthConfig {
         self
     }
 
-    /// Signal that the passcode is already appended to the password passed to [`PasswordAuthConfig::new`];
+    /// Signal that the passcode is already appended to the password passed to [`PasswordConfig::new`];
     /// no separate `PASSCODE` is sent.
     pub fn with_passcode_in_password(mut self) -> Self {
         self.passcode = Some(PasscodeMode::InPassword);
@@ -163,19 +161,19 @@ impl PasswordAuthConfig {
     }
 }
 
-impl From<&str> for PasswordAuthConfig {
+impl From<&str> for PasswordConfig {
     fn from(password: &str) -> Self {
         Self::new(password)
     }
 }
 
-impl From<String> for PasswordAuthConfig {
+impl From<String> for PasswordConfig {
     fn from(password: String) -> Self {
         Self::new(password)
     }
 }
 
-impl fmt::Debug for PasswordAuthConfig {
+impl fmt::Debug for PasswordConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Expose only which passcode mode is set, not its value.
         let passcode = match self.passcode {
@@ -183,7 +181,7 @@ impl fmt::Debug for PasswordAuthConfig {
             Some(PasscodeMode::Separate(_)) => "passcode",
             Some(PasscodeMode::InPassword) => "in-password",
         };
-        f.debug_struct("PasswordAuthConfig")
+        f.debug_struct("PasswordConfig")
             .field("password", &"<redacted>")
             .field("passcode", &passcode)
             .finish()
@@ -191,11 +189,11 @@ impl fmt::Debug for PasswordAuthConfig {
 }
 
 #[derive(Clone)]
-pub(crate) struct OAuthAuthConfig {
+pub(crate) struct OAuthConfig {
     token: String,
 }
 
-impl OAuthAuthConfig {
+impl OAuthConfig {
     fn new(token: impl Into<String>) -> Self {
         Self {
             token: token.into(),
@@ -209,21 +207,21 @@ impl OAuthAuthConfig {
 
 #[cfg(feature = "key-pair-auth")]
 #[derive(Clone)]
-pub struct KeyPairAuthConfig {
+pub struct KeyPairConfig {
     pem: String,
     password: Option<Vec<u8>>,
 }
 
 #[cfg(feature = "key-pair-auth")]
-impl KeyPairAuthConfig {
-    pub fn encrypted_pem(pem: impl Into<String>, password: impl Into<Vec<u8>>) -> Self {
+impl KeyPairConfig {
+    pub fn from_encrypted_pem(pem: impl Into<String>, password: impl Into<Vec<u8>>) -> Self {
         Self {
             pem: pem.into(),
             password: Some(password.into()),
         }
     }
 
-    pub fn unencrypted_pem(pem: impl Into<String>) -> Self {
+    pub fn from_pem(pem: impl Into<String>) -> Self {
         Self {
             pem: pem.into(),
             password: None,
@@ -240,9 +238,9 @@ impl KeyPairAuthConfig {
 }
 
 #[cfg(feature = "key-pair-auth")]
-impl fmt::Debug for KeyPairAuthConfig {
+impl fmt::Debug for KeyPairConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("KeyPairAuthConfig")
+        f.debug_struct("KeyPairConfig")
             .field("pem", &"<redacted>")
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .finish()
@@ -255,8 +253,8 @@ mod tests {
 
     #[test]
     fn password_debug_redacts_secret() {
-        let debug = format!("{:?}", SnowflakeAuthConfig::password("secret"));
-        assert!(debug.contains("SnowflakeAuthConfig::Password"));
+        let debug = format!("{:?}", AuthConfig::password("secret"));
+        assert!(debug.contains("AuthConfig::Password"));
         assert!(!debug.contains("secret"));
     }
 
@@ -264,31 +262,29 @@ mod tests {
     fn password_debug_redacts_passcode() {
         let debug = format!(
             "{:?}",
-            SnowflakeAuthConfig::password(
-                PasswordAuthConfig::new("secret").with_passcode("123456")
-            )
+            AuthConfig::password(PasswordConfig::new("secret").with_passcode("123456"))
         );
-        assert!(debug.contains("SnowflakeAuthConfig::Password"));
+        assert!(debug.contains("AuthConfig::Password"));
         assert!(!debug.contains("secret"));
         assert!(!debug.contains("123456"));
     }
 
     #[test]
     fn password_passcode_modes_are_mutually_exclusive_last_wins() {
-        assert!(PasswordAuthConfig::new("pw").passcode().is_none());
+        assert!(PasswordConfig::new("pw").passcode().is_none());
         assert!(matches!(
-            PasswordAuthConfig::new("pw").with_passcode("123456").passcode(),
+            PasswordConfig::new("pw").with_passcode("123456").passcode(),
             Some(PasscodeMode::Separate(code)) if code == "123456"
         ));
         assert!(matches!(
-            PasswordAuthConfig::new("pw")
+            PasswordConfig::new("pw")
                 .with_passcode_in_password()
                 .passcode(),
             Some(PasscodeMode::InPassword)
         ));
         // Setting one mode after another overwrites rather than accumulating.
         assert!(matches!(
-            PasswordAuthConfig::new("pw")
+            PasswordConfig::new("pw")
                 .with_passcode("123456")
                 .with_passcode_in_password()
                 .passcode(),
@@ -298,8 +294,8 @@ mod tests {
 
     #[test]
     fn oauth_debug_redacts_secret() {
-        let debug = format!("{:?}", SnowflakeAuthConfig::oauth("oauth-token"));
-        assert!(debug.contains("SnowflakeAuthConfig::OAuth"));
+        let debug = format!("{:?}", AuthConfig::oauth("oauth-token"));
+        assert!(debug.contains("AuthConfig::OAuth"));
         assert!(!debug.contains("oauth-token"));
     }
 
@@ -308,12 +304,12 @@ mod tests {
     fn key_pair_debug_redacts_secret() {
         let debug = format!(
             "{:?}",
-            SnowflakeAuthConfig::key_pair(KeyPairAuthConfig::encrypted_pem(
+            AuthConfig::key_pair(KeyPairConfig::from_encrypted_pem(
                 "pem-body",
                 b"super-secret".to_vec(),
             ))
         );
-        assert!(debug.contains("SnowflakeAuthConfig::KeyPair"));
+        assert!(debug.contains("AuthConfig::KeyPair"));
         assert!(!debug.contains("pem-body"));
         assert!(!debug.contains("super-secret"));
     }

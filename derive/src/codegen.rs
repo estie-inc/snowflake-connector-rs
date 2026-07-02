@@ -10,7 +10,7 @@ pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
 
     let plan_fields = model.fields.iter().map(|field| {
         let ident = &field.plan_ident;
-        quote! { #ident: #crate_path::result::ColumnIndex }
+        quote! { #ident: #crate_path::ColumnIndex }
     });
 
     let build_plan_lines = model
@@ -34,7 +34,7 @@ pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
                 type Plan = #plan_ident;
 
                 fn build_plan(
-                    ctx: #crate_path::result::RowPlanContext<'_>,
+                    ctx: #crate_path::RowPlanContext<'_>,
                 ) -> #crate_path::Result<Self::Plan> {
                     let schema = ctx.schema();
                     #(#build_plan_lines)*
@@ -42,7 +42,7 @@ pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
                 }
 
                 fn from_row_with_plan(
-                    row: #crate_path::result::RowRef<'_>,
+                    row: #crate_path::RowRef<'_>,
                     plan: &Self::Plan,
                 ) -> #crate_path::Result<Self> {
                     #row_body
@@ -55,7 +55,7 @@ pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
 fn build_plan_line(field: &FieldInfo, crate_path: &syn::Path) -> TokenStream2 {
     let ident = &field.plan_ident;
     match &field.lookup {
-        FieldLookup::Name(name) => quote! { let #ident = schema.column(#name)?; },
+        FieldLookup::Name(name) => quote! { let #ident = schema.column_index(#name)?; },
         FieldLookup::Position(pos) => {
             let pos_lit = syn::Index::from(*pos);
             quote! {

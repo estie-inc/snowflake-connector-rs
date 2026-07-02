@@ -109,7 +109,7 @@ pub struct Rows<'a, T: FromRow> {
 
 impl<'a, T: FromRow> Rows<'a, T> {
     pub(crate) fn new(table: &'a ResultTable) -> Result<Self> {
-        let plan = Arc::new(T::build_plan(RowPlanContext::new(table.schema_arc()))?);
+        let plan = Arc::new(T::build_plan(RowPlanContext::new(table.shared_schema()))?);
         Ok(Self::from_arc_plan(table, plan))
     }
 

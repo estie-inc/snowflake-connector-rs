@@ -10,8 +10,8 @@ use crate::{
 
 use super::{
     config::{
-        BrowserLaunchMode, ExternalBrowserConfig, ExternalBrowserMode, WithCallbackListenerConfig,
-        WithoutCallbackListenerConfig,
+        BrowserLaunchMode, CallbackListenerConfig, ExternalBrowserConfig, ExternalBrowserMode,
+        ManualRedirectConfig,
     },
     launcher::{BrowserLauncher, LaunchOutcome, SystemCommandRunner},
     listener::{CallbackWaitError, ListenerConfig, RunningListener, spawn_listener},
@@ -33,10 +33,10 @@ pub(crate) async fn acquire_external_browser_credential(
     config: &ExternalBrowserConfig,
 ) -> Result<ExternalBrowserCredential> {
     match config.mode() {
-        ExternalBrowserMode::WithCallbackListener(config) => {
+        ExternalBrowserMode::CallbackListener(config) => {
             run_with_listener(client, context, config).await
         }
-        ExternalBrowserMode::WithoutCallbackListener(config) => {
+        ExternalBrowserMode::ManualRedirect(config) => {
             run_without_listener(client, context, config).await
         }
     }
@@ -45,7 +45,7 @@ pub(crate) async fn acquire_external_browser_credential(
 async fn run_with_listener(
     client: &AuthApiClient,
     context: LoginContext<'_>,
-    config: &WithCallbackListenerConfig,
+    config: &CallbackListenerConfig,
 ) -> Result<ExternalBrowserCredential> {
     let listener = spawn_listener(ListenerConfig::new(
         Some(env!("CARGO_PKG_NAME").to_string()),
@@ -94,7 +94,7 @@ async fn run_with_listener(
 async fn run_without_listener(
     client: &AuthApiClient,
     context: LoginContext<'_>,
-    config: &WithoutCallbackListenerConfig,
+    config: &ManualRedirectConfig,
 ) -> Result<ExternalBrowserCredential> {
     let redirect_port = config.redirect_port().get();
     let challenge = client

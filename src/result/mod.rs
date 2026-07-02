@@ -9,14 +9,14 @@ mod typed_result_table;
 
 pub use cell::CellRef;
 pub use decode::{FromCell, FromRow};
-pub use dynamic::{DecimalValue, DynamicRow, SnowflakeValue};
+pub use dynamic::{CellValue, DecimalValue, DynamicRow};
 pub use plan::RowPlanContext;
 pub use result_table::ResultTable;
 pub use row::{RowRef, Rows};
 pub use schema::{Column, ColumnIndex, ColumnType, Schema};
 pub use typed_result_table::TypedResultTable;
 
-pub use crate::error::decode::{CellDecodeIssue, CellDecodeIssueBuilder, CellDecodeResult};
+pub use crate::error::decode::{CellConversionError, CellDecodeResult};
 pub(crate) use cell::RawSpan;
 pub(crate) use result_table::ResultTableBuilder;
 
@@ -39,6 +39,7 @@ pub mod test_data {
         Arc::new(Schema::from_columns(cols).expect("schema build"))
     }
 
+    #[cfg(feature = "bench-internals")]
     pub fn column_type(
         snowflake_type: &str,
         length: Option<u32>,

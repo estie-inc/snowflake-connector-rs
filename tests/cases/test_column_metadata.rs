@@ -1,8 +1,7 @@
 use super::common;
 
 use snowflake_connector_rs::{
-    Result,
-    result::{ColumnType, Schema},
+    Result, {ColumnType, Schema},
 };
 
 // Verifies the wire -> ColumnType metadata mapping against live Snowflake: the declared precision / scale / length land
