@@ -65,6 +65,8 @@ impl RawBind {
 // `RawBind::null(ty)` to express a typed NULL with an explicit wire type.
 impl IntoBind for RawBind {}
 
+// `Bind` is `pub(crate)`, exposed only through the sealed (unnameable) trait.
+#[allow(private_interfaces)]
 impl into_bind_sealed::Sealed for RawBind {
     fn into_bind(self) -> Bind {
         match self.value {

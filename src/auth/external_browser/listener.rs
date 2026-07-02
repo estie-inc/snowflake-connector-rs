@@ -125,16 +125,18 @@ impl RunningListener {
     }
 }
 
-pub(crate) async fn spawn_listener(cfg: ListenerConfig) -> Result<RunningListener, ListenerError> {
-    let (listener, local_addr) = bind_listener(&cfg)?;
-    let expected_origin = build_origin(&cfg.protocol, cfg.host, local_addr.port());
+pub(crate) async fn spawn_listener(
+    config: ListenerConfig,
+) -> Result<RunningListener, ListenerError> {
+    let (listener, local_addr) = bind_listener(&config)?;
+    let expected_origin = build_origin(&config.protocol, config.host, local_addr.port());
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (payload_tx, payload_rx) = watch::channel(None);
     let handle = tokio::spawn(
         ListenerRuntime::new(
             listener,
             expected_origin,
-            cfg.application,
+            config.application,
             shutdown_rx,
             payload_tx,
         )
@@ -516,15 +518,15 @@ mod tests {
     #[tokio::test]
     async fn shutdown_drains_stale_connection_before_next_listener_reuses_port() {
         let port = pick_unused_port();
-        let cfg = ListenerConfig {
+        let config = ListenerConfig {
             host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port,
             ..Default::default()
         };
 
         let running1 = spawn_listener(ListenerConfig {
-            host: cfg.host,
-            port: cfg.port,
+            host: config.host,
+            port: config.port,
             ..Default::default()
         })
         .await
@@ -554,7 +556,7 @@ mod tests {
                 .unwrap();
         assert_eq!(close_result, 0, "stale callback connection remained open");
 
-        let running2 = spawn_listener(cfg).await.unwrap();
+        let running2 = spawn_listener(config).await.unwrap();
         let (addr2, shutdown2, handle2, payloads2) = running2.into_parts();
         let mut next_rx = payloads2;
 

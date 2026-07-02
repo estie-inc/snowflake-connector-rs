@@ -58,21 +58,21 @@ impl QueryScopedResponse {
 }
 
 impl StatementExecutor {
-    pub(crate) fn new(sess: &Session) -> Self {
-        let timeout = sess
+    pub(crate) fn new(session: &Session) -> Self {
+        let timeout = session
             .query
             .async_query_completion_timeout()
             .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS));
 
         Self {
             api: StatementApiClient::new(
-                sess.http.clone(),
-                sess.base_url.clone(),
-                sess.session_token.clone(),
+                session.http.clone(),
+                session.base_url.clone(),
+                session.session_token.clone(),
             ),
             async_completion_timeout: timeout,
-            default_collect_concurrency: sess.query.collect_prefetch_concurrency(),
-            runtime: sess.runtime.clone(),
+            default_collect_concurrency: session.query.collect_prefetch_concurrency(),
+            runtime: session.runtime.clone(),
         }
     }
 

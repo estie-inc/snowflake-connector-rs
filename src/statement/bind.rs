@@ -1,3 +1,7 @@
+// `pub(crate)` `Bind` is exposed through the sealed (unnameable) `IntoBind` supertrait; callers cannot name it,
+// so this leak is intentional.
+#![allow(private_interfaces)]
+
 use std::{borrow::Cow, fmt};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
@@ -87,7 +91,7 @@ impl fmt::Debug for BindValue {
 
 /// Internal typed bind value used by [`IntoBind`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct Bind {
+pub(crate) struct Bind {
     ty: BindType,
     value: Option<BindValue>,
 }
@@ -527,7 +531,7 @@ pub(super) mod into_bind_sealed {
     }
 }
 
-pub(super) mod into_bind_nullable_sealed {
+mod into_bind_nullable_sealed {
     pub trait Sealed {
         const DEFAULT_TYPE: super::BindType;
     }
