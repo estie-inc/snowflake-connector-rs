@@ -1,8 +1,9 @@
-use reqwest::{Client, Url};
+use std::sync::Arc;
+
 use uuid::Uuid;
 
 use crate::{
-    ClientConfig, Result, SessionConfig,
+    ClientConfig, ClientShared, Result, SessionConfig,
     auth::credential::{LoginCredentialProvider, PreparedLoginCredential},
 };
 
@@ -13,8 +14,8 @@ use super::{
 };
 
 /// Login to Snowflake and return a session token.
-pub(crate) async fn login(http: &Client, config: &ClientConfig, base_url: &Url) -> Result<String> {
-    let client = AuthApiClient::new(http.clone(), base_url.clone());
+pub(crate) async fn login(config: &ClientConfig, shared: Arc<ClientShared>) -> Result<String> {
+    let client = AuthApiClient::new(shared);
     let context = LoginContext {
         username: config.username(),
         account: config.account(),

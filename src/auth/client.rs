@@ -1,12 +1,12 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use reqwest::{
-    Client, Url,
+    Url,
     header::{ACCEPT, USER_AGENT},
 };
 
 use crate::{
-    Result,
+    ClientShared, Result,
     error::{ConfigError, NetworkError, classify_request_error},
 };
 
@@ -23,31 +23,29 @@ const AUTHENTICATOR_REQUEST_ACCEPT: &str = "application/json";
 
 #[derive(Clone)]
 pub(crate) struct AuthApiClient {
-    http: Client,
-    base_url: Url,
+    shared: Arc<ClientShared>,
     request_timeout: Duration,
 }
 
 impl AuthApiClient {
-    pub(crate) fn new(http: Client, base_url: Url) -> Self {
+    pub(crate) fn new(shared: Arc<ClientShared>) -> Self {
         Self {
-            http,
-            base_url,
+            shared,
             request_timeout: AUTH_REQUEST_TIMEOUT,
         }
     }
 
     #[cfg(test)]
-    fn with_request_timeout(http: Client, base_url: Url, request_timeout: Duration) -> Self {
+    fn with_request_timeout(shared: Arc<ClientShared>, request_timeout: Duration) -> Self {
         Self {
-            http,
-            base_url,
+            shared,
             request_timeout,
         }
     }
 
     pub(crate) async fn login(&self, request: LoginRequest<'_>) -> Result<LoginSession> {
         let url = self
+            .shared
             .base_url
             .join("session/v1/login-request")
             .map_err(|e| ConfigError::invalid_url(e.to_string()))?;
@@ -75,6 +73,7 @@ impl AuthApiClient {
         request: AuthenticatorRequest<'_>,
     ) -> Result<ExternalBrowserChallenge> {
         let url = self
+            .shared
             .base_url
             .join("session/authenticator-request")
             .map_err(|e| ConfigError::invalid_url(e.to_string()))?;
@@ -97,7 +96,8 @@ impl AuthApiClient {
     }
 
     fn post(&self, url: Url, accept: &'static str) -> reqwest::RequestBuilder {
-        self.http
+        self.shared
+            .http
             .post(url)
             .header(ACCEPT, accept)
             .header(USER_AGENT, default_user_agent())
@@ -124,6 +124,10 @@ mod tests {
         ErrorKind,
         auth::wire::{LoginBody, LoginCredentialWire, LoginData, LoginQuery, LoginRequest},
     };
+
+    fn auth_client(addr: SocketAddr) -> AuthApiClient {
+        AuthApiClient::new(ClientShared::for_test(base_url_for(addr)))
+    }
 
     #[cfg(feature = "external-browser-sso")]
     use crate::auth::wire::AuthenticatorRequest;
@@ -261,7 +265,7 @@ mod tests {
             .unwrap();
         });
 
-        let client = AuthApiClient::new(Client::new(), base_url_for(addr));
+        let client = auth_client(addr);
         let session = client.login(sample_login_request()).await.unwrap();
 
         assert_eq!(session.token, "session-token");
@@ -281,7 +285,7 @@ mod tests {
                 .unwrap();
         });
 
-        let client = AuthApiClient::new(Client::new(), base_url_for(addr));
+        let client = auth_client(addr);
         let err = client.login(sample_login_request()).await.unwrap_err();
 
         assert_eq!(err.kind(), ErrorKind::Network);
@@ -301,7 +305,7 @@ mod tests {
                 .unwrap();
         });
 
-        let client = AuthApiClient::new(Client::new(), base_url_for(addr));
+        let client = auth_client(addr);
         let err = client.login(sample_login_request()).await.unwrap_err();
 
         assert_eq!(err.kind(), ErrorKind::Protocol);
@@ -319,8 +323,7 @@ mod tests {
         });
 
         let client = AuthApiClient::with_request_timeout(
-            Client::new(),
-            base_url_for(addr),
+            ClientShared::for_test(base_url_for(addr)),
             Duration::from_millis(50),
         );
         let err = client.login(sample_login_request()).await.unwrap_err();
@@ -380,7 +383,7 @@ mod tests {
             .unwrap();
         });
 
-        let client = AuthApiClient::new(Client::new(), base_url_for(addr));
+        let client = auth_client(addr);
         let challenge = client
             .request_external_browser_challenge(AuthenticatorRequest {
                 account_name: "account",

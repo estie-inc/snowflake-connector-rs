@@ -137,7 +137,7 @@ mod tests {
 
     use super::*;
 
-    use crate::PasswordConfig;
+    use crate::{ClientShared, PasswordConfig};
 
     #[cfg(feature = "key-pair-auth")]
     use crate::KeyPairConfig;
@@ -148,10 +148,9 @@ mod tests {
     const UNENCRYPTED_TEST_PEM: &str = include_str!("./test_snowflake_key_unencrypted.p8");
 
     fn dummy_client() -> AuthApiClient {
-        AuthApiClient::new(
-            reqwest::Client::new(),
+        AuthApiClient::new(ClientShared::for_test(
             Url::parse("https://example.com/").unwrap(),
-        )
+        ))
     }
 
     #[tokio::test]

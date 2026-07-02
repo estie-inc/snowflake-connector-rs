@@ -9,11 +9,12 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::{
-    Error, Result,
+    ClientShared, Error, Result,
     error::{
         ConfigError, NetworkError, ProtocolError, QueryScopedError, QueryScopedResult,
         TimeoutError, classify_request_error,
     },
+    session::SessionAuth,
     statement::{
         StatementParts,
         builder::StatementPartsRepr,
@@ -28,22 +29,17 @@ use crate::{
 };
 
 pub(crate) struct StatementApiClient {
-    http: Client,
-    base_url: Url,
-    session_token: String,
+    shared: Arc<ClientShared>,
+    auth: Arc<SessionAuth>,
 }
 
 impl StatementApiClient {
-    pub(crate) fn new(http: Client, base_url: Url, session_token: String) -> Self {
-        Self {
-            http,
-            base_url,
-            session_token,
-        }
+    pub(crate) fn new(shared: Arc<ClientShared>, auth: Arc<SessionAuth>) -> Self {
+        Self { shared, auth }
     }
 
     pub(crate) fn http_client(&self) -> Client {
-        self.http.clone()
+        self.shared.http.clone()
     }
 
     pub(crate) async fn submit(&self, parts: &StatementParts) -> Result<SnowflakeResponse> {
@@ -51,6 +47,7 @@ impl StatementApiClient {
 
         let request_id = Uuid::new_v4();
         let mut url = self
+            .shared
             .base_url
             .join("queries/v1/query-request")
             .map_err(|e| ConfigError::invalid_url(e.to_string()))?;
@@ -58,12 +55,13 @@ impl StatementApiClient {
             .append_pair("requestId", &request_id.to_string());
 
         let response = self
+            .shared
             .http
             .post(url)
             .header(ACCEPT, "application/snowflake")
             .header(
                 AUTHORIZATION,
-                format!(r#"Snowflake Token="{}""#, self.session_token),
+                format!(r#"Snowflake Token="{}""#, self.auth.session_token),
             )
             .json(&WireQueryBody::from_statement_parts(parts))
             .send()
@@ -87,7 +85,7 @@ impl StatementApiClient {
     ) -> QueryScopedResult<SnowflakeResponse> {
         const POLL_INTERVAL: Duration = Duration::from_secs(10);
 
-        let poll_url = match resolve_poll_url(&self.base_url, poll_relative_url) {
+        let poll_url = match resolve_poll_url(&self.shared.base_url, poll_relative_url) {
             Ok(url) => url,
             Err(err) => {
                 return Err(QueryScopedError::new(query_id, err));
@@ -97,12 +95,13 @@ impl StatementApiClient {
 
         loop {
             let resp = self
+                .shared
                 .http
                 .get(poll_url.clone())
                 .header(ACCEPT, "application/snowflake")
                 .header(
                     AUTHORIZATION,
-                    format!(r#"Snowflake Token="{}""#, self.session_token),
+                    format!(r#"Snowflake Token="{}""#, self.auth.session_token),
                 )
                 .send()
                 .await;
@@ -227,7 +226,10 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
-    use crate::{ErrorKind, Statement, statement::builder::into_statement_parts};
+    use crate::{
+        ErrorKind, QueryConfig, Statement, runtime::QueryRuntime,
+        statement::builder::into_statement_parts,
+    };
 
     #[test]
     fn resolve_poll_url_accepts_relative_and_same_origin_absolute_urls() {
@@ -284,12 +286,16 @@ mod tests {
         });
 
         let client = StatementApiClient::new(
-            reqwest::Client::builder()
-                .timeout(Duration::from_millis(50))
-                .build()
-                .unwrap(),
-            Url::parse(&format!("http://{addr}/")).unwrap(),
-            "test-token".to_string(),
+            ClientShared::for_test_with(
+                reqwest::Client::builder()
+                    .timeout(Duration::from_millis(50))
+                    .build()
+                    .unwrap(),
+                Url::parse(&format!("http://{addr}/")).unwrap(),
+                QueryConfig::default(),
+                QueryRuntime::new(),
+            ),
+            SessionAuth::for_test("test-token"),
         );
 
         let parts = into_statement_parts(Statement::from("select 1"));
