@@ -209,7 +209,7 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
     match err.as_cell_decode_error() {
         Some(err) => {
             assert_eq!(err.column_name(), "NOTE");
-            assert_eq!(err.issue().reason(), "value is NULL");
+            assert_eq!(err.conversion_error().reason(), "value is NULL");
         }
         other => panic!("expected Decode error, got: {other:?}"),
     }

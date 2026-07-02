@@ -127,7 +127,7 @@ impl CellDecodeError {
         self.raw_value_preview.as_deref()
     }
 
-    pub fn issue(&self) -> &CellConversionError {
+    pub fn conversion_error(&self) -> &CellConversionError {
         &self.issue
     }
 }

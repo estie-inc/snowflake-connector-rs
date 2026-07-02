@@ -434,7 +434,7 @@ mod tests {
 
         assert_eq!(decode.row_index(), 0);
         assert_eq!(decode.column_name(), "PAYLOAD");
-        assert_eq!(decode.issue().reason(), "'maybe' is not bool");
+        assert_eq!(decode.conversion_error().reason(), "'maybe' is not bool");
         assert!(decode.target_type_name().ends_with("CellValue"));
         assert_eq!(decode.raw_value_preview(), Some("maybe"));
     }
@@ -446,7 +446,7 @@ mod tests {
         assert!(matches!(
             row.value_at(index),
             Err(SchemaError::InvalidColumnIndex(error))
-                if error.index() == index && error.len() == 1
+                if error.index() == index && error.column_count() == 1
         ));
     }
 
@@ -501,7 +501,7 @@ mod tests {
         assert!(matches!(
             row.take_at(index),
             Err(SchemaError::InvalidColumnIndex(error))
-                if error.index() == index && error.len() == 1
+                if error.index() == index && error.column_count() == 1
         ));
     }
 

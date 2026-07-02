@@ -63,8 +63,8 @@ pub(crate) enum AuthError {
 #[derive(Debug)]
 pub(crate) enum NetworkError {
     Http(reqwest::Error),
-    HttpStatus { status: u16, body: Box<str> },
-    ChunkDownload { status: u16, body: Box<str> },
+    HttpStatus { status: u16, body_preview: Box<str> },
+    ChunkDownload { status: u16, body_preview: Box<str> },
 }
 
 #[derive(Debug)]
