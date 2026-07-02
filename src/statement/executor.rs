@@ -60,19 +60,16 @@ impl QueryScopedResponse {
 impl StatementExecutor {
     pub(crate) fn new(session: &Session) -> Self {
         let timeout = session
+            .shared
             .query
             .async_query_completion_timeout()
             .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS));
 
         Self {
-            api: StatementApiClient::new(
-                session.http.clone(),
-                session.base_url.clone(),
-                session.session_token.clone(),
-            ),
+            api: StatementApiClient::new(Arc::clone(&session.shared), Arc::clone(&session.auth)),
             async_completion_timeout: timeout,
-            default_collect_concurrency: session.query.collect_prefetch_concurrency(),
-            runtime: session.runtime.clone(),
+            default_collect_concurrency: session.shared.query.collect_prefetch_concurrency(),
+            runtime: session.shared.runtime.clone(),
         }
     }
 
@@ -195,9 +192,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        ErrorKind, QueryConfig, Statement,
+        ClientShared, ErrorKind, QueryConfig, Statement,
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
+        session::SessionAuth,
         statement::{
             StatementParts,
             builder::into_statement_parts,
@@ -206,13 +204,23 @@ mod tests {
         },
     };
 
+    fn test_statement_api(base_url: Url) -> StatementApiClient {
+        StatementApiClient::new(
+            ClientShared::for_test(base_url),
+            SessionAuth::for_test("test-token"),
+        )
+    }
+
+    fn test_session(base_url: Url) -> Session {
+        Session {
+            shared: ClientShared::for_test(base_url),
+            auth: SessionAuth::for_test("test-token"),
+        }
+    }
+
     fn executor() -> StatementExecutor {
         StatementExecutor {
-            api: StatementApiClient::new(
-                Client::new(),
-                Url::parse("https://example.com/").unwrap(),
-                "test-token".to_string(),
-            ),
+            api: test_statement_api(Url::parse("https://example.com/").unwrap()),
             async_completion_timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime: QueryRuntime::new(),
@@ -312,13 +320,7 @@ mod tests {
     }
 
     async fn execute_single_response_err(body: &'static str) -> crate::Error {
-        let session = Session {
-            http: Client::new(),
-            base_url: spawn_single_response_server(body),
-            session_token: "test-token".to_string(),
-            query: QueryConfig::default(),
-            runtime: QueryRuntime::new(),
-        };
+        let session = test_session(spawn_single_response_server(body));
 
         match StatementExecutor::new(&session)
             .execute(select_1_parts())
@@ -333,11 +335,13 @@ mod tests {
     fn statement_executor_reuses_session_query_runtime() {
         let runtime = QueryRuntime::with_blocking_parse_concurrency(NonZeroUsize::new(1).unwrap());
         let session = Session {
-            http: Client::new(),
-            base_url: Url::parse("https://example.com/").unwrap(),
-            session_token: "test-token".to_string(),
-            query: QueryConfig::default(),
-            runtime: runtime.clone(),
+            shared: ClientShared::for_test_with(
+                Client::new(),
+                Url::parse("https://example.com/").unwrap(),
+                QueryConfig::default(),
+                runtime.clone(),
+            ),
+            auth: SessionAuth::for_test("test-token"),
         };
 
         let executor = StatementExecutor::new(&session);
@@ -393,18 +397,14 @@ mod tests {
     #[tokio::test]
     async fn execute_async_poll_timeout_preserves_query_id() {
         let executor = StatementExecutor {
-            api: StatementApiClient::new(
-                Client::new(),
-                spawn_response_sequence_server(vec![
-                    Some(
-                        r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"/poll"}}"#,
-                    ),
-                    Some(
-                        r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"/poll"}}"#,
-                    ),
-                ]),
-                "test-token".to_string(),
-            ),
+            api: test_statement_api(spawn_response_sequence_server(vec![
+                Some(
+                    r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"/poll"}}"#,
+                ),
+                Some(
+                    r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"/poll"}}"#,
+                ),
+            ])),
             async_completion_timeout: Duration::ZERO,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime: QueryRuntime::new(),
@@ -421,15 +421,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_unsupported_result_format_preserves_query_id() {
-        let session = Session {
-            http: Client::new(),
-            base_url: spawn_single_response_server(
-                r#"{"success":true,"data":{"queryId":"query-id","queryResultFormat":"arrow"}}"#,
-            ),
-            session_token: "test-token".to_string(),
-            query: QueryConfig::default(),
-            runtime: QueryRuntime::new(),
-        };
+        let session = test_session(spawn_single_response_server(
+            r#"{"success":true,"data":{"queryId":"query-id","queryResultFormat":"arrow"}}"#,
+        ));
 
         let err = match StatementExecutor::new(&session)
             .execute(select_1_parts())
@@ -446,15 +440,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_session_expired_preserves_snowflake_fields() {
-        let session = Session {
-            http: Client::new(),
-            base_url: spawn_single_response_server(
-                r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":{"queryId":"query-id"}}"#,
-            ),
-            session_token: "test-token".to_string(),
-            query: QueryConfig::default(),
-            runtime: QueryRuntime::new(),
-        };
+        let session = test_session(spawn_single_response_server(
+            r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":{"queryId":"query-id"}}"#,
+        ));
 
         let err = match StatementExecutor::new(&session)
             .execute(select_1_parts())
@@ -476,15 +464,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_session_expired_without_query_id_preserves_snowflake_fields() {
-        let session = Session {
-            http: Client::new(),
-            base_url: spawn_single_response_server(
-                r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":null}"#,
-            ),
-            session_token: "test-token".to_string(),
-            query: QueryConfig::default(),
-            runtime: QueryRuntime::new(),
-        };
+        let session = test_session(spawn_single_response_server(
+            r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":null}"#,
+        ));
 
         let err = match StatementExecutor::new(&session)
             .execute(select_1_parts())
@@ -506,15 +488,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_server_error_preserves_query_id() {
-        let session = Session {
-            http: Client::new(),
-            base_url: spawn_single_response_server(
-                r#"{"code":"123456","message":"statement failed","success":false,"data":{"queryId":"query-id"}}"#,
-            ),
-            session_token: "test-token".to_string(),
-            query: QueryConfig::default(),
-            runtime: QueryRuntime::new(),
-        };
+        let session = test_session(spawn_single_response_server(
+            r#"{"code":"123456","message":"statement failed","success":false,"data":{"queryId":"query-id"}}"#,
+        ));
 
         let err = match StatementExecutor::new(&session)
             .execute(select_1_parts())
@@ -532,13 +508,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_network_failure_has_no_query_id() {
-        let session = Session {
-            http: Client::new(),
-            base_url: spawn_disconnect_server(),
-            session_token: "test-token".to_string(),
-            query: QueryConfig::default(),
-            runtime: QueryRuntime::new(),
-        };
+        let session = test_session(spawn_disconnect_server());
 
         let err = match StatementExecutor::new(&session)
             .execute(select_1_parts())
@@ -557,11 +527,7 @@ mod tests {
         let runtime = QueryRuntime::with_blocking_parse_concurrency(NonZeroUsize::new(1).unwrap());
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
-            api: StatementApiClient::new(
-                Client::new(),
-                Url::parse("https://example.com/").unwrap(),
-                "test-token".to_string(),
-            ),
+            api: test_statement_api(Url::parse("https://example.com/").unwrap()),
             async_completion_timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
@@ -605,11 +571,7 @@ mod tests {
         let runtime = QueryRuntime::with_blocking_parse_concurrency(NonZeroUsize::new(1).unwrap());
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
-            api: StatementApiClient::new(
-                Client::new(),
-                Url::parse("https://example.com/").unwrap(),
-                "test-token".to_string(),
-            ),
+            api: test_statement_api(Url::parse("https://example.com/").unwrap()),
             async_completion_timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
@@ -648,11 +610,7 @@ mod tests {
         let runtime = QueryRuntime::with_blocking_parse_concurrency(NonZeroUsize::new(1).unwrap());
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
-            api: StatementApiClient::new(
-                Client::new(),
-                Url::parse("https://example.com/").unwrap(),
-                "test-token".to_string(),
-            ),
+            api: test_statement_api(Url::parse("https://example.com/").unwrap()),
             async_completion_timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,

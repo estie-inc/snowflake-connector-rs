@@ -1,32 +1,40 @@
-use std::fmt;
-
-use url::Url;
+use std::{fmt, sync::Arc};
 
 use crate::{
-    IntoStatement, Result,
-    config::QueryConfig,
+    ClientShared, IntoStatement, Result,
     query_result::{ResultCursor, TypedResultCursor},
     result::{FromRow, RowPlanContext},
-    runtime::QueryRuntime,
     statement::{StatementExecutor, builder::into_statement_parts},
 };
 
 pub struct Session {
-    pub(super) http: reqwest::Client,
-    pub(super) base_url: Url,
-    pub(super) session_token: String,
-    pub(super) query: QueryConfig,
-    pub(super) runtime: QueryRuntime,
+    pub(crate) shared: Arc<ClientShared>,
+    pub(crate) auth: Arc<SessionAuth>,
+}
+
+/// Per-session authentication state.
+pub(crate) struct SessionAuth {
+    pub(crate) session_token: String,
 }
 
 impl fmt::Debug for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The session token authenticates every request; never print it.
         f.debug_struct("Session")
-            .field("base_url", &self.base_url)
+            .field("base_url", &self.shared.base_url)
             .field("session_token", &"<redacted>")
-            .field("query", &self.query)
+            .field("query", &self.shared.query)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+impl SessionAuth {
+    /// Build a per-session auth handle for unit tests.
+    pub(crate) fn for_test(session_token: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self {
+            session_token: session_token.into(),
+        })
     }
 }
 
