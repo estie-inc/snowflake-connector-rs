@@ -32,9 +32,8 @@ impl<'a> RowRef<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when
-    /// `index` is out of bounds for this row's schema.
-    pub fn cell(self, index: ColumnIndex) -> Result<CellRef<'a>> {
+    /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when `index` is out of bounds for this row's schema.
+    pub fn cell_at(self, index: ColumnIndex) -> Result<CellRef<'a>> {
         let column = self.table.schema().column_at(index).ok_or_else(|| {
             Error::from(SchemaError::InvalidColumnIndex(
                 InvalidColumnIndexError::new(index, self.table.schema().len()),
@@ -52,7 +51,7 @@ impl<'a> RowRef<'a> {
     }
 
     // A fast path for DynamicRow.
-    // DynamicRow has columns in the correct order, so it can skip column lookups in `cell()`.
+    // DynamicRow has columns in the correct order, so it can skip column lookups in `cell_at()`.
     pub(crate) fn cell_at_offset(self, column: &'a Column, offset: usize) -> CellRef<'a> {
         debug_assert_eq!(column.index().as_usize(), offset);
 
@@ -73,7 +72,7 @@ impl<'a> RowRef<'a> {
     /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when
     /// `index` is out of bounds or the cell cannot be decoded as `T`.
     pub fn get<T: FromCell>(self, index: ColumnIndex) -> Result<T> {
-        let cell = self.cell(index)?;
+        let cell = self.cell_at(index)?;
         T::from_cell(cell).map_err(|issue| {
             CellDecodeError::new(
                 cell.row_index(),
@@ -262,7 +261,7 @@ mod tests {
 
         for (offset, column) in table.schema().columns().iter().enumerate() {
             let direct = row.cell_at_offset(column, offset);
-            let checked = row.cell(column.index()).unwrap();
+            let checked = row.cell_at(column.index()).unwrap();
             assert_eq!(direct.raw(), checked.raw());
             assert_eq!(direct.column().name(), checked.column().name());
             assert_eq!(direct.row_index(), checked.row_index());
