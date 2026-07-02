@@ -1,5 +1,0 @@
-error: field-level `by_position` is not supported; use container-level `#[snowflake(by_position)]` instead
- --> tests/derive_compile_fail/field_by_position_rejected.rs:5:17
-  |
-5 |     #[snowflake(by_position)]
-  |                 ^^^^^^^^^^^

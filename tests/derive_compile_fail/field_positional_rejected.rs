@@ -2,7 +2,7 @@ use snowflake_connector_rs::FromRow;
 
 #[derive(FromRow)]
 struct Bad {
-    #[snowflake(by_position)]
+    #[snowflake(positional)]
     id: i64,
 }
 

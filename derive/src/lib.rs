@@ -44,11 +44,11 @@ use syn::{DeriveInput, parse_macro_input};
 /// - `rename_all = "SCREAMING_SNAKE_CASE"`: compile-time field-name conversion used by named structs. This is the default.
 /// - `rename_all = "none"`: use each logical field name as-is. Pair this with quoted aliases or `SHOW` / `DESCRIBE`
 ///   results that intentionally keep labels in lowercase or mixed case.
-/// - `by_position`: decode every field by ordinal instead of by label on named structs.
+/// - `positional`: decode every field by ordinal instead of by label on named structs.
 ///   Tuple structs already decode by position automatically.
 /// - `crate = "::path"`: override the crate path used in generated code.
 ///
-/// `rename_all` cannot be combined with `by_position`; positional decoding does not use field names.
+/// `rename_all` cannot be combined with `positional`; positional decoding does not use field names.
 /// `rename_all` also cannot be applied to tuple structs, which are implicitly positional.
 ///
 /// ```rust,ignore
@@ -61,7 +61,7 @@ use syn::{DeriveInput, parse_macro_input};
 ///
 /// ```rust,ignore
 /// #[derive(snowflake_connector_rs::FromRow)]
-/// #[snowflake(by_position)]
+/// #[snowflake(positional)]
 /// struct PositionalRow {
 ///     id: i64,
 ///     name: String,
@@ -70,7 +70,7 @@ use syn::{DeriveInput, parse_macro_input};
 ///
 /// # Tuple structs
 ///
-/// Tuple structs decode by ordinal automatically; you do not need to add `#[snowflake(by_position)]`.
+/// Tuple structs decode by ordinal automatically; you do not need to add `#[snowflake(positional)]`.
 /// The container attribute remains accepted as a no-op for backward source compatibility but is not required
 /// and is omitted from the examples. `rename_all` cannot be applied to tuple structs.
 ///

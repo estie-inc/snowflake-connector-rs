@@ -28,7 +28,7 @@ pub(crate) fn screaming_snake(s: &str) -> String {
 
 pub(crate) fn apply_rename_all(s: &str, rename_all: RenameAll) -> String {
     match rename_all {
-        RenameAll::ScreamingSnake => screaming_snake(s),
+        RenameAll::ScreamingSnakeCase => screaming_snake(s),
         RenameAll::None => s.to_string(),
     }
 }

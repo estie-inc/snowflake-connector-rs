@@ -30,7 +30,7 @@ struct AmbiguousIdRow {
 }
 
 #[derive(Debug, FromRow, PartialEq)]
-#[snowflake(by_position)]
+#[snowflake(positional)]
 struct CountAndName(i64, String);
 
 #[derive(Debug, FromRow, PartialEq)]
@@ -66,7 +66,7 @@ struct SessionParameterRow {
 }
 
 #[derive(Debug, FromRow, PartialEq)]
-#[snowflake(by_position)]
+#[snowflake(positional)]
 struct NamedByPosition {
     id: i64,
     label: String,
