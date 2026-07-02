@@ -172,7 +172,7 @@ impl Error {
         matches!(&*self.repr, Repr::Timeout { .. })
     }
 
-    pub fn is_server_error(&self) -> bool {
+    pub fn is_server(&self) -> bool {
         matches!(&*self.repr, Repr::Server(_))
     }
 
@@ -374,14 +374,14 @@ impl NetworkError {
     pub(crate) fn http_status(status: u16, body: impl AsRef<[u8]>) -> Self {
         Self::HttpStatus {
             status,
-            body: truncate_preview_lossy_bytes(body.as_ref(), JSON_BODY_PREVIEW_MAX_BYTES),
+            body_preview: truncate_preview_lossy_bytes(body.as_ref(), JSON_BODY_PREVIEW_MAX_BYTES),
         }
     }
 
     pub(crate) fn chunk_download(status: u16, body: impl AsRef<[u8]>) -> Self {
         Self::ChunkDownload {
             status,
-            body: truncate_preview_lossy_bytes(body.as_ref(), JSON_BODY_PREVIEW_MAX_BYTES),
+            body_preview: truncate_preview_lossy_bytes(body.as_ref(), JSON_BODY_PREVIEW_MAX_BYTES),
         }
     }
 }
@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(err.snowflake_code(), Some("12345"));
         assert_eq!(err.snowflake_message(), Some("statement failed"));
         assert_eq!(err.query_id(), Some("query-id"));
-        assert!(err.is_server_error());
+        assert!(err.is_server());
         assert!(!err.is_timeout());
     }
 
@@ -836,7 +836,7 @@ mod tests {
             .as_cell_decode_error()
             .expect("typed row decode should expose a CellDecodeError");
 
-        assert_eq!(decode.issue().reason(), "bad value");
+        assert_eq!(decode.conversion_error().reason(), "bad value");
 
         let issue =
             StdError::source(decode).expect("decode error should expose CellConversionError");

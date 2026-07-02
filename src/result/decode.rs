@@ -1027,7 +1027,10 @@ mod tests {
         assert_eq!(decode.row_index(), 0);
         assert_eq!(decode.column_index(), ColumnIndex::new(0));
         assert_eq!(decode.column_name(), "X");
-        assert_eq!(decode.issue().reason(), "not a valid temperature");
+        assert_eq!(
+            decode.conversion_error().reason(),
+            "not a valid temperature"
+        );
         assert_eq!(
             decode.actual_column_type(),
             &ColumnType::Text { length: None }
@@ -1035,7 +1038,7 @@ mod tests {
         assert_eq!(decode.raw_value_preview(), Some("abc"));
         assert!(decode.target_type_name().ends_with("CelsiusTemp"));
         assert!(std::error::Error::source(decode).is_some());
-        assert!(decode.issue().source().is_some());
+        assert!(decode.conversion_error().source().is_some());
         assert!(std::error::Error::source(&err).is_some());
     }
 
@@ -1052,9 +1055,9 @@ mod tests {
             .as_cell_decode_error()
             .expect("built-in parse failure should be contextualized");
 
-        assert!(decode.issue().reason().contains("parse error"));
+        assert!(decode.conversion_error().reason().contains("parse error"));
         assert!(std::error::Error::source(decode).is_some());
-        assert!(decode.issue().source().is_some());
+        assert!(decode.conversion_error().source().is_some());
         assert!(std::error::Error::source(&err).is_some());
     }
 

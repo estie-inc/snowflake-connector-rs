@@ -72,24 +72,23 @@ impl std::error::Error for AmbiguousColumnError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidColumnIndexError {
     index: ColumnIndex,
-    len: usize,
+    column_count: usize,
 }
 
 impl InvalidColumnIndexError {
-    pub(crate) fn new(index: ColumnIndex, len: usize) -> Self {
-        Self { index, len }
+    pub(crate) fn new(index: ColumnIndex, column_count: usize) -> Self {
+        Self {
+            index,
+            column_count,
+        }
     }
 
     pub fn index(&self) -> ColumnIndex {
         self.index
     }
 
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
+    pub fn column_count(&self) -> usize {
+        self.column_count
     }
 }
 
@@ -98,7 +97,7 @@ impl fmt::Display for InvalidColumnIndexError {
         write!(
             f,
             "invalid column index {:?} for schema with {} columns",
-            self.index, self.len
+            self.index, self.column_count
         )
     }
 }
@@ -209,7 +208,7 @@ mod tests {
 
         let invalid = InvalidColumnIndexError::new(ColumnIndex::new(7), 3);
         assert_eq!(invalid.index(), ColumnIndex::new(7));
-        assert_eq!(invalid.len(), 3);
+        assert_eq!(invalid.column_count(), 3);
 
         let duplicate = DuplicateColumnNameError::new("id");
         assert_eq!(duplicate.name(), "id");

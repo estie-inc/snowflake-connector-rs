@@ -34,16 +34,27 @@ impl fmt::Display for Error {
                 ..
             } => f.write_str("network error"),
             Repr::Network {
-                error: NetworkError::HttpStatus { status, body },
+                error:
+                    NetworkError::HttpStatus {
+                        status,
+                        body_preview,
+                    },
                 ..
             } => {
-                write!(f, "HTTP {status}: {body}")
+                write!(f, "HTTP {status}: {body_preview}")
             }
             Repr::Network {
-                error: NetworkError::ChunkDownload { status, body },
+                error:
+                    NetworkError::ChunkDownload {
+                        status,
+                        body_preview,
+                    },
                 ..
             } => {
-                write!(f, "chunk download failed with HTTP {status}: {body}")
+                write!(
+                    f,
+                    "chunk download failed with HTTP {status}: {body_preview}"
+                )
             }
             Repr::Server(ServerError {
                 code,

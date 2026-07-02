@@ -8,7 +8,7 @@ use super::{
 #[derive(Debug)]
 pub(crate) struct QueryScopedError {
     query_id: Arc<str>,
-    inner: QueryScopedRepr,
+    repr: QueryScopedRepr,
 }
 
 #[derive(Debug)]
@@ -27,12 +27,12 @@ impl QueryScopedError {
     pub(crate) fn new(query_id: Arc<str>, inner: impl Into<QueryScopedRepr>) -> Self {
         Self {
             query_id,
-            inner: inner.into(),
+            repr: inner.into(),
         }
     }
 
     fn into_parts(self) -> (Arc<str>, QueryScopedRepr) {
-        (self.query_id, self.inner)
+        (self.query_id, self.repr)
     }
 }
 
