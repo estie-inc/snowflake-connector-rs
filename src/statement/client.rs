@@ -292,7 +292,7 @@ mod tests {
                     .build()
                     .unwrap(),
                 Url::parse(&format!("http://{addr}/")).unwrap(),
-                QueryConfig::default(),
+                QueryConfig::default().into(),
                 QueryRuntime::new(),
             ),
             SessionAuth::for_test("test-token"),

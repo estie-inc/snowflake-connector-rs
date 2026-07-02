@@ -18,9 +18,8 @@ pub struct ClientConfig {
 
 /// Server-side session context sent to Snowflake at login time.
 ///
-/// These values are passed as query parameters in the login request and
-/// determine the initial state of the Snowflake session (active warehouse,
-/// database, schema, and role). They correspond directly to Snowflake's
+/// These values are passed as query parameters in the login request and determine the initial state of the
+/// Snowflake session (active warehouse, database, schema, and role). They correspond directly to Snowflake's
 /// session-level settings and do not affect client-side behavior.
 #[derive(Default, Clone, Debug)]
 pub struct SessionConfig {
@@ -35,9 +34,8 @@ const DEFAULT_COLLECT_PREFETCH_CONCURRENCY: usize = 8;
 
 /// Client-side query execution policy.
 ///
-/// Controls how this connector behaves while executing queries — for example,
-/// how long to poll for the completion of an async query. These settings are
-/// enforced entirely on the client side and are never sent to Snowflake.
+/// Controls how this connector behaves while executing queries — for example, how long to poll for the completion
+/// of an async query. These settings are enforced entirely on the client side and are never sent to Snowflake.
 #[derive(Clone, Debug)]
 pub struct QueryConfig {
     async_query_completion_timeout: Option<Duration>,
@@ -56,9 +54,8 @@ impl Default for QueryConfig {
 
 /// Endpoint resolution strategy for the Snowflake API base URL.
 ///
-/// By default the base URL is derived from the account name
-/// (`https://<account>.snowflakecomputing.com`). Use
-/// [`CustomBaseUrl`](Self::CustomBaseUrl) to override this — for example,
+/// By default the base URL is derived from the account name (`https://<account>.snowflakecomputing.com`).
+/// Use [`CustomBaseUrl`](Self::CustomBaseUrl) to override this — for example,
 /// when connecting through a PrivateLink endpoint or a local test server.
 #[non_exhaustive]
 #[derive(Default, Clone, Debug)]
@@ -139,52 +136,32 @@ impl ClientConfig {
         self
     }
 
-    pub(crate) fn username(&self) -> &str {
-        &self.username
-    }
+    /// Compile this public builder input into the internal model held by `Client`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ErrorKind::Config` when endpoint or transport configuration is invalid.
+    pub(crate) fn prepare(self) -> Result<PreparedClientConfig> {
+        let base_url = self.endpoint.resolve(&self.account)?;
+        let http = self.transport.build_http_client()?;
 
-    pub(crate) fn account(&self) -> &str {
-        &self.account
-    }
-
-    pub(crate) fn auth(&self) -> &AuthConfig {
-        &self.auth
-    }
-
-    pub(crate) fn session(&self) -> &SessionConfig {
-        &self.session
-    }
-
-    pub(crate) fn query(&self) -> &QueryConfig {
-        &self.query
-    }
-
-    pub(crate) fn endpoint(&self) -> &EndpointConfig {
-        &self.endpoint
-    }
-
-    pub(crate) fn transport(&self) -> &TransportConfig {
-        &self.transport
+        Ok(PreparedClientConfig {
+            login: ClientLoginConfig {
+                username: self.username,
+                account: self.account,
+                auth: self.auth,
+                initial_session: self.session.into(),
+            },
+            shared: PreparedClientShared {
+                http,
+                base_url,
+                query: self.query.into(),
+            },
+        })
     }
 }
 
 impl SessionConfig {
-    pub(crate) fn warehouse(&self) -> Option<&str> {
-        self.warehouse.as_deref()
-    }
-
-    pub(crate) fn database(&self) -> Option<&str> {
-        self.database.as_deref()
-    }
-
-    pub(crate) fn schema(&self) -> Option<&str> {
-        self.schema.as_deref()
-    }
-
-    pub(crate) fn role(&self) -> Option<&str> {
-        self.role.as_deref()
-    }
-
     pub fn with_warehouse(mut self, warehouse: impl Into<String>) -> Self {
         self.warehouse = Some(warehouse.into());
         self
@@ -203,10 +180,6 @@ impl SessionConfig {
     pub fn with_role(mut self, role: impl Into<String>) -> Self {
         self.role = Some(role.into());
         self
-    }
-
-    pub(crate) fn session_parameters(&self) -> &HashMap<String, serde_json::Value> {
-        &self.session_parameters
     }
 
     pub fn with_session_parameters(
@@ -228,14 +201,6 @@ impl SessionConfig {
 }
 
 impl QueryConfig {
-    pub(crate) fn async_query_completion_timeout(&self) -> Option<Duration> {
-        self.async_query_completion_timeout
-    }
-
-    pub(crate) fn collect_prefetch_concurrency(&self) -> NonZeroUsize {
-        self.collect_prefetch_concurrency
-    }
-
     pub fn with_async_query_completion_timeout(mut self, timeout: Duration) -> Self {
         self.async_query_completion_timeout = Some(timeout);
         self
@@ -245,6 +210,116 @@ impl QueryConfig {
     pub fn with_collect_prefetch_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
         self.collect_prefetch_concurrency = concurrency;
         self
+    }
+}
+
+// Internal runtime config models: the prepared form of the public config types above, produced by `ClientConfig::prepare`.
+
+/// Private intermediate produced by consuming a [`ClientConfig`].
+pub(crate) struct PreparedClientConfig {
+    pub(crate) login: ClientLoginConfig,
+    pub(crate) shared: PreparedClientShared,
+}
+
+/// Prepared inputs for the connector-wide shared state.
+pub(crate) struct PreparedClientShared {
+    pub(crate) http: reqwest::Client,
+    pub(crate) base_url: Url,
+    pub(crate) query: QueryExecutionPolicy,
+}
+
+/// Login state retained by `Client` for every `create_session()` call.
+pub(crate) struct ClientLoginConfig {
+    username: String,
+    account: String,
+    auth: AuthConfig,
+    initial_session: InitialSessionConfig,
+}
+
+impl ClientLoginConfig {
+    pub(crate) fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub(crate) fn account(&self) -> &str {
+        &self.account
+    }
+
+    pub(crate) fn auth(&self) -> &AuthConfig {
+        &self.auth
+    }
+
+    pub(crate) fn initial_session(&self) -> &InitialSessionConfig {
+        &self.initial_session
+    }
+}
+
+/// Internal login-request session context, the runtime form of [`SessionConfig`].
+pub(crate) struct InitialSessionConfig {
+    warehouse: Option<String>,
+    database: Option<String>,
+    schema: Option<String>,
+    role: Option<String>,
+    session_parameters: HashMap<String, serde_json::Value>,
+}
+
+impl InitialSessionConfig {
+    pub(crate) fn warehouse(&self) -> Option<&str> {
+        self.warehouse.as_deref()
+    }
+
+    pub(crate) fn database(&self) -> Option<&str> {
+        self.database.as_deref()
+    }
+
+    pub(crate) fn schema(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
+    pub(crate) fn role(&self) -> Option<&str> {
+        self.role.as_deref()
+    }
+
+    pub(crate) fn session_parameters(&self) -> &HashMap<String, serde_json::Value> {
+        &self.session_parameters
+    }
+}
+
+impl From<SessionConfig> for InitialSessionConfig {
+    fn from(config: SessionConfig) -> Self {
+        Self {
+            warehouse: config.warehouse,
+            database: config.database,
+            schema: config.schema,
+            role: config.role,
+            session_parameters: config.session_parameters,
+        }
+    }
+}
+
+/// Internal query execution policy, the runtime form of [`QueryConfig`].
+#[derive(Debug)]
+pub(crate) struct QueryExecutionPolicy {
+    async_query_completion_timeout: Option<Duration>,
+    collect_prefetch_concurrency: NonZeroUsize,
+}
+
+impl QueryExecutionPolicy {
+    pub(crate) fn async_query_completion_timeout(&self) -> Option<Duration> {
+        self.async_query_completion_timeout
+    }
+
+    pub(crate) fn collect_prefetch_concurrency(&self) -> NonZeroUsize {
+        self.collect_prefetch_concurrency
+    }
+}
+
+impl From<QueryConfig> for QueryExecutionPolicy {
+    fn from(config: QueryConfig) -> Self {
+        Self {
+            async_query_completion_timeout: config.async_query_completion_timeout,
+            collect_prefetch_concurrency: config.collect_prefetch_concurrency,
+        }
     }
 }
 
@@ -301,18 +376,9 @@ impl TransportConfig {
     pub(crate) fn build_http_client(&self) -> Result<reqwest::Client> {
         let builder = reqwest::ClientBuilder::new().gzip(true).use_rustls_tls();
 
-        // Disable idle connection pooling to prevent stale-connection errors.
-        //
-        // This client talks to both the Snowflake REST API and S3 (for
-        // downloading query-result chunks via presigned URLs). S3 closes
-        // idle keep-alive connections aggressively (the exact timeout is
-        // undocumented, but reported to be only a few seconds). When the
-        // pool hands out a connection that S3 has already closed, hyper
-        // returns `Error(IncompleteMessage)`.
-        //
-        // Disabling pooling is acceptable here because the bottleneck is
-        // data transfer with Snowflake / S3, not establishing TCP
-        // connections.
+        // Disable idle connection pooling: S3 (used for query-result chunks via presigned URLs) closes idle keep-alive
+        // connections aggressively, and a reused-but-closed connection surfaces as hyper `Error(IncompleteMessage)`.
+        // Acceptable because the bottleneck is data transfer, not TCP setup.
         let builder = builder.pool_max_idle_per_host(0);
 
         let builder = if let Some(proxy) = &self.proxy {

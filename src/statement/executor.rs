@@ -333,7 +333,7 @@ mod tests {
             shared: ClientShared::for_test_with(
                 Client::new(),
                 Url::parse("https://example.com/").unwrap(),
-                QueryConfig::default(),
+                QueryConfig::default().into(),
                 runtime.clone(),
             ),
             auth: SessionAuth::for_test("test-token"),
