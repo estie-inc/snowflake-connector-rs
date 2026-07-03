@@ -1,4 +1,4 @@
-use std::{iter::repeat_n, result::Result as StdResult};
+use std::result::Result as StdResult;
 
 use chrono::{DateTime, Days, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
@@ -470,15 +470,18 @@ fn parse_scaled_decimal_i128(s: &str, scale: i64, kind: &'static str) -> StdResu
             return Err(format!("Could not decode {kind}: {s}"));
         }
 
-        let mut digits = frac_str.bytes().collect::<Vec<_>>();
-        if digits.len() < scale as usize {
-            digits.resize(scale as usize, b'0');
+        let mut frac = 0i128;
+        for b in frac_str.bytes() {
+            frac = frac
+                .checked_mul(10)
+                .and_then(|value| value.checked_add(i128::from(b - b'0')))
+                .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
         }
-
-        let frac = std::str::from_utf8(&digits)
-            .map_err(|_| format!("Could not decode {kind}: {s}"))?
-            .parse::<i128>()
-            .map_err(|_| format!("Could not decode {kind}: {s}"))?;
+        for _ in frac_str.len()..scale as usize {
+            frac = frac
+                .checked_mul(10)
+                .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
+        }
         scaled = scaled
             .checked_add(frac)
             .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
@@ -562,7 +565,9 @@ fn parse_legacy_timestamp_tz_wire(s: &str, scale: i64) -> StdResult<TimestampTzW
 
     let tz_index =
         i32::try_from(tz_index).map_err(|_| format!("invalid timezone for timestamp_tz: {s}"))?;
-    let tz_index = parse_timestamp_tz_index(&tz_index.to_string(), s)?;
+    if !(0..=2880).contains(&tz_index) {
+        return Err(format!("invalid timezone for timestamp_tz: {s}"));
+    }
 
     Ok(TimestampTzWire { utc, tz_index })
 }
@@ -625,19 +630,19 @@ pub(crate) fn parse_time_seconds_and_nanos(
         return Ok((secs, 0));
     }
 
-    let mut frac_digits = frac_str.as_bytes().to_vec();
-    if frac_digits.len() > scale {
-        frac_digits.truncate(scale);
+    let mut frac_scaled = 0u32;
+    let used_digits = frac_str.len().min(scale);
+    for b in frac_str.bytes().take(used_digits) {
+        frac_scaled = frac_scaled
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(u32::from(b - b'0')))
+            .ok_or_else(|| format!("invalid time: {value}"))?;
     }
-    if frac_digits.len() < scale {
-        frac_digits.extend(repeat_n(b'0', scale - frac_digits.len()));
+    for _ in used_digits..scale {
+        frac_scaled = frac_scaled
+            .checked_mul(10)
+            .ok_or_else(|| format!("invalid time: {value}"))?;
     }
-
-    let frac_scaled = {
-        let s = std::str::from_utf8(&frac_digits).map_err(|_| format!("invalid time: {value}"))?;
-        s.parse::<u32>()
-            .map_err(|_| format!("invalid time: {value}"))?
-    };
     let nsec = frac_scaled
         .checked_mul(10u32.pow((9 - scale) as u32))
         .ok_or_else(|| format!("invalid time: {value}"))?;
