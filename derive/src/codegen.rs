@@ -1,17 +1,12 @@
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
+use quote::quote;
 
 use crate::input::{FieldInfo, FieldLookup, FromRowDerive, StructShape};
 
 pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
     let crate_path = &model.crate_path;
     let struct_ident = &model.struct_ident;
-    let plan_ident = format_ident!("__{}Plan", struct_ident);
-
-    let plan_fields = model.fields.iter().map(|field| {
-        let ident = &field.plan_ident;
-        quote! { #ident: #crate_path::ColumnIndex }
-    });
+    let plan_len = syn::LitInt::new(&model.fields.len().to_string(), struct_ident.span());
 
     let build_plan_lines = model
         .fields
@@ -26,19 +21,15 @@ pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
 
     quote! {
         const _: () = {
-            struct #plan_ident {
-                #(#plan_fields,)*
-            }
-
             impl #crate_path::FromRow for #struct_ident {
-                type Plan = #plan_ident;
+                type Plan = [#crate_path::ColumnIndex; #plan_len];
 
                 fn build_plan(
                     ctx: #crate_path::RowPlanContext<'_>,
                 ) -> #crate_path::Result<Self::Plan> {
                     let schema = ctx.schema();
                     #(#build_plan_lines)*
-                    ::core::result::Result::Ok(#plan_ident { #(#plan_init_idents),* })
+                    ::core::result::Result::Ok([#(#plan_init_idents),*])
                 }
 
                 fn from_row_with_plan(
@@ -76,22 +67,26 @@ fn build_plan_line(field: &FieldInfo, crate_path: &syn::Path) -> TokenStream2 {
 fn row_body(model: &FromRowDerive) -> TokenStream2 {
     match model.shape {
         StructShape::Named => {
-            let assigns = model.fields.iter().map(|field| {
+            let assigns = model.fields.iter().enumerate().map(|(index, field)| {
                 let field_ident = field.field_ident.as_ref().expect("named");
-                let value = decode_field_value(field);
+                let value = decode_field_value(field, index);
                 quote! { #field_ident: #value }
             });
             quote! { ::core::result::Result::Ok(Self { #(#assigns),* }) }
         }
         StructShape::Tuple => {
-            let assigns = model.fields.iter().map(decode_field_value);
+            let assigns = model
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| decode_field_value(field, index));
             quote! { ::core::result::Result::Ok(Self ( #(#assigns),* )) }
         }
     }
 }
 
-fn decode_field_value(field: &FieldInfo) -> TokenStream2 {
-    let plan_ident = &field.plan_ident;
+fn decode_field_value(field: &FieldInfo, index: usize) -> TokenStream2 {
+    let index = syn::Index::from(index);
     let ty = &field.ty;
-    quote! { row.get::<#ty>(plan.#plan_ident)? }
+    quote! { row.get::<#ty>(plan[#index])? }
 }

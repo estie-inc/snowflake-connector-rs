@@ -1,0 +1,5 @@
+error: crate path cannot be empty
+ --> tests/derive_compile_fail/empty_crate_path.rs:4:13
+  |
+4 | #[snowflake(crate = "")]
+  |             ^^^^^^^^^^

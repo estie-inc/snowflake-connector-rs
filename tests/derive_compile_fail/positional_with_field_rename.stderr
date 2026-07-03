@@ -1,0 +1,5 @@
+error: container `positional` cannot be combined with field `rename`
+ --> tests/derive_compile_fail/positional_with_field_rename.rs:6:5
+  |
+6 |     #[snowflake(rename = "ID")]
+  |     ^

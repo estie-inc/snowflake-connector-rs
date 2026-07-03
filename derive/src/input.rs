@@ -49,6 +49,18 @@ pub(crate) fn analyze(input: DeriveInput) -> Result<FromRowDerive> {
     };
 
     let (shape, fields) = match &data.fields {
+        Fields::Named(named) if named.named.is_empty() => {
+            return Err(syn::Error::new(
+                input.ident.span(),
+                "FromRow does not support empty structs",
+            ));
+        }
+        Fields::Unnamed(unnamed) if unnamed.unnamed.is_empty() => {
+            return Err(syn::Error::new(
+                input.ident.span(),
+                "FromRow does not support empty structs",
+            ));
+        }
         Fields::Named(named) => (StructShape::Named, parse_named(named, &container)?),
         Fields::Unnamed(unnamed) => (StructShape::Tuple, parse_unnamed(unnamed, &container)?),
         Fields::Unit => {
