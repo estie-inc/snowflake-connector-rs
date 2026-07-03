@@ -1,4 +1,4 @@
-use std::{any::type_name, fmt, mem, sync::Arc};
+use std::{any::type_name, fmt, mem, result::Result as StdResult, sync::Arc};
 
 use base64::Engine as _;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
@@ -110,8 +110,7 @@ impl CellValue {
 
 /// A row decoded into the dynamic [`CellValue`] vocabulary.
 ///
-/// Values are stored in column order and can be accessed by
-/// [`ColumnIndex`] or by raw column name.
+/// Values are stored in column order and can be accessed by [`ColumnIndex`] or by raw column name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DynamicRow {
     schema: Arc<Schema>,
@@ -133,9 +132,8 @@ impl DynamicRow {
     ///
     /// # Errors
     ///
-    /// Returns [`SchemaError::MissingColumn`] when no column carries the
-    /// name, or [`SchemaError::AmbiguousColumn`] when several do.
-    pub fn value(&self, name: &str) -> std::result::Result<&CellValue, SchemaError> {
+    /// Returns [`SchemaError::MissingColumn`] when no column carries the name, or [`SchemaError::AmbiguousColumn`] when several do.
+    pub fn value(&self, name: &str) -> StdResult<&CellValue, SchemaError> {
         let idx = self.schema.column_index(name)?;
         self.value_at(idx)
     }
@@ -144,9 +142,8 @@ impl DynamicRow {
     ///
     /// # Errors
     ///
-    /// Returns [`SchemaError::InvalidColumnIndex`] when `index` is out of
-    /// range for this row's schema.
-    pub fn value_at(&self, index: ColumnIndex) -> std::result::Result<&CellValue, SchemaError> {
+    /// Returns [`SchemaError::InvalidColumnIndex`] when `index` is out of range for this row's schema.
+    pub fn value_at(&self, index: ColumnIndex) -> StdResult<&CellValue, SchemaError> {
         self.schema.column_at(index).ok_or_else(|| {
             SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(index, self.schema.len()))
         })?;
@@ -158,9 +155,8 @@ impl DynamicRow {
     ///
     /// # Errors
     ///
-    /// Returns [`SchemaError::MissingColumn`] when no column carries the
-    /// name, or [`SchemaError::AmbiguousColumn`] when several do.
-    pub fn take(&mut self, name: &str) -> std::result::Result<CellValue, SchemaError> {
+    /// Returns [`SchemaError::MissingColumn`] when no column carries the name, or [`SchemaError::AmbiguousColumn`] when several do.
+    pub fn take(&mut self, name: &str) -> StdResult<CellValue, SchemaError> {
         let idx = self.schema.column_index(name)?;
         self.take_at(idx)
     }
@@ -170,9 +166,8 @@ impl DynamicRow {
     ///
     /// # Errors
     ///
-    /// Returns [`SchemaError::InvalidColumnIndex`] when `index` is out of
-    /// range for this row's schema.
-    pub fn take_at(&mut self, index: ColumnIndex) -> std::result::Result<CellValue, SchemaError> {
+    /// Returns [`SchemaError::InvalidColumnIndex`] when `index` is out of range for this row's schema.
+    pub fn take_at(&mut self, index: ColumnIndex) -> StdResult<CellValue, SchemaError> {
         self.schema.column_at(index).ok_or_else(|| {
             SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(index, self.schema.len()))
         })?;
@@ -183,9 +178,7 @@ impl DynamicRow {
         ))
     }
 
-    /// Consume the row, returning the shared schema and the decoded values
-    /// in column order.
-    ///
+    /// Consume the row, returning the shared schema and the decoded values in column order.
     pub fn into_parts(self) -> (Arc<Schema>, Box<[CellValue]>) {
         (self.schema, self.values)
     }
@@ -194,11 +187,10 @@ impl DynamicRow {
     ///
     /// # Errors
     ///
-    /// Returns [`SchemaError::DuplicateColumnName`] when two columns share
-    /// the same raw label — JSON object keys must be unique.
+    /// Returns [`SchemaError::DuplicateColumnName`] when two columns share the same raw label — JSON object keys must be unique.
     pub fn into_json_object(
         self,
-    ) -> std::result::Result<serde_json::Map<String, serde_json::Value>, SchemaError> {
+    ) -> StdResult<serde_json::Map<String, serde_json::Value>, SchemaError> {
         let DynamicRow { schema, values } = self;
 
         let mut map = serde_json::Map::new();
@@ -218,11 +210,9 @@ impl DynamicRow {
 impl CellValue {
     /// Convert this value into a [`serde_json::Value`].
     ///
-    /// Lossy in the cases where Snowflake's value range exceeds JSON's
-    /// numeric range: `i128` integers outside `i64`/`u64` range and
-    /// non-finite floats fall back to string. `Decimal` values render as
-    /// their original decimal text. Dates/times/timestamps render in their
-    /// canonical string form, and `Binary` is base64-encoded.
+    /// Lossy in the cases where Snowflake's value range exceeds JSON's numeric range: `i128` integers outside `i64`/`u64` range and
+    /// non-finite floats fall back to string. `Decimal` values render as their original decimal text. Dates/times/timestamps render
+    /// in their canonical string form, and `Binary` is base64-encoded.
     pub fn into_json_value(self) -> serde_json::Value {
         match self {
             CellValue::Null => serde_json::Value::Null,

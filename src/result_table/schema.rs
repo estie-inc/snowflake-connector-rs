@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, result::Result as StdResult, sync::Arc};
 
 use crate::{AmbiguousColumnError, MissingColumnError, SchemaError, error::RowsetParseError};
 
@@ -299,9 +299,7 @@ pub struct Schema {
 }
 
 impl Schema {
-    pub(crate) fn from_columns(
-        columns: Vec<Column>,
-    ) -> std::result::Result<Self, RowsetParseError> {
+    pub(crate) fn from_columns(columns: Vec<Column>) -> StdResult<Self, RowsetParseError> {
         if columns.len() > u32::MAX as usize {
             return Err(RowsetParseError::CapacityOverflow);
         }
@@ -341,7 +339,7 @@ impl Schema {
     ///
     /// - [`SchemaError::MissingColumn`] when no column carries the name.
     /// - [`SchemaError::AmbiguousColumn`] when several columns share it.
-    pub fn column_index(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
+    pub fn column_index(&self, name: &str) -> StdResult<ColumnIndex, SchemaError> {
         match self.indices.get(name) {
             Some(LookupEntry::Unique(idx)) => Ok(*idx),
             Some(LookupEntry::Ambiguous(candidates)) => Err(SchemaError::AmbiguousColumn(

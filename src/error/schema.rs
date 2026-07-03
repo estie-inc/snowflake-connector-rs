@@ -1,4 +1,7 @@
-use std::fmt;
+use std::{
+    error::Error as StdError,
+    fmt::{self, Display, Formatter},
+};
 
 use crate::result_table::ColumnIndex;
 
@@ -27,13 +30,13 @@ impl MissingColumnError {
     }
 }
 
-impl fmt::Display for MissingColumnError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for MissingColumnError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "missing column: {}", self.name)
     }
 }
 
-impl std::error::Error for MissingColumnError {}
+impl StdError for MissingColumnError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AmbiguousColumnError {
@@ -61,13 +64,13 @@ impl AmbiguousColumnError {
     }
 }
 
-impl fmt::Display for AmbiguousColumnError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for AmbiguousColumnError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "ambiguous column: {}", self.name)
     }
 }
 
-impl std::error::Error for AmbiguousColumnError {}
+impl StdError for AmbiguousColumnError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidColumnIndexError {
@@ -92,8 +95,8 @@ impl InvalidColumnIndexError {
     }
 }
 
-impl fmt::Display for InvalidColumnIndexError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvalidColumnIndexError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "invalid column index {:?} for schema with {} columns",
@@ -102,7 +105,7 @@ impl fmt::Display for InvalidColumnIndexError {
     }
 }
 
-impl std::error::Error for InvalidColumnIndexError {}
+impl StdError for InvalidColumnIndexError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuplicateColumnNameError {
@@ -119,13 +122,13 @@ impl DuplicateColumnNameError {
     }
 }
 
-impl fmt::Display for DuplicateColumnNameError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for DuplicateColumnNameError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "duplicate column name in result: {}", self.name)
     }
 }
 
-impl std::error::Error for DuplicateColumnNameError {}
+impl StdError for DuplicateColumnNameError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnCountMismatchError {
@@ -148,8 +151,8 @@ impl ColumnCountMismatchError {
     }
 }
 
-impl fmt::Display for ColumnCountMismatchError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ColumnCountMismatchError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "column count mismatch (expected {}, actual {})",
@@ -158,10 +161,10 @@ impl fmt::Display for ColumnCountMismatchError {
     }
 }
 
-impl std::error::Error for ColumnCountMismatchError {}
+impl StdError for ColumnCountMismatchError {}
 
-impl fmt::Display for SchemaError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for SchemaError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingColumn(error) => error.fmt(f),
             Self::AmbiguousColumn(error) => error.fmt(f),
@@ -172,7 +175,7 @@ impl fmt::Display for SchemaError {
     }
 }
 
-impl std::error::Error for SchemaError {}
+impl StdError for SchemaError {}
 
 #[cfg(test)]
 mod tests {

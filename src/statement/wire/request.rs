@@ -1,8 +1,8 @@
-use std::fmt::{self, Display};
+use std::fmt::{self, Display, Formatter};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use indexmap::IndexMap;
-use serde::{Serialize, ser::SerializeMap as _};
+use serde::{Serialize, Serializer, ser::SerializeMap as _};
 
 use crate::statement::{
     bind::{Bind, BindName, BindValue},
@@ -44,7 +44,7 @@ enum WireBindings<'a> {
 impl Serialize for WireBindings<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
         match self {
             Self::Positional(binds) => {
@@ -70,7 +70,7 @@ struct PositionalKey(usize);
 impl Serialize for PositionalKey {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
         serializer.collect_str(&self.0)
     }
@@ -84,7 +84,7 @@ struct WireBinding<'a> {
 impl Serialize for WireBinding<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
         let mut map = serializer.serialize_map(Some(2))?;
         map.serialize_entry("type", self.bind.ty().as_wire_str())?;
@@ -104,7 +104,7 @@ struct WireValue<'a>(&'a BindValue);
 impl Serialize for WireValue<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
         match self.0 {
             BindValue::Fixed(value) => serializer.collect_str(value),
@@ -130,7 +130,7 @@ impl Serialize for WireValue<'_> {
 struct HexAdapter<'a>(&'a [u8]);
 
 impl Display for HexAdapter<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         for byte in self.0 {
             write!(f, "{byte:02X}")?;
         }
@@ -141,7 +141,7 @@ impl Display for HexAdapter<'_> {
 struct Real32Adapter(f32);
 
 impl Display for Real32Adapter {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if self.0.is_infinite() {
             f.write_str(if self.0.is_sign_negative() {
                 "-Infinity"
@@ -157,7 +157,7 @@ impl Display for Real32Adapter {
 struct Real64Adapter(f64);
 
 impl Display for Real64Adapter {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if self.0.is_infinite() {
             f.write_str(if self.0.is_sign_negative() {
                 "-Infinity"
@@ -173,7 +173,7 @@ impl Display for Real64Adapter {
 struct DateMillisAdapter(NaiveDate);
 
 impl Display for DateMillisAdapter {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let ms = self
             .0
             .and_hms_opt(0, 0, 0)
@@ -187,7 +187,7 @@ impl Display for DateMillisAdapter {
 struct TimeNanosAdapter(NaiveTime);
 
 impl Display for TimeNanosAdapter {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let total_nanos = u64::from(self.0.num_seconds_from_midnight()) * 1_000_000_000
             + u64::from(self.0.nanosecond());
         write!(f, "{total_nanos}")
@@ -197,7 +197,7 @@ impl Display for TimeNanosAdapter {
 struct EpochNanosAdapter(NaiveDateTime);
 
 impl Display for EpochNanosAdapter {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let ts = self.0.and_utc();
         let total_nanos =
             i128::from(ts.timestamp()) * 1_000_000_000 + i128::from(ts.timestamp_subsec_nanos());
@@ -208,7 +208,7 @@ impl Display for EpochNanosAdapter {
 struct TimestampTzAdapter(DateTime<FixedOffset>);
 
 impl Display for TimestampTzAdapter {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let nanos = EpochNanosAdapter(self.0.naive_utc());
         let offset_minutes = self.0.offset().local_minus_utc() / 60;
         let sf_tz = 1440 + offset_minutes;

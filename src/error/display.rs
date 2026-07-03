@@ -1,12 +1,17 @@
-use std::{error::Error as StdError, fmt};
-
-use super::Error;
-use super::repr::{
-    AuthError, ConfigError, InternalError, NetworkError, ProtocolError, Repr, ServerError,
-    TimeoutError,
+use std::{
+    error::Error as StdError,
+    fmt::{self, Display},
 };
 
-impl fmt::Display for Error {
+use super::{
+    Error,
+    repr::{
+        AuthError, ConfigError, InternalError, NetworkError, ProtocolError, Repr, ServerError,
+        TimeoutError,
+    },
+};
+
+impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &*self.repr {
             Repr::Config(ConfigError::InvalidUrl(message)) => write!(f, "invalid URL: {message}"),
@@ -161,15 +166,15 @@ impl fmt::Display for Error {
             Repr::Protocol {
                 error: ProtocolError::RowsetParse(error),
                 ..
-            } => fmt::Display::fmt(error, f),
+            } => Display::fmt(error, f),
             Repr::Internal {
                 error: InternalError::FutureJoin(_source),
                 ..
             } => f.write_str("future join error"),
             Repr::BindEncode { message, .. } => write!(f, "bind encode error: {message}"),
             Repr::Other(message) => write!(f, "snowflake connector error: {message}"),
-            Repr::Schema(error) => fmt::Display::fmt(error, f),
-            Repr::CellDecode(error) => fmt::Display::fmt(error, f),
+            Repr::Schema(error) => Display::fmt(error, f),
+            Repr::CellDecode(error) => Display::fmt(error, f),
         }
     }
 }

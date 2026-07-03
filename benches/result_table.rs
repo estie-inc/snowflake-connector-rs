@@ -39,8 +39,7 @@ fn materialize_dynamic_rows(table: &ResultTable) {
 }
 
 fn synthetic_chunk_bytes(row_count: usize, null_pct: u8, escaped_pct: u8) -> Bytes {
-    // remote chunk fragment shape: `[..],[..],[..]`. Each row is
-    // [int_text, string_text, timestamp_text].
+    // remote chunk fragment shape: `[..],[..],[..]`. Each row is [int_text, string_text, timestamp_text].
     let mut out = Vec::with_capacity(row_count * 64);
     for i in 0..row_count {
         if i > 0 {

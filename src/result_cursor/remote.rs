@@ -112,6 +112,7 @@ fn download_request(
 pub(crate) mod tests {
     use std::{
         collections::{HashMap, VecDeque},
+        result::Result as StdResult,
         sync::{
             Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
@@ -160,16 +161,16 @@ pub(crate) mod tests {
     }
 
     pub(crate) enum FakeResponse {
-        Rows(std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr>),
+        Rows(StdResult<Vec<Vec<Option<String>>>, QueryScopedRepr>),
         BlockingRows {
-            rows: std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr>,
+            rows: StdResult<Vec<Vec<Option<String>>>, QueryScopedRepr>,
             probe: Arc<BlockingFetchProbe>,
             delay: Duration,
         },
     }
 
-    impl From<std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr>> for FakeResponse {
-        fn from(rows: std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr>) -> Self {
+    impl From<StdResult<Vec<Vec<Option<String>>>, QueryScopedRepr>> for FakeResponse {
+        fn from(rows: StdResult<Vec<Vec<Option<String>>>, QueryScopedRepr>) -> Self {
             Self::Rows(rows)
         }
     }

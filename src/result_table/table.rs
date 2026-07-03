@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{result::Result as StdResult, sync::Arc};
 
 use bytes::Bytes;
 
@@ -17,8 +17,7 @@ const CAPACITY_RESERVE_CELL_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Fully materialized rows with a shared schema and query id.
 ///
-/// `ResultTable` is the untyped table handle. Rows can be decoded into a
-/// typed representation or inspected dynamically.
+/// `ResultTable` is the untyped table handle. Rows can be decoded into a typed representation or inspected dynamically.
 #[derive(Debug)]
 pub struct ResultTable {
     schema: Arc<Schema>,
@@ -90,11 +89,9 @@ impl ResultTable {
 
     /// Concatenate tables that share the same `Arc<Schema>`. Order is preserved.
     ///
-    /// Caller must guarantee `tables` is non-empty and all tables share the same
-    /// `Arc<Schema>` (i.e. they originate from the same partitioned query). These
-    /// invariants are enforced via `debug_assert!` rather than runtime errors —
-    /// a violation indicates a connector-internal bug, not a user-recoverable
-    /// condition.
+    /// Caller must guarantee `tables` is non-empty and all tables share the same `Arc<Schema>` (i.e. they originate from the
+    /// same partitioned query). These invariants are enforced via `debug_assert!` rather than runtime errors — a violation
+    /// indicates a connector-internal bug, not a user-recoverable condition.
     pub(crate) fn concat_same_schema(tables: Vec<ResultTable>) -> ResultTable {
         let mut iter = tables.into_iter();
         let first = iter
@@ -179,7 +176,7 @@ impl ResultTableBuilder {
         query_id: Arc<str>,
         wire: Option<Bytes>,
         row_count_hint: Option<usize>,
-    ) -> std::result::Result<Self, RowsetParseError> {
+    ) -> StdResult<Self, RowsetParseError> {
         let column_count = schema.len();
         let cap = match row_count_hint {
             Some(rows) => column_count
@@ -220,15 +217,15 @@ impl ResultTableBuilder {
 
     pub(crate) fn push_decoded_with(
         &mut self,
-        f: impl FnOnce(&mut Vec<u8>) -> std::result::Result<(), RowsetParseError>,
-    ) -> std::result::Result<(), RowsetParseError> {
+        f: impl FnOnce(&mut Vec<u8>) -> StdResult<(), RowsetParseError>,
+    ) -> StdResult<(), RowsetParseError> {
         let span = self.decoded.write_with(f)?;
         self.cells.push(Cell::DecodedText(span));
         self.current_row_cells += 1;
         Ok(())
     }
 
-    pub(crate) fn finish_row(&mut self) -> std::result::Result<(), RowsetParseError> {
+    pub(crate) fn finish_row(&mut self) -> StdResult<(), RowsetParseError> {
         if self.current_row_cells != self.column_count {
             return Err(RowsetParseError::RowLengthMismatch {
                 row: self.row_count,
@@ -242,7 +239,7 @@ impl ResultTableBuilder {
         Ok(())
     }
 
-    pub(crate) fn finish(self) -> std::result::Result<ResultTable, RowsetParseError> {
+    pub(crate) fn finish(self) -> StdResult<ResultTable, RowsetParseError> {
         let ResultTableBuilder {
             schema,
             query_id,

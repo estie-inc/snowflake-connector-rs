@@ -1,4 +1,4 @@
-use std::iter::repeat_n;
+use std::{iter::repeat_n, result::Result as StdResult};
 
 use chrono::{DateTime, Days, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
@@ -16,10 +16,8 @@ const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 
 /// Decode a single result-set cell into a Rust value.
 ///
-/// Implementations exist for primitive Rust types,
-/// [`CellValue`](crate::CellValue),
-/// [`DecimalValue`](crate::DecimalValue), and `Option<T>`.
-/// Implement it yourself when adapting Snowflake values into domain types.
+/// Implementations exist for primitive Rust types, [`CellValue`](crate::CellValue), [`DecimalValue`](crate::DecimalValue),
+/// and `Option<T>`. Implement it yourself when adapting Snowflake values into domain types.
 ///
 /// # Example
 ///
@@ -46,8 +44,7 @@ const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 pub trait FromCell: Sized {
     /// Decode a single cell into `Self`.
     ///
-    /// Implementations should reject `NULL` for non-`Option` targets and
-    /// describe conversion failures with [`CellConversionError`].
+    /// Implementations should reject `NULL` for non-`Option` targets and describe conversion failures with [`CellConversionError`].
     ///
     /// # Errors
     ///
@@ -57,8 +54,7 @@ pub trait FromCell: Sized {
 
 /// Decode an entire row into a Rust type.
 ///
-/// Implementations may use an associated plan to cache schema-dependent
-/// state before decoding individual rows.
+/// Implementations may use an associated plan to cache schema-dependent state before decoding individual rows.
 ///
 /// # Example
 ///
@@ -102,27 +98,23 @@ pub trait FromCell: Sized {
 pub trait FromRow: Sized {
     /// Per-table state reused while decoding rows.
     ///
-    /// `Send + Sync` so the plan can be shared across threads when an
-    /// iterator is moved between tasks.
+    /// `Send + Sync` so the plan can be shared across threads when an iterator is moved between tasks.
     type Plan: Send + Sync;
 
     /// Build the per-table decode plan from the result-set metadata.
     ///
     /// # Errors
     ///
-    /// Implementations may return any [`Error`](crate::Error) appropriate
-    /// for schema validation or planning. Conventional errors include
-    /// [`SchemaError::MissingColumn`](crate::SchemaError::MissingColumn)
-    /// and
-    /// [`SchemaError::ColumnCountMismatch`](crate::SchemaError::ColumnCountMismatch).
+    /// Implementations may return any [`Error`](crate::Error) appropriate for schema validation or planning.
+    /// Conventional errors include [`SchemaError::MissingColumn`](crate::SchemaError::MissingColumn)
+    /// and [`SchemaError::ColumnCountMismatch`](crate::SchemaError::ColumnCountMismatch).
     fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan>;
 
     /// Decode a single row using the associated plan.
     ///
     /// # Errors
     ///
-    /// Implementations may return any [`Error`](crate::Error) appropriate
-    /// for row conversion.
+    /// Implementations may return any [`Error`](crate::Error) appropriate for row conversion.
     fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self>;
 }
 
@@ -419,24 +411,20 @@ fn timestamp_scale(ty: &ColumnType) -> Option<i64> {
     }
 }
 
-fn validate_ts_scale(scale: i64) -> std::result::Result<i64, String> {
+fn validate_ts_scale(scale: i64) -> StdResult<i64, String> {
     if !(0..=9).contains(&scale) {
         return Err(format!("invalid timestamp scale: {scale} (expected 0..=9)"));
     }
     Ok(scale)
 }
 
-fn pow10_i128(scale: i64, original: &str, kind: &'static str) -> std::result::Result<i128, String> {
+fn pow10_i128(scale: i64, original: &str, kind: &'static str) -> StdResult<i128, String> {
     10i128
         .checked_pow(scale as u32)
         .ok_or_else(|| format!("Could not decode {kind}: {original}"))
 }
 
-fn parse_scaled_decimal_i128(
-    s: &str,
-    scale: i64,
-    kind: &'static str,
-) -> std::result::Result<i128, String> {
+fn parse_scaled_decimal_i128(s: &str, scale: i64, kind: &'static str) -> StdResult<i128, String> {
     let scale = validate_ts_scale(scale)?;
     let s = s.trim();
     if s.is_empty() {
@@ -509,7 +497,7 @@ fn parse_timestamp_epoch_scaled(
     scale: i64,
     original: &str,
     kind: &'static str,
-) -> std::result::Result<DateTime<Utc>, String> {
+) -> StdResult<DateTime<Utc>, String> {
     let scale = validate_ts_scale(scale)?;
     let scale_factor = pow10_i128(scale, original, kind)?;
 
@@ -532,10 +520,7 @@ fn parse_timestamp_epoch_scaled(
         .ok_or_else(|| format!("Could not decode {kind}: {original}"))
 }
 
-pub(crate) fn parse_timestamp_epoch(
-    s: &str,
-    scale: i64,
-) -> std::result::Result<DateTime<Utc>, String> {
+pub(crate) fn parse_timestamp_epoch(s: &str, scale: i64) -> StdResult<DateTime<Utc>, String> {
     let scaled = parse_scaled_decimal_i128(s, scale, "timestamp")?;
     parse_timestamp_epoch_scaled(scaled, scale, s, "timestamp")
 }
@@ -545,7 +530,7 @@ struct TimestampTzWire {
     tz_index: i32,
 }
 
-fn parse_timestamp_tz_index(tz_str: &str, original: &str) -> std::result::Result<i32, String> {
+fn parse_timestamp_tz_index(tz_str: &str, original: &str) -> StdResult<i32, String> {
     let tz_index = tz_str
         .parse::<i32>()
         .map_err(|_| format!("invalid timestamp_tz: {original}"))?;
@@ -555,10 +540,7 @@ fn parse_timestamp_tz_index(tz_str: &str, original: &str) -> std::result::Result
     Ok(tz_index)
 }
 
-fn fixed_offset_from_tz_index(
-    tz_index: i32,
-    original: &str,
-) -> std::result::Result<FixedOffset, String> {
+fn fixed_offset_from_tz_index(tz_index: i32, original: &str) -> StdResult<FixedOffset, String> {
     let offset_minutes = tz_index
         .checked_sub(1440)
         .ok_or_else(|| format!("invalid timezone for timestamp_tz: {original}"))?;
@@ -572,10 +554,7 @@ fn fixed_offset_from_tz_index(
     })
 }
 
-fn parse_legacy_timestamp_tz_wire(
-    s: &str,
-    scale: i64,
-) -> std::result::Result<TimestampTzWire, String> {
+fn parse_legacy_timestamp_tz_wire(s: &str, scale: i64) -> StdResult<TimestampTzWire, String> {
     let packed = parse_scaled_decimal_i128(s, 0, "timestamp_tz")?;
     let epoch_scaled = packed.div_euclid(LEGACY_TIMESTAMP_TZ_SHIFT);
     let tz_index = packed.rem_euclid(LEGACY_TIMESTAMP_TZ_SHIFT);
@@ -588,7 +567,7 @@ fn parse_legacy_timestamp_tz_wire(
     Ok(TimestampTzWire { utc, tz_index })
 }
 
-fn parse_timestamp_tz_wire(s: &str, scale: i64) -> std::result::Result<TimestampTzWire, String> {
+fn parse_timestamp_tz_wire(s: &str, scale: i64) -> StdResult<TimestampTzWire, String> {
     let s = s.trim();
     let mut parts = s.split_whitespace();
     let first = parts
@@ -607,14 +586,14 @@ fn parse_timestamp_tz_wire(s: &str, scale: i64) -> std::result::Result<Timestamp
     }
 }
 
-fn parse_timestamp_tz_as_utc(s: &str, scale: i64) -> std::result::Result<DateTime<Utc>, String> {
+fn parse_timestamp_tz_as_utc(s: &str, scale: i64) -> StdResult<DateTime<Utc>, String> {
     parse_timestamp_tz_wire(s, scale).map(|wire| wire.utc)
 }
 
 pub(crate) fn parse_timestamp_tz_with_offset(
     s: &str,
     scale: i64,
-) -> std::result::Result<DateTime<FixedOffset>, String> {
+) -> StdResult<DateTime<FixedOffset>, String> {
     let wire = parse_timestamp_tz_wire(s, scale)?;
     let offset = fixed_offset_from_tz_index(wire.tz_index, s)?;
     Ok(wire.utc.with_timezone(&offset))
@@ -623,7 +602,7 @@ pub(crate) fn parse_timestamp_tz_with_offset(
 pub(crate) fn parse_time_seconds_and_nanos(
     value: &str,
     scale: usize,
-) -> std::result::Result<(u32, u32), String> {
+) -> StdResult<(u32, u32), String> {
     if scale > 9 {
         return Err(format!("invalid time scale: {scale}"));
     }
@@ -666,7 +645,7 @@ pub(crate) fn parse_time_seconds_and_nanos(
     Ok((secs, nsec))
 }
 
-pub(crate) fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
+pub(crate) fn decode_hex(s: &str) -> StdResult<Vec<u8>, String> {
     if s.len() % 2 != 0 {
         return Err(format!("invalid hex length: {}", s.len()));
     }
@@ -682,7 +661,7 @@ pub(crate) fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
     Ok(out)
 }
 
-fn hex_nibble(b: u8) -> std::result::Result<u8, String> {
+fn hex_nibble(b: u8) -> StdResult<u8, String> {
     match b {
         b'0'..=b'9' => Ok(b - b'0'),
         b'a'..=b'f' => Ok(b - b'a' + 10),
@@ -734,7 +713,7 @@ impl_tuple_from_row!(16; T0 => 0, T1 => 1, T2 => 2, T3 => 3, T4 => 4, T5 => 5, T
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{error::Error as StdError, sync::Arc};
 
     use bytes::Bytes;
 
@@ -745,8 +724,7 @@ mod tests {
         rowset::parser::parse_inline_result_table,
     };
 
-    /// Pre-1970 timestamps with a fractional part: `-1.1` is 1969-12-31T23:59:58.900Z
-    /// (= secs -2, nsec 900_000_000), not `.100`.
+    /// Pre-1970 timestamps with a fractional part: `-1.1` is 1969-12-31T23:59:58.900Z (= secs -2, nsec 900_000_000), not `.100`.
     #[test]
     fn parse_timestamp_epoch_negative_with_fraction() {
         let dt = parse_timestamp_epoch("-1.1", 9).unwrap();
@@ -1037,9 +1015,9 @@ mod tests {
         );
         assert_eq!(decode.raw_value_preview(), Some("abc"));
         assert!(decode.target_type_name().ends_with("CelsiusTemp"));
-        assert!(std::error::Error::source(decode).is_some());
+        assert!(StdError::source(decode).is_some());
         assert!(decode.conversion_error().source().is_some());
-        assert!(std::error::Error::source(&err).is_some());
+        assert!(StdError::source(&err).is_some());
     }
 
     #[test]
@@ -1056,9 +1034,9 @@ mod tests {
             .expect("built-in parse failure should be contextualized");
 
         assert!(decode.conversion_error().reason().contains("parse error"));
-        assert!(std::error::Error::source(decode).is_some());
+        assert!(StdError::source(decode).is_some());
         assert!(decode.conversion_error().source().is_some());
-        assert!(std::error::Error::source(&err).is_some());
+        assert!(StdError::source(&err).is_some());
     }
 
     #[test]
@@ -1207,8 +1185,7 @@ mod tests {
         assert!(neg_inf.is_infinite() && neg_inf.is_sign_negative());
     }
 
-    /// `TEXT` cells are plain strings; semi-structured JSON must come from
-    /// `VARIANT` / `OBJECT` / `ARRAY`.
+    /// `TEXT` cells are plain strings; semi-structured JSON must come from `VARIANT` / `OBJECT` / `ARRAY`.
     #[test]
     fn json_rejects_text_column() {
         let t = one_cell_table(ColumnType::Text { length: None }, r#"{"a":1}"#);
@@ -1221,8 +1198,7 @@ mod tests {
         assert!(err.as_cell_decode_error().is_some());
     }
 
-    /// The outer rowset parser should unescape once, leaving the inner JSON
-    /// document escapes intact for `serde_json::from_str`.
+    /// The outer rowset parser should unescape once, leaving the inner JSON document escapes intact for `serde_json::from_str`.
     #[test]
     fn json_variant_decode_preserves_inner_escapes_after_parser_unescape() {
         let body = Bytes::from_static(br#"[[ "{\"message\":\"line\\n\\\\path\"}" ]]"#);

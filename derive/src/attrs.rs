@@ -9,8 +9,8 @@ pub(crate) enum RenameAll {
 pub(crate) struct ContainerAttrs {
     /// Effective field-name conversion.
     pub(crate) rename_all: RenameAll,
-    /// `true` only if the user wrote `#[snowflake(rename_all = "...")]`
-    /// explicitly. Used to reject `positional` + explicit `rename_all`.
+    /// `true` only if the user wrote `#[snowflake(rename_all = "...")]` explicitly.
+    /// Used to reject `positional` + explicit `rename_all`.
     pub(crate) rename_all_explicit: bool,
     pub(crate) positional: bool,
     pub(crate) crate_path: Path,

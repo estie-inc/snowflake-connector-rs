@@ -27,8 +27,7 @@ impl ParsedTokenAndConsent {
 /// - callback listener flow (`GET` query / `POST` form body parsing in `listener`)
 /// - manual redirected-URL flow (query/fragment parsing in `manual_redirect_input`)
 ///
-/// Keeping this in one place guarantees both flows use identical parsing rules
-/// (case-insensitive keys, first non-empty token wins, consent parsing behavior).
+/// Keeping this in one place guarantees both flows use identical parsing rules.
 pub(crate) fn parse_token_and_consent_from_pairs<'a, I>(pairs: I) -> ParsedTokenAndConsent
 where
     I: IntoIterator<Item = (Cow<'a, str>, Cow<'a, str>)>,

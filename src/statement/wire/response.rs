@@ -71,9 +71,8 @@ struct BorrowedRawQueryResponse<'a> {
     query_result_format: Option<String>,
 }
 
-/// Parse a response body, keeping the rowset as a zero-copy `Bytes` slice
-/// of the input.
-pub(crate) fn parse_response(body: Bytes) -> std::result::Result<SnowflakeResponse, ProtocolError> {
+/// Parse a response body, keeping the rowset as a zero-copy `Bytes` slice of the input.
+pub(crate) fn parse_response(body: Bytes) -> Result<SnowflakeResponse, ProtocolError> {
     let borrowed: BorrowedSnowflakeResponse<'_> =
         serde_json::from_slice(strip_utf8_bom(body.as_ref()))
             .map_err(|e| ProtocolError::json_parse(e, &body))?;
@@ -111,14 +110,10 @@ pub(crate) fn parse_response(body: Bytes) -> std::result::Result<SnowflakeRespon
     })
 }
 
-fn row_set_bytes_from_raw_value(
-    body: &Bytes,
-    raw: &RawValue,
-) -> std::result::Result<Bytes, ProtocolError> {
+fn row_set_bytes_from_raw_value(body: &Bytes, raw: &RawValue) -> Result<Bytes, ProtocolError> {
     let raw_bytes = raw.get().as_bytes();
-    // `BorrowedRawQueryResponse<'_>` uses `#[serde(borrow)] &'a RawValue`, so
-    // `raw_bytes` is expected to alias the original response buffer. We rely on
-    // that invariant to reconstruct a zero-copy `Bytes::slice`.
+    // `BorrowedRawQueryResponse<'_>` uses `#[serde(borrow)] &'a RawValue`, so `raw_bytes` is expected to alias the original
+    // response buffer. We rely on that invariant to reconstruct a zero-copy `Bytes::slice`.
     let body_start = body.as_ptr() as usize;
     let raw_start = raw_bytes.as_ptr() as usize;
     let start = raw_start
@@ -170,15 +165,13 @@ pub(crate) struct RawQueryResponseChunk {
     pub(crate) compressed_size: i64,
 }
 
-/// Resolve `qrmk` and raw `chunk_headers` into a fully-formed `HeaderMap`
-/// suitable for downloading remote partitions.
+/// Resolve `qrmk` and raw `chunk_headers` into a fully-formed `HeaderMap` suitable for downloading remote partitions.
 pub(crate) fn resolve_download_headers(
     qrmk: &Option<String>,
     chunk_headers: &Option<HashMap<String, String>>,
-) -> std::result::Result<Arc<HeaderMap>, ProtocolError> {
-    // Branch on chunk_headers presence, not emptiness: if Snowflake
-    // returns `chunkHeaders: {}` that empty map is used as-is, without
-    // falling back to qrmk-derived SSE-C headers.
+) -> Result<Arc<HeaderMap>, ProtocolError> {
+    // Branch on chunk_headers presence, not emptiness: if Snowflake returns `chunkHeaders: {}` that empty map is used as-is,
+    // without falling back to qrmk-derived SSE-C headers.
     let headers = match (chunk_headers, qrmk) {
         (Some(ch), _) => HeaderMap::try_from(ch).map_err(ProtocolError::header_conversion)?,
         (None, Some(qrmk)) => {

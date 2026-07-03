@@ -2,11 +2,9 @@ use tokio::task::JoinError;
 
 use crate::runtime::BlockingParseLimiter;
 
-// These thresholds intentionally allow modest inline parsing so callers avoid
-// paying `spawn_blocking` overhead for medium-sized rowsets, while still
-// offloading work large enough to monopolize an async runtime worker for tens
-// of milliseconds. They are aligned to the current rowset parser and gzip
-// benchmarks rather than a strict byte-for-byte equivalence.
+// These thresholds intentionally allow modest inline parsing so callers avoid　paying `spawn_blocking` overhead for
+// medium-sized rowsets, while still offloading work large enough to monopolize an async runtime worker for tens of milliseconds.
+// They are aligned to the current rowset parser and gzip benchmarks rather than a strict byte-for-byte equivalence.
 pub(crate) const BLOCKING_PARSE_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const BLOCKING_PARSE_CELLS: u64 = 1_000_000;
 pub(crate) const BLOCKING_GZIP_COMPRESSED_BYTES: usize = 3 * 1024 * 1024;
@@ -85,11 +83,11 @@ pub(crate) async fn execute_parse_work<T, E, F>(
     workload: ParseWorkload,
     blocking_parse_limiter: Option<BlockingParseLimiter>,
     work: F,
-) -> std::result::Result<(ParseExecution, T), ParseWorkError<E>>
+) -> Result<(ParseExecution, T), ParseWorkError<E>>
 where
     T: Send + 'static,
     E: Send + 'static,
-    F: FnOnce() -> std::result::Result<T, E> + Send + 'static,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
 {
     if should_spawn_blocking_parse(&workload) {
         let permit = match blocking_parse_limiter {

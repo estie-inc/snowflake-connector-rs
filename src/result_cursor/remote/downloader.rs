@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc, time::Duration};
+use std::{fmt, result::Result as StdResult, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use http::HeaderMap;
@@ -78,7 +78,7 @@ impl RemotePartitionDownloader {
         &self,
         request: DownloadRequest,
         schema: Arc<Schema>,
-    ) -> std::result::Result<ResultTable, DownloadFailure> {
+    ) -> StdResult<ResultTable, DownloadFailure> {
         let response = match self
             .client
             .get(&request.url)
@@ -150,7 +150,7 @@ impl RemotePartitionDownloader {
 
 fn classify_failed_status<E>(
     status: StatusCode,
-    body: std::result::Result<Bytes, E>,
+    body: StdResult<Bytes, E>,
     query_id: Arc<str>,
 ) -> DownloadFailure
 where
