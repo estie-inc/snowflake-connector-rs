@@ -22,7 +22,7 @@ pub(crate) use repr::{
 };
 pub use schema::{
     AmbiguousColumnError, ColumnCountMismatchError, DuplicateColumnNameError,
-    InvalidColumnIndexError, MissingColumnError, SchemaError,
+    IncompatibleColumnTypeError, InvalidColumnIndexError, MissingColumnError, SchemaError,
 };
 
 const VALUE_PREVIEW_MAX_CHARS: usize = 128;
@@ -585,18 +585,28 @@ mod tests {
     use tokio::net::TcpListener;
 
     use crate::result_table::{
-        CellConversionError, CellDecodeResult, CellRef, ColumnType, FromCell,
+        CellConversionError, CellDecodeResult, Column, ColumnType, FromCell,
         test_data::{make_result_table_from_rows, make_schema},
     };
 
     use super::*;
 
+    fn required_raw(raw: Option<&str>) -> CellDecodeResult<&str> {
+        raw.ok_or_else(|| CellConversionError::builder("value is NULL").build())
+    }
+
     #[derive(Debug)]
     struct NoSourceDecode;
 
     impl FromCell for NoSourceDecode {
-        fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-            let _ = cell.required_raw()?;
+        type Plan = ();
+
+        fn build_plan(_column: &Column) -> Result<Self::Plan> {
+            Ok(())
+        }
+
+        fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+            let _ = required_raw(raw)?;
             Err(CellConversionError::builder("bad value").build())
         }
     }
@@ -605,8 +615,14 @@ mod tests {
     struct WithSourceDecode;
 
     impl FromCell for WithSourceDecode {
-        fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-            let raw = cell.required_raw()?;
+        type Plan = ();
+
+        fn build_plan(_column: &Column) -> Result<Self::Plan> {
+            Ok(())
+        }
+
+        fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+            let raw = required_raw(raw)?;
             raw.parse::<u32>()
                 .map(|_| Self)
                 .map_err(|e| CellConversionError::builder("bad value").source(e).build())

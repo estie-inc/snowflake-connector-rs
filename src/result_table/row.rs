@@ -4,7 +4,7 @@ use crate::{
     CellDecodeError, Error, InvalidColumnIndexError, Result, SchemaError,
     result_table::{
         cell::{CellBlock, CellRef},
-        decode::{FromCell, FromRow},
+        decode::{CellPlan, FromCell, FromRow},
         plan::RowPlanContext,
         schema::{Column, ColumnIndex, Schema},
         table::{ResultTable, ResultTableStorage},
@@ -65,21 +65,23 @@ impl<'a> RowRef<'a> {
         }
     }
 
-    /// Decode a cell by column index.
+    /// Decode a cell using a prepared [`CellPlan`].
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when `index` is out of bounds or the cell cannot be decoded as `T`.
-    pub fn get<T: FromCell>(self, index: ColumnIndex) -> Result<T> {
-        let cell = self.cell_at(index)?;
-        T::from_cell(cell).map_err(|issue| {
+    /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when the cell cannot be decoded as `T`.
+    pub fn get_planned<T: FromCell>(self, plan: &CellPlan<T>) -> Result<T> {
+        let cell = self.block.cell(self.local_row, plan.offset);
+        let raw = self.block.cell_text(cell);
+
+        T::from_cell_with_plan(raw, &plan.decode).map_err(|issue| {
             CellDecodeError::new(
-                cell.row_index(),
-                cell.column().index(),
-                cell.column().name(),
+                self.global_row,
+                plan.column.index(),
+                plan.column.name(),
                 type_name::<T>(),
-                cell.column().ty().clone(),
-                cell.raw(),
+                plan.column.ty().clone(),
+                raw,
                 issue,
             )
             .into()

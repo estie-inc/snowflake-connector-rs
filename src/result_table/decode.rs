@@ -1,38 +1,47 @@
-use std::result::Result as StdResult;
+use std::{any::type_name, result::Result as StdResult};
 
 use chrono::{DateTime, Days, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
 use crate::result_table::{
     CellConversionError, CellDecodeResult,
-    cell::CellRef,
     dynamic::DecimalValue,
     plan::RowPlanContext,
     row::RowRef,
-    schema::{ColumnIndex, ColumnType},
+    schema::{Column, ColumnIndex, ColumnType, Schema},
 };
-use crate::{ColumnCountMismatchError, Result, SchemaError};
+use crate::{ColumnCountMismatchError, Error, IncompatibleColumnTypeError, Result, SchemaError};
 
 const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 
 /// Decode a single result-set cell into a Rust value.
 ///
-/// Implementations exist for primitive Rust types, [`CellValue`](crate::CellValue), [`DecimalValue`](crate::DecimalValue),
-/// and `Option<T>`. Implement it yourself when adapting Snowflake values into domain types.
+/// Implementations exist for primitive Rust types, [`DecimalValue`](crate::DecimalValue), and `Option<T>`.
+/// Implement it yourself when adapting Snowflake values into domain types.
+///
+/// Decoding is split in two so schema-dependent work happens once per table rather than once per cell:
+/// [`build_plan`](FromCell::build_plan) validates the column and precomputes any state, and
+/// [`from_cell_with_plan`](FromCell::from_cell_with_plan) converts the raw cell text using that state.
 ///
 /// # Example
 ///
-/// A custom decoder that wraps `f64` for type safety:
+/// A custom decoder that wraps `f64` for type safety and does not care about the column type:
 ///
 /// ```
 /// use snowflake_connector_rs::{
-///     CellConversionError, CellDecodeResult, CellRef, FromCell,
+///     CellConversionError, CellDecodeResult, Column, FromCell, Result,
 /// };
 ///
 /// struct CelsiusTemp(f64);
 ///
 /// impl FromCell for CelsiusTemp {
-///     fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-///         let raw = cell.required_raw()?;
+///     type Plan = ();
+///
+///     fn build_plan(_column: &Column) -> Result<Self::Plan> {
+///         Ok(())
+///     }
+///
+///     fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+///         let raw = raw.ok_or_else(|| CellConversionError::builder("value is NULL").build())?;
 ///         raw.parse::<f64>().map(CelsiusTemp).map_err(|e| {
 ///             CellConversionError::builder("not a valid temperature")
 ///                 .source(e)
@@ -42,14 +51,86 @@ const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 /// }
 /// ```
 pub trait FromCell: Sized {
-    /// Decode a single cell into `Self`.
+    /// Per-column state prepared once and reused for every cell in that column.
     ///
-    /// Implementations should reject `NULL` for non-`Option` targets and describe conversion failures with [`CellConversionError`].
+    /// `Send + Sync` so the plan can be shared across threads when an iterator is moved between tasks.
+    type Plan: Send + Sync;
+
+    /// Validate the column and precompute schema-dependent state.
+    ///
+    /// # Errors
+    ///
+    /// Return [`SchemaError::IncompatibleColumnType`](crate::SchemaError::IncompatibleColumnType) when the column
+    /// cannot be decoded into `Self`. This runs before any row is read, so a mismatch fails the whole
+    /// [`rows`](crate::ResultTable::rows) call rather than surfacing per cell.
+    fn build_plan(column: &Column) -> Result<Self::Plan>;
+
+    /// Decode a single cell's raw text into `Self`.
+    ///
+    /// `raw` is `None` for SQL `NULL`. Implementations should reject `NULL` for non-`Option` targets and describe
+    /// conversion failures with [`CellConversionError`].
     ///
     /// # Errors
     ///
     /// Implementations should return only cell-local issues here.
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self>;
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self>;
+}
+
+/// A resolved column paired with a prepared [`FromCell::Plan`].
+///
+/// Built once per table in [`FromRow::build_plan`], then handed to [`RowRef::get_planned`] for each row, avoiding
+/// per-row schema lookups and per-cell type matching.
+pub struct CellPlan<T: FromCell> {
+    pub(crate) column: Column,
+    pub(crate) offset: usize,
+    pub(crate) decode: T::Plan,
+}
+
+impl<T: FromCell> CellPlan<T> {
+    /// Build a cell plan for an already-resolved column.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`FromCell::build_plan`] failures for `T`.
+    pub fn new(column: &Column) -> Result<Self> {
+        Ok(Self {
+            column: column.clone(),
+            offset: column.index().as_usize(),
+            decode: T::build_plan(column)?,
+        })
+    }
+
+    /// Resolve a column by raw label and build its cell plan.
+    ///
+    /// # Errors
+    ///
+    /// - [`SchemaError::MissingColumn`](crate::SchemaError::MissingColumn) / [`SchemaError::AmbiguousColumn`](crate::SchemaError::AmbiguousColumn)
+    ///   from the label lookup.
+    /// - Any [`FromCell::build_plan`] failure for `T`.
+    pub fn by_name(schema: &Schema, name: &str) -> Result<Self> {
+        let index = schema.column_index(name)?;
+        let column = schema
+            .column_at(index)
+            .expect("column_index returns a valid index");
+        Self::new(column)
+    }
+
+    /// Resolve a column by position and build its cell plan.
+    ///
+    /// # Errors
+    ///
+    /// - [`SchemaError::ColumnCountMismatch`](crate::SchemaError::ColumnCountMismatch) when `position` is out of range.
+    /// - Any [`FromCell::build_plan`] failure for `T`.
+    pub fn by_position(schema: &Schema, position: usize) -> Result<Self> {
+        let index = ColumnIndex::new(position as u32);
+        let column = schema.column_at(index).ok_or_else(|| {
+            SchemaError::ColumnCountMismatch(ColumnCountMismatchError::new(
+                position + 1,
+                schema.len(),
+            ))
+        })?;
+        Self::new(column)
+    }
 }
 
 /// Decode an entire row into a Rust type.
@@ -62,8 +143,7 @@ pub trait FromCell: Sized {
 ///
 /// ```
 /// use snowflake_connector_rs::{
-///     FromRow, Result,
-///     {ColumnIndex, RowPlanContext, RowRef},
+///     CellPlan, FromRow, Result, RowPlanContext, RowRef,
 /// };
 ///
 /// struct UserRow {
@@ -72,8 +152,8 @@ pub trait FromCell: Sized {
 /// }
 ///
 /// struct UserRowPlan {
-///     id: ColumnIndex,
-///     name: ColumnIndex,
+///     id: CellPlan<i64>,
+///     name: CellPlan<String>,
 /// }
 ///
 /// impl FromRow for UserRow {
@@ -82,15 +162,15 @@ pub trait FromCell: Sized {
 ///     fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
 ///         let schema = ctx.schema();
 ///         Ok(UserRowPlan {
-///             id: schema.column_index("ID")?,
-///             name: schema.column_index("NAME")?,
+///             id: CellPlan::by_name(schema, "ID")?,
+///             name: CellPlan::by_name(schema, "NAME")?,
 ///         })
 ///     }
 ///
 ///     fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
 ///         Ok(UserRow {
-///             id: row.get(plan.id)?,
-///             name: row.get(plan.name)?,
+///             id: row.get_planned(&plan.id)?,
+///             name: row.get_planned(&plan.name)?,
 ///         })
 ///     }
 /// }
@@ -138,48 +218,62 @@ impl FromRow for () {
 }
 
 impl<T: FromCell> FromCell for Option<T> {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        if cell.is_null() {
-            Ok(None)
-        } else {
-            T::from_cell(cell).map(Some)
+    type Plan = T::Plan;
+
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        T::build_plan(column)
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+        match raw {
+            None => Ok(None),
+            Some(_) => T::from_cell_with_plan(raw, plan).map(Some),
         }
     }
 }
 
-fn ensure_column_type(cell: CellRef<'_>, ok: bool) -> CellDecodeResult<()> {
-    if ok {
-        Ok(())
-    } else {
-        Err(CellConversionError::builder(format!(
-            "incompatible column type: {:?}",
-            cell.column().ty()
-        ))
-        .build())
-    }
+/// Borrow the raw text, reporting SQL `NULL` as a cell error for non-`Option` targets.
+fn required_raw(raw: Option<&str>) -> CellDecodeResult<&str> {
+    raw.ok_or_else(|| CellConversionError::builder("value is NULL").build())
+}
+
+/// Build the plan-time error for a column that cannot decode into `T`.
+fn incompatible_column<T>(column: &Column, detail: Option<String>) -> Error {
+    SchemaError::IncompatibleColumnType(IncompatibleColumnTypeError::new(
+        column.index(),
+        column.name(),
+        type_name::<T>(),
+        column.ty().clone(),
+        detail.map(String::into_boxed_str),
+    ))
+    .into()
 }
 
 macro_rules! impl_int_from_cell {
     ($t:ty) => {
         impl FromCell for $t {
-            fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
+            type Plan = ();
+
+            fn build_plan(column: &Column) -> Result<Self::Plan> {
                 // Integers are only valid for `FIXED` with `scale = 0`.
-                match cell.column().ty() {
-                    ColumnType::Fixed { scale, .. } => {
-                        let s = scale.unwrap_or(0);
-                        if s != 0 {
-                            return Err(CellConversionError::builder(format!(
-                                "integer cannot decode FIXED with scale {s}"
-                            ))
-                            .build());
-                        }
-                    }
-                    _ => {
-                        ensure_column_type(cell, false)?;
-                        unreachable!()
-                    }
+                match column.ty() {
+                    ColumnType::Fixed { scale, .. } if scale.unwrap_or(0) == 0 => Ok(()),
+                    ColumnType::Fixed { scale, .. } => Err(incompatible_column::<$t>(
+                        column,
+                        Some(format!(
+                            "integer cannot decode FIXED with scale {}",
+                            scale.unwrap_or(0)
+                        )),
+                    )),
+                    _ => Err(incompatible_column::<$t>(column, None)),
                 }
-                let raw = cell.required_raw()?;
+            }
+
+            fn from_cell_with_plan(
+                raw: Option<&str>,
+                _plan: &Self::Plan,
+            ) -> CellDecodeResult<Self> {
+                let raw = required_raw(raw)?;
                 raw.parse::<$t>().map_err(|e| {
                     CellConversionError::builder(format!("parse error: {e}"))
                         .source(e)
@@ -201,63 +295,75 @@ impl_int_from_cell!(u32);
 impl_int_from_cell!(u64);
 impl_int_from_cell!(u128);
 
-impl FromCell for f64 {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        ensure_column_type(
-            cell,
-            matches!(
-                cell.column().ty(),
-                ColumnType::Real | ColumnType::Fixed { .. }
-            ),
-        )?;
+macro_rules! impl_float_from_cell {
+    ($t:ty) => {
+        impl FromCell for $t {
+            type Plan = ();
 
-        let raw = cell.required_raw()?;
-        raw.parse::<f64>().map_err(|e| {
-            CellConversionError::builder(format!("parse error: {e}"))
-                .source(e)
-                .build()
-        })
-    }
+            fn build_plan(column: &Column) -> Result<Self::Plan> {
+                match column.ty() {
+                    ColumnType::Real | ColumnType::Fixed { .. } => Ok(()),
+                    _ => Err(incompatible_column::<$t>(column, None)),
+                }
+            }
+
+            fn from_cell_with_plan(
+                raw: Option<&str>,
+                _plan: &Self::Plan,
+            ) -> CellDecodeResult<Self> {
+                let raw = required_raw(raw)?;
+                raw.parse::<$t>().map_err(|e| {
+                    CellConversionError::builder(format!("parse error: {e}"))
+                        .source(e)
+                        .build()
+                })
+            }
+        }
+    };
 }
 
-impl FromCell for f32 {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        ensure_column_type(
-            cell,
-            matches!(
-                cell.column().ty(),
-                ColumnType::Real | ColumnType::Fixed { .. }
-            ),
-        )?;
-
-        let raw = cell.required_raw()?;
-        raw.parse::<f32>().map_err(|e| {
-            CellConversionError::builder(format!("parse error: {e}"))
-                .source(e)
-                .build()
-        })
-    }
-}
+impl_float_from_cell!(f32);
+impl_float_from_cell!(f64);
 
 impl FromCell for String {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        cell.required_raw().map(|s| s.to_owned())
+    type Plan = ();
+
+    fn build_plan(_column: &Column) -> Result<Self::Plan> {
+        Ok(())
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        required_raw(raw).map(|s| s.to_owned())
     }
 }
 
 impl FromCell for DecimalValue {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        ensure_column_type(cell, matches!(cell.column().ty(), ColumnType::Fixed { .. }))?;
-        let raw = cell.required_raw()?;
-        Ok(DecimalValue::new(raw))
+    type Plan = ();
+
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::Fixed { .. } => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        required_raw(raw).map(DecimalValue::new)
     }
 }
 
 impl FromCell for bool {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        ensure_column_type(cell, matches!(cell.column().ty(), ColumnType::Boolean))?;
+    type Plan = ();
 
-        let raw = cell.required_raw()?;
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::Boolean => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
         if raw == "1" || raw.eq_ignore_ascii_case("true") {
             Ok(true)
         } else if raw == "0" || raw.eq_ignore_ascii_case("false") {
@@ -269,10 +375,17 @@ impl FromCell for bool {
 }
 
 impl FromCell for NaiveDate {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        ensure_column_type(cell, matches!(cell.column().ty(), ColumnType::Date))?;
+    type Plan = ();
 
-        let raw = cell.required_raw()?;
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::Date => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
         let days = raw.parse::<i64>().map_err(|e| {
             CellConversionError::builder(format!("'{raw}' is not Date"))
                 .source(e)
@@ -297,24 +410,32 @@ impl FromCell for NaiveDate {
 }
 
 impl FromCell for NaiveTime {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        ensure_column_type(cell, matches!(cell.column().ty(), ColumnType::Time { .. }))?;
+    type Plan = TimePlan;
 
-        let raw = cell.required_raw()?;
-        let scale = match cell.column().ty() {
-            ColumnType::Time { scale } => match *scale {
-                None => 0usize,
-                Some(s) if (0..=9).contains(&s) => s as usize,
-                Some(s) => {
-                    return Err(
-                        CellConversionError::builder(format!("invalid time scale: {s}")).build(),
-                    );
-                }
-            },
-            _ => 0,
-        };
-        let (secs, nsec) = parse_time_seconds_and_nanos(raw, scale)
-            .map_err(|m| CellConversionError::builder(m).build())?;
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::Time { scale } => {
+                let scale = match scale {
+                    None => 0usize,
+                    Some(s) if (0..=9).contains(s) => *s as usize,
+                    Some(s) => {
+                        return Err(incompatible_column::<Self>(
+                            column,
+                            Some(format!("invalid time scale: {s}")),
+                        ));
+                    }
+                };
+                Ok(TimePlan::new(scale))
+            }
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        let (secs, nsec) =
+            parse_time_seconds_and_nanos_with(raw, plan.scale, plan.nanos_multiplier)
+                .map_err(|m| CellConversionError::builder(m).build())?;
 
         NaiveTime::from_num_seconds_from_midnight_opt(secs, nsec)
             .ok_or_else(|| CellConversionError::builder(format!("invalid time: {raw}")).build())
@@ -322,66 +443,87 @@ impl FromCell for NaiveTime {
 }
 
 impl FromCell for NaiveDateTime {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        ensure_column_type(
-            cell,
-            matches!(cell.column().ty(), ColumnType::TimestampNtz { .. }),
-        )?;
+    type Plan = TimestampPlan;
 
-        let raw = cell.required_raw()?;
-        let scale = timestamp_scale(cell.column().ty()).unwrap_or(9);
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::TimestampNtz { scale } => TimestampPlan::new(i64::from(scale.unwrap_or(9)))
+                .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
 
-        parse_timestamp_epoch(raw, scale)
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        parse_timestamp_epoch_with(raw, plan)
             .map(|dt| dt.naive_utc())
             .map_err(|m| CellConversionError::builder(m).build())
     }
 }
 
-impl FromCell for DateTime<Utc> {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        let raw = cell.required_raw()?;
-        let scale = timestamp_scale(cell.column().ty()).unwrap_or(9);
+/// Which UTC-anchored decode path a [`DateTime<Utc>`] column uses.
+pub enum UtcTimestampPlan {
+    /// `TIMESTAMP_LTZ` — stored as a UTC epoch.
+    Ltz(TimestampPlan),
+    /// `TIMESTAMP_TZ` — wire value carries an offset that is normalized to UTC.
+    Tz(TimestampPlan),
+}
 
-        match cell.column().ty() {
-            ColumnType::TimestampLtz { .. } => parse_timestamp_epoch(raw, scale)
-                .map_err(|m| CellConversionError::builder(m).build()),
-            ColumnType::TimestampTz { .. } => parse_timestamp_tz_as_utc(raw, scale)
-                .map_err(|m| CellConversionError::builder(m).build()),
-            other => Err(CellConversionError::builder(format!(
-                "unsupported column type for DateTime<Utc>: {other:?}"
-            ))
-            .build()),
+impl FromCell for DateTime<Utc> {
+    type Plan = UtcTimestampPlan;
+
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::TimestampLtz { scale } => TimestampPlan::new(i64::from(scale.unwrap_or(9)))
+                .map(UtcTimestampPlan::Ltz)
+                .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
+            ColumnType::TimestampTz { scale } => TimestampPlan::new(i64::from(scale.unwrap_or(9)))
+                .map(UtcTimestampPlan::Tz)
+                .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
+            _ => Err(incompatible_column::<Self>(column, None)),
         }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        match plan {
+            UtcTimestampPlan::Ltz(plan) => parse_timestamp_epoch_with(raw, plan),
+            UtcTimestampPlan::Tz(plan) => parse_timestamp_tz_as_utc_with(raw, plan),
+        }
+        .map_err(|m| CellConversionError::builder(m).build())
     }
 }
 
 impl FromCell for DateTime<FixedOffset> {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        let raw = cell.required_raw()?;
-        let scale = timestamp_scale(cell.column().ty()).unwrap_or(9);
+    type Plan = TimestampPlan;
 
-        match cell.column().ty() {
-            ColumnType::TimestampTz { .. } => parse_timestamp_tz_with_offset(raw, scale)
-                .map_err(|m| CellConversionError::builder(m).build()),
-            other => Err(CellConversionError::builder(format!(
-                "unsupported column type for DateTime<FixedOffset>: {other:?}"
-            ))
-            .build()),
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::TimestampTz { scale } => TimestampPlan::new(i64::from(scale.unwrap_or(9)))
+                .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
+            _ => Err(incompatible_column::<Self>(column, None)),
         }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        parse_timestamp_tz_with_offset_with(raw, plan)
+            .map_err(|m| CellConversionError::builder(m).build())
     }
 }
 
 impl FromCell for serde_json::Value {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        ensure_column_type(
-            cell,
-            matches!(
-                cell.column().ty(),
-                ColumnType::Variant | ColumnType::Object | ColumnType::Array
-            ),
-        )?;
+    type Plan = ();
 
-        let raw = cell.required_raw()?;
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::Variant | ColumnType::Object | ColumnType::Array => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
         serde_json::from_str(raw).map_err(|e| {
             CellConversionError::builder(format!("invalid json: {e}"))
                 .source(e)
@@ -391,23 +533,63 @@ impl FromCell for serde_json::Value {
 }
 
 impl FromCell for Vec<u8> {
-    fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-        ensure_column_type(
-            cell,
-            matches!(cell.column().ty(), ColumnType::Binary { .. }),
-        )?;
+    type Plan = ();
 
-        let raw = cell.required_raw()?;
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::Binary { .. } => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
         decode_hex(raw).map_err(|m| CellConversionError::builder(m).build())
     }
 }
 
-fn timestamp_scale(ty: &ColumnType) -> Option<i64> {
-    match ty {
-        ColumnType::TimestampNtz { scale }
-        | ColumnType::TimestampLtz { scale }
-        | ColumnType::TimestampTz { scale } => scale.map(i64::from),
-        _ => None,
+/// Precomputed fractional-seconds state for a `TIME` column.
+pub struct TimePlan {
+    scale: usize,
+    /// `10^(9 - scale)`, scaling truncated fractional digits up to nanoseconds.
+    nanos_multiplier: u32,
+}
+
+impl TimePlan {
+    /// `scale` must already be validated to `0..=9`.
+    fn new(scale: usize) -> Self {
+        Self {
+            scale,
+            nanos_multiplier: 10u32.pow((9 - scale) as u32),
+        }
+    }
+}
+
+/// Precomputed scale factors for a timestamp column, shared by the `NTZ` / `LTZ` / `TZ` decoders.
+#[derive(Clone, Copy)]
+pub struct TimestampPlan {
+    scale: i64,
+    /// `10^scale`, converting between the scaled integer wire value and whole seconds.
+    scale_factor: i128,
+    /// `10^(9 - scale)`, scaling the fractional remainder up to nanoseconds.
+    nanos_multiplier: u64,
+}
+
+impl TimestampPlan {
+    const SCALE_ZERO: TimestampPlan = TimestampPlan {
+        scale: 0,
+        scale_factor: 1,
+        nanos_multiplier: 1_000_000_000,
+    };
+
+    fn new(scale: i64) -> StdResult<Self, String> {
+        let scale = validate_ts_scale(scale)?;
+        // `scale` is `0..=9`, so neither power can overflow.
+        Ok(Self {
+            scale,
+            scale_factor: 10i128.pow(scale as u32),
+            nanos_multiplier: 10u64.pow((9 - scale) as u32),
+        })
     }
 }
 
@@ -418,14 +600,12 @@ fn validate_ts_scale(scale: i64) -> StdResult<i64, String> {
     Ok(scale)
 }
 
-fn pow10_i128(scale: i64, original: &str, kind: &'static str) -> StdResult<i128, String> {
-    10i128
-        .checked_pow(scale as u32)
-        .ok_or_else(|| format!("Could not decode {kind}: {original}"))
-}
-
-fn parse_scaled_decimal_i128(s: &str, scale: i64, kind: &'static str) -> StdResult<i128, String> {
-    let scale = validate_ts_scale(scale)?;
+fn parse_scaled_decimal_i128(
+    s: &str,
+    plan: &TimestampPlan,
+    kind: &'static str,
+) -> StdResult<i128, String> {
+    let scale = plan.scale;
     let s = s.trim();
     if s.is_empty() {
         return Err(format!("Could not decode {kind}: {s}"));
@@ -451,12 +631,11 @@ fn parse_scaled_decimal_i128(s: &str, scale: i64, kind: &'static str) -> StdResu
         return Err(format!("Could not decode {kind}: {s}"));
     }
 
-    let scale_factor = pow10_i128(scale, s, kind)?;
     let whole = whole_str
         .parse::<i128>()
         .map_err(|_| format!("Could not decode {kind}: {s}"))?;
     let mut scaled = whole
-        .checked_mul(scale_factor)
+        .checked_mul(plan.scale_factor)
         .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
 
     if let Some(frac_str) = frac_str {
@@ -497,24 +676,20 @@ fn parse_scaled_decimal_i128(s: &str, scale: i64, kind: &'static str) -> StdResu
 
 fn parse_timestamp_epoch_scaled(
     scaled: i128,
-    scale: i64,
+    plan: &TimestampPlan,
     original: &str,
     kind: &'static str,
 ) -> StdResult<DateTime<Utc>, String> {
-    let scale = validate_ts_scale(scale)?;
-    let scale_factor = pow10_i128(scale, original, kind)?;
-
-    let secs = scaled.div_euclid(scale_factor);
-    let frac = scaled.rem_euclid(scale_factor);
+    let secs = scaled.div_euclid(plan.scale_factor);
+    let frac = scaled.rem_euclid(plan.scale_factor);
 
     let secs = i64::try_from(secs).map_err(|_| format!("Could not decode {kind}: {original}"))?;
     let frac = u64::try_from(frac).map_err(|_| format!("Could not decode {kind}: {original}"))?;
 
-    let nsec = if scale == 0 {
+    let nsec = if plan.scale == 0 {
         0u32
     } else {
-        let frac_scale = 10u64.pow((9 - scale) as u32);
-        frac.checked_mul(frac_scale)
+        frac.checked_mul(plan.nanos_multiplier)
             .and_then(|value| u32::try_from(value).ok())
             .ok_or_else(|| format!("Could not decode {kind}: {original}"))?
     };
@@ -523,9 +698,16 @@ fn parse_timestamp_epoch_scaled(
         .ok_or_else(|| format!("Could not decode {kind}: {original}"))
 }
 
+pub(crate) fn parse_timestamp_epoch_with(
+    s: &str,
+    plan: &TimestampPlan,
+) -> StdResult<DateTime<Utc>, String> {
+    let scaled = parse_scaled_decimal_i128(s, plan, "timestamp")?;
+    parse_timestamp_epoch_scaled(scaled, plan, s, "timestamp")
+}
+
 pub(crate) fn parse_timestamp_epoch(s: &str, scale: i64) -> StdResult<DateTime<Utc>, String> {
-    let scaled = parse_scaled_decimal_i128(s, scale, "timestamp")?;
-    parse_timestamp_epoch_scaled(scaled, scale, s, "timestamp")
+    parse_timestamp_epoch_with(s, &TimestampPlan::new(scale)?)
 }
 
 struct TimestampTzWire {
@@ -557,11 +739,14 @@ fn fixed_offset_from_tz_index(tz_index: i32, original: &str) -> StdResult<FixedO
     })
 }
 
-fn parse_legacy_timestamp_tz_wire(s: &str, scale: i64) -> StdResult<TimestampTzWire, String> {
-    let packed = parse_scaled_decimal_i128(s, 0, "timestamp_tz")?;
+fn parse_legacy_timestamp_tz_wire(
+    s: &str,
+    plan: &TimestampPlan,
+) -> StdResult<TimestampTzWire, String> {
+    let packed = parse_scaled_decimal_i128(s, &TimestampPlan::SCALE_ZERO, "timestamp_tz")?;
     let epoch_scaled = packed.div_euclid(LEGACY_TIMESTAMP_TZ_SHIFT);
     let tz_index = packed.rem_euclid(LEGACY_TIMESTAMP_TZ_SHIFT);
-    let utc = parse_timestamp_epoch_scaled(epoch_scaled, scale, s, "timestamp_tz")?;
+    let utc = parse_timestamp_epoch_scaled(epoch_scaled, plan, s, "timestamp_tz")?;
 
     let tz_index =
         i32::try_from(tz_index).map_err(|_| format!("invalid timezone for timestamp_tz: {s}"))?;
@@ -572,7 +757,7 @@ fn parse_legacy_timestamp_tz_wire(s: &str, scale: i64) -> StdResult<TimestampTzW
     Ok(TimestampTzWire { utc, tz_index })
 }
 
-fn parse_timestamp_tz_wire(s: &str, scale: i64) -> StdResult<TimestampTzWire, String> {
+fn parse_timestamp_tz_wire(s: &str, plan: &TimestampPlan) -> StdResult<TimestampTzWire, String> {
     let s = s.trim();
     let mut parts = s.split_whitespace();
     let first = parts
@@ -583,35 +768,42 @@ fn parse_timestamp_tz_wire(s: &str, scale: i64) -> StdResult<TimestampTzWire, St
         if parts.next().is_some() {
             return Err(format!("invalid timestamp_tz: {s}"));
         }
-        let utc = parse_timestamp_epoch(first, scale)?;
+        let utc = parse_timestamp_epoch_with(first, plan)?;
         let tz_index = parse_timestamp_tz_index(tz_str, s)?;
         Ok(TimestampTzWire { utc, tz_index })
     } else {
-        parse_legacy_timestamp_tz_wire(s, scale)
+        parse_legacy_timestamp_tz_wire(s, plan)
     }
 }
 
-fn parse_timestamp_tz_as_utc(s: &str, scale: i64) -> StdResult<DateTime<Utc>, String> {
-    parse_timestamp_tz_wire(s, scale).map(|wire| wire.utc)
+pub(crate) fn parse_timestamp_tz_as_utc_with(
+    s: &str,
+    plan: &TimestampPlan,
+) -> StdResult<DateTime<Utc>, String> {
+    parse_timestamp_tz_wire(s, plan).map(|wire| wire.utc)
+}
+
+pub(crate) fn parse_timestamp_tz_with_offset_with(
+    s: &str,
+    plan: &TimestampPlan,
+) -> StdResult<DateTime<FixedOffset>, String> {
+    let wire = parse_timestamp_tz_wire(s, plan)?;
+    let offset = fixed_offset_from_tz_index(wire.tz_index, s)?;
+    Ok(wire.utc.with_timezone(&offset))
 }
 
 pub(crate) fn parse_timestamp_tz_with_offset(
     s: &str,
     scale: i64,
 ) -> StdResult<DateTime<FixedOffset>, String> {
-    let wire = parse_timestamp_tz_wire(s, scale)?;
-    let offset = fixed_offset_from_tz_index(wire.tz_index, s)?;
-    Ok(wire.utc.with_timezone(&offset))
+    parse_timestamp_tz_with_offset_with(s, &TimestampPlan::new(scale)?)
 }
 
-pub(crate) fn parse_time_seconds_and_nanos(
+fn parse_time_seconds_and_nanos_with(
     value: &str,
     scale: usize,
+    nanos_multiplier: u32,
 ) -> StdResult<(u32, u32), String> {
-    if scale > 9 {
-        return Err(format!("invalid time scale: {scale}"));
-    }
-
     let value = value.trim();
     let (secs_str, frac_str) = match value.split_once('.') {
         Some((secs, frac)) if !frac.is_empty() => (secs, Some(frac)),
@@ -644,10 +836,20 @@ pub(crate) fn parse_time_seconds_and_nanos(
             .ok_or_else(|| format!("invalid time: {value}"))?;
     }
     let nsec = frac_scaled
-        .checked_mul(10u32.pow((9 - scale) as u32))
+        .checked_mul(nanos_multiplier)
         .ok_or_else(|| format!("invalid time: {value}"))?;
 
     Ok((secs, nsec))
+}
+
+pub(crate) fn parse_time_seconds_and_nanos(
+    value: &str,
+    scale: usize,
+) -> StdResult<(u32, u32), String> {
+    if scale > 9 {
+        return Err(format!("invalid time scale: {scale}"));
+    }
+    parse_time_seconds_and_nanos_with(value, scale, 10u32.pow((9 - scale) as u32))
 }
 
 pub(crate) fn decode_hex(s: &str) -> StdResult<Vec<u8>, String> {
@@ -677,9 +879,8 @@ fn hex_nibble(b: u8) -> StdResult<u8, String> {
 
 macro_rules! impl_tuple_from_row {
     ($len:expr; $($t:ident => $idx:tt),*) => {
-        #[allow(non_snake_case, unused_assignments)]
         impl<$($t: FromCell),*> FromRow for ($($t,)*) {
-            type Plan = [ColumnIndex; $len];
+            type Plan = ($(CellPlan<$t>,)*);
 
             fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
                 let schema = ctx.schema();
@@ -689,11 +890,11 @@ macro_rules! impl_tuple_from_row {
                     )
                     .into());
                 }
-                Ok([$(ColumnIndex::new($idx as u32)),*])
+                Ok(($(CellPlan::<$t>::by_position(schema, $idx)?,)*))
             }
 
             fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
-                Ok(($(row.get::<$t>(plan[$idx])?,)*))
+                Ok(($(row.get_planned(&plan.$idx)?,)*))
             }
         }
     };
@@ -728,6 +929,19 @@ mod tests {
         result_table::test_data::{make_result_table_from_rows, make_schema},
         rowset::parser::parse_inline_result_table,
     };
+
+    fn timestamp_scale(ty: &ColumnType) -> Option<i64> {
+        match ty {
+            ColumnType::TimestampNtz { scale }
+            | ColumnType::TimestampLtz { scale }
+            | ColumnType::TimestampTz { scale } => scale.map(i64::from),
+            _ => None,
+        }
+    }
+
+    fn parse_timestamp_tz_as_utc(s: &str, scale: i64) -> StdResult<DateTime<Utc>, String> {
+        parse_timestamp_tz_as_utc_with(s, &TimestampPlan::new(scale)?)
+    }
 
     /// Pre-1970 timestamps with a fractional part: `-1.1` is 1969-12-31T23:59:58.900Z (= secs -2, nsec 900_000_000), not `.100`.
     #[test]
@@ -936,8 +1150,14 @@ mod tests {
     struct CelsiusTemp;
 
     impl FromCell for CelsiusTemp {
-        fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-            let raw = cell.required_raw()?;
+        type Plan = ();
+
+        fn build_plan(_column: &Column) -> Result<Self::Plan> {
+            Ok(())
+        }
+
+        fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+            let raw = required_raw(raw)?;
             raw.parse::<f64>().map(|_| CelsiusTemp).map_err(|e| {
                 CellConversionError::builder("not a valid temperature")
                     .source(e)
@@ -950,8 +1170,14 @@ mod tests {
     struct AlwaysFails;
 
     impl FromCell for AlwaysFails {
-        fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-            let _ = cell.required_raw()?;
+        type Plan = ();
+
+        fn build_plan(_column: &Column) -> Result<Self::Plan> {
+            Ok(())
+        }
+
+        fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+            let _ = required_raw(raw)?;
             Err(CellConversionError::builder("always fails").build())
         }
     }
@@ -1085,38 +1311,40 @@ mod tests {
     #[test]
     fn decimal_value_rejects_text_column() {
         let t = one_cell_table(ColumnType::Text { length: None }, "12.34");
-        let err = t
-            .rows::<(DecimalValue,)>()
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap_err();
-        assert!(err.as_cell_decode_error().is_some());
+        let err = match t.rows::<(DecimalValue,)>() {
+            Ok(_) => panic!("expected plan build to reject text column for DecimalValue"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
     }
 
-    /// Integers only accept `FIXED(scale=0)` columns; nearby shapes must fail.
+    /// Integers only accept `FIXED(scale=0)` columns; nearby shapes must fail during plan build.
     #[test]
     fn integer_rejects_non_integer_column_shapes() {
-        for (label, ty, raw) in [
-            ("text", ColumnType::Text { length: None }, "42"),
-            ("boolean", ColumnType::Boolean, "1"),
+        for (label, ty) in [
+            ("text", ColumnType::Text { length: None }),
+            ("boolean", ColumnType::Boolean),
             (
                 "scaled fixed",
                 ColumnType::Fixed {
                     precision: Some(10),
                     scale: Some(2),
                 },
-                "12",
             ),
         ] {
-            let err = one_cell_table(ty, raw)
-                .rows::<(i64,)>()
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap_err();
+            let table = one_cell_table(ty, "42");
+            let err = match table.rows::<(i64,)>() {
+                Ok(_) => panic!("{label} unexpectedly planned as i64"),
+                Err(err) => err,
+            };
             assert!(
-                err.as_cell_decode_error().is_some(),
+                matches!(
+                    err.as_schema_error(),
+                    Some(SchemaError::IncompatibleColumnType(_))
+                ),
                 "{label} unexpectedly decoded as i64: {err:?}"
             );
         }
@@ -1126,8 +1354,14 @@ mod tests {
     #[test]
     fn bool_rejects_text_column() {
         let t = one_cell_table(ColumnType::Text { length: None }, "true");
-        let e = t.rows::<(bool,)>().unwrap().next().unwrap().unwrap_err();
-        assert!(e.as_cell_decode_error().is_some());
+        let err = match t.rows::<(bool,)>() {
+            Ok(_) => panic!("expected plan build to reject text column for bool"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
     }
 
     #[test]
@@ -1194,13 +1428,14 @@ mod tests {
     #[test]
     fn json_rejects_text_column() {
         let t = one_cell_table(ColumnType::Text { length: None }, r#"{"a":1}"#);
-        let err = t
-            .rows::<(serde_json::Value,)>()
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap_err();
-        assert!(err.as_cell_decode_error().is_some());
+        let err = match t.rows::<(serde_json::Value,)>() {
+            Ok(_) => panic!("expected plan build to reject text column for json"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
     }
 
     /// The outer rowset parser should unescape once, leaving the inner JSON document escapes intact for `serde_json::from_str`.
@@ -1225,21 +1460,28 @@ mod tests {
     #[test]
     fn binary_rejects_text_column() {
         let t = one_cell_table(ColumnType::Text { length: None }, "48656C6C6F");
-        let e = t.rows::<(Vec<u8>,)>().unwrap().next().unwrap().unwrap_err();
-        assert!(e.as_cell_decode_error().is_some());
+        let err = match t.rows::<(Vec<u8>,)>() {
+            Ok(_) => panic!("expected plan build to reject text column for Vec<u8>"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
     }
 
     /// `TIMESTAMP_LTZ` must NOT decode as `NaiveDateTime` — semantics differ.
     #[test]
     fn naive_datetime_rejects_timestamp_ltz() {
         let t = one_cell_table(ColumnType::TimestampLtz { scale: Some(9) }, "0");
-        let e = t
-            .rows::<(NaiveDateTime,)>()
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap_err();
-        assert!(e.as_cell_decode_error().is_some());
+        let err = match t.rows::<(NaiveDateTime,)>() {
+            Ok(_) => panic!("expected plan build to reject TIMESTAMP_LTZ for NaiveDateTime"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
     }
 
     #[test]

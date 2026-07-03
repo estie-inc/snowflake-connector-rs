@@ -86,12 +86,13 @@ pub(crate) use config::{ClientLoginConfig, InitialSessionConfig, QueryExecutionP
 pub use error::{
     AmbiguousColumnError, CellConversionError, CellConversionErrorBuilder, CellDecodeError,
     CellDecodeResult, ColumnCountMismatchError, DuplicateColumnNameError, Error, ErrorKind,
-    InvalidColumnIndexError, MissingColumnError, Result, SchemaError,
+    IncompatibleColumnTypeError, InvalidColumnIndexError, MissingColumnError, Result, SchemaError,
 };
 pub use result_cursor::{CollectOptions, ResultCursor, TypedResultCursor};
 pub use result_table::{
-    CellRef, CellValue, Column, ColumnIndex, ColumnType, DecimalValue, DynamicRow, FromCell,
-    FromRow, ResultTable, RowPlanContext, RowRef, Rows, Schema, TypedResultTable,
+    CellPlan, CellRef, CellValue, Column, ColumnIndex, ColumnType, DecimalValue, DynamicRow,
+    FromCell, FromRow, ResultTable, RowPlanContext, RowRef, Rows, Schema, TimePlan, TimestampPlan,
+    TypedResultTable, UtcTimestampPlan,
 };
 use runtime::QueryRuntime;
 pub use session::Session;

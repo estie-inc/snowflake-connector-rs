@@ -321,8 +321,8 @@ mod tests {
             remote::tests::{BlockingFetchProbe, FakePartitionSource, FakeResponse},
         },
         result_table::{
-            CellConversionError, CellDecodeResult, CellRef, Column, ColumnIndex, ColumnType,
-            DynamicRow, FromCell, FromRow, RowPlanContext, RowRef, Schema,
+            CellConversionError, CellDecodeResult, CellPlan, Column, ColumnType, DynamicRow,
+            FromCell, FromRow, RowPlanContext, RowRef, Schema,
         },
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
@@ -501,21 +501,27 @@ mod tests {
     struct DecodeErrorCell;
 
     impl FromCell for DecodeErrorCell {
-        fn from_cell(cell: CellRef<'_>) -> CellDecodeResult<Self> {
-            let _ = cell.required_raw()?;
+        type Plan = ();
+
+        fn build_plan(_column: &Column) -> Result<Self::Plan> {
+            Ok(())
+        }
+
+        fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+            let _ = raw.ok_or_else(|| CellConversionError::builder("value is NULL").build())?;
             Err(CellConversionError::builder("simulated decode failure").build())
         }
     }
 
     impl FromRow for DecodeErrorRow {
-        type Plan = ();
+        type Plan = CellPlan<DecodeErrorCell>;
 
-        fn build_plan(_: RowPlanContext<'_>) -> Result<Self::Plan> {
-            Ok(())
+        fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
+            CellPlan::by_position(ctx.schema(), 0)
         }
 
-        fn from_row_with_plan(row: RowRef<'_>, _: &Self::Plan) -> Result<Self> {
-            row.get::<DecodeErrorCell>(ColumnIndex::new(0))?;
+        fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
+            row.get_planned(plan)?;
             unreachable!("decode failure should bubble out before constructing DecodeErrorRow")
         }
     }

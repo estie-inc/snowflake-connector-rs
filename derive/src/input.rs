@@ -1,4 +1,3 @@
-use quote::format_ident;
 use syn::{Data, DeriveInput, Fields, Ident, Path, Result, spanned::Spanned};
 
 use crate::{
@@ -25,7 +24,6 @@ pub(crate) enum FieldLookup {
 
 pub(crate) struct FieldInfo {
     pub(crate) field_ident: Option<Ident>,
-    pub(crate) plan_ident: Ident,
     pub(crate) ty: syn::Type,
     pub(crate) lookup: FieldLookup,
 }
@@ -114,7 +112,6 @@ fn parse_named(named: &syn::FieldsNamed, container: &ContainerAttrs) -> Result<V
         let field_attrs = parse_field_attrs(field)?;
         let field_rename = field_attrs.rename;
         let ident = field.ident.clone().expect("named");
-        let plan_ident = format_ident!("__plan_{}", ident);
 
         let lookup = if container.positional {
             if field_rename.is_some() {
@@ -134,7 +131,6 @@ fn parse_named(named: &syn::FieldsNamed, container: &ContainerAttrs) -> Result<V
 
         out.push(FieldInfo {
             field_ident: Some(ident),
-            plan_ident,
             ty: field.ty.clone(),
             lookup,
         });
@@ -171,10 +167,8 @@ fn parse_unnamed(
             ));
         }
 
-        let plan_ident = format_ident!("__plan_{}", i);
         out.push(FieldInfo {
             field_ident: None,
-            plan_ident,
             ty: field.ty.clone(),
             lookup: FieldLookup::Position(i),
         });

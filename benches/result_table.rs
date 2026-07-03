@@ -283,6 +283,73 @@ fn bench_decode_derive(c: &mut Criterion) {
     group.finish();
 }
 
+fn synthetic_timestamp_chunk_bytes(row_count: usize, columns: usize) -> Bytes {
+    // Timestamp-heavy rows: every column is a scale-9 TIMESTAMP_NTZ epoch fragment.
+    let mut out = Vec::with_capacity(row_count * columns * 24);
+    for i in 0..row_count {
+        if i > 0 {
+            out.push(b',');
+        }
+        out.push(b'[');
+        for c in 0..columns {
+            if c > 0 {
+                out.push(b',');
+            }
+            out.push(b'"');
+            out.extend_from_slice(
+                format!("{}.123456789", 1_700_000_000 + i as i64 + c as i64).as_bytes(),
+            );
+            out.push(b'"');
+        }
+        out.push(b']');
+    }
+    Bytes::from(out)
+}
+
+fn build_timestamp_schema(columns: usize) -> Arc<Schema> {
+    make_schema(
+        (0..columns)
+            .map(|c| {
+                (
+                    format!("TS{c}"),
+                    column_type("timestamp_ntz", None, None, Some(9)),
+                    false,
+                )
+            })
+            .collect(),
+    )
+}
+
+fn bench_decode_timestamp_heavy(c: &mut Criterion) {
+    let mut group = c.benchmark_group("table_rows_timestamp_decode");
+    const COLUMNS: usize = 4;
+    let schema = build_timestamp_schema(COLUMNS);
+    for &rows in &[1_000usize, 10_000] {
+        let bytes = synthetic_timestamp_chunk_bytes(rows, COLUMNS);
+        let table = parse_remote_chunk_result_table(Arc::clone(&schema), Arc::from("bench"), bytes)
+            .unwrap();
+        group.throughput(Throughput::Elements(rows as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(rows), &rows, |b, _| {
+            b.iter(|| {
+                let mut sum: i64 = 0;
+                for row in table
+                    .rows::<(NaiveDateTime, NaiveDateTime, NaiveDateTime, NaiveDateTime)>()
+                    .unwrap()
+                {
+                    let (a, b2, c2, d) = row.unwrap();
+                    sum = sum
+                        .wrapping_add(a.and_utc().timestamp())
+                        .wrapping_add(b2.and_utc().timestamp())
+                        .wrapping_add(c2.and_utc().timestamp())
+                        .wrapping_add(d.and_utc().timestamp());
+                }
+                black_box(sum);
+            })
+        });
+    }
+    group.finish();
+}
+
 fn bench_decode_dynamic(c: &mut Criterion) {
     let mut group = c.benchmark_group("dynamic_rows_decode");
     let schema = build_schema();
@@ -350,6 +417,7 @@ criterion_group!(
     bench_gzip_plus_chunk_parse,
     bench_decode_tuple,
     bench_decode_derive,
+    bench_decode_timestamp_heavy,
     bench_decode_dynamic,
     bench_decode_compare,
     bench_make_result_table_from_rows,

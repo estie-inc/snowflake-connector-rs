@@ -1,9 +1,10 @@
 use std::{
+    borrow::Cow,
     error::Error as StdError,
     fmt::{self, Display, Formatter},
 };
 
-use crate::result_table::ColumnIndex;
+use crate::result_table::{ColumnIndex, ColumnType};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -13,6 +14,7 @@ pub enum SchemaError {
     InvalidColumnIndex(InvalidColumnIndexError),
     DuplicateColumnName(DuplicateColumnNameError),
     ColumnCountMismatch(ColumnCountMismatchError),
+    IncompatibleColumnType(IncompatibleColumnTypeError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +165,74 @@ impl Display for ColumnCountMismatchError {
 
 impl StdError for ColumnCountMismatchError {}
 
+/// A column's Snowflake type cannot be decoded into the requested Rust type.
+///
+/// Raised while building a row decode plan, before any row is read, so a type mismatch fails the whole
+/// [`rows`](crate::ResultTable::rows) call rather than surfacing per cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncompatibleColumnTypeError {
+    column_index: ColumnIndex,
+    column_name: Box<str>,
+    target_type_name: Cow<'static, str>,
+    actual_column_type: ColumnType,
+    detail: Option<Box<str>>,
+}
+
+impl IncompatibleColumnTypeError {
+    pub(crate) fn new(
+        column_index: ColumnIndex,
+        column_name: impl Into<Box<str>>,
+        target_type_name: impl Into<Cow<'static, str>>,
+        actual_column_type: ColumnType,
+        detail: Option<Box<str>>,
+    ) -> Self {
+        Self {
+            column_index,
+            column_name: column_name.into(),
+            target_type_name: target_type_name.into(),
+            actual_column_type,
+            detail,
+        }
+    }
+
+    pub fn column_index(&self) -> ColumnIndex {
+        self.column_index
+    }
+
+    pub fn column_name(&self) -> &str {
+        &self.column_name
+    }
+
+    pub fn target_type_name(&self) -> &str {
+        &self.target_type_name
+    }
+
+    pub fn actual_column_type(&self) -> &ColumnType {
+        &self.actual_column_type
+    }
+
+    /// Extra context beyond the type tags, such as an out-of-range scale.
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
+    }
+}
+
+impl Display for IncompatibleColumnTypeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "column {:?} ({}) of type {:?} cannot decode into {}",
+            self.column_index, self.column_name, self.actual_column_type, self.target_type_name
+        )?;
+        if let Some(detail) = &self.detail {
+            write!(f, " ({detail})")?;
+        }
+        Ok(())
+    }
+}
+
+impl StdError for IncompatibleColumnTypeError {}
+
 impl Display for SchemaError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -171,6 +241,7 @@ impl Display for SchemaError {
             Self::InvalidColumnIndex(error) => error.fmt(f),
             Self::DuplicateColumnName(error) => error.fmt(f),
             Self::ColumnCountMismatch(error) => error.fmt(f),
+            Self::IncompatibleColumnType(error) => error.fmt(f),
         }
     }
 }
@@ -235,6 +306,41 @@ mod tests {
         assert_eq!(
             SchemaError::ColumnCountMismatch(ColumnCountMismatchError::new(4, 2)).to_string(),
             "column count mismatch (expected 4, actual 2)"
+        );
+    }
+
+    #[test]
+    fn incompatible_column_type_exposes_fields_and_appends_detail() {
+        let without_detail = IncompatibleColumnTypeError::new(
+            ColumnIndex::new(2),
+            "TS",
+            "chrono::NaiveDateTime",
+            ColumnType::Boolean,
+            None,
+        );
+        assert_eq!(without_detail.column_index(), ColumnIndex::new(2));
+        assert_eq!(without_detail.column_name(), "TS");
+        assert_eq!(without_detail.target_type_name(), "chrono::NaiveDateTime");
+        assert_eq!(without_detail.actual_column_type(), &ColumnType::Boolean);
+        assert_eq!(without_detail.detail(), None);
+        assert_eq!(
+            without_detail.to_string(),
+            "column ColumnIndex(2) (TS) of type Boolean cannot decode into chrono::NaiveDateTime"
+        );
+
+        let with_detail = IncompatibleColumnTypeError::new(
+            ColumnIndex::new(0),
+            "T",
+            "chrono::NaiveTime",
+            ColumnType::Time { scale: Some(12) },
+            Some(Box::from("invalid time scale: 12")),
+        );
+        assert_eq!(with_detail.detail(), Some("invalid time scale: 12"));
+        assert!(
+            with_detail
+                .to_string()
+                .ends_with("(invalid time scale: 12)"),
+            "actual: {with_detail}"
         );
     }
 }
