@@ -8,10 +8,33 @@ use crate::{
     runtime::BlockingParseLimiter,
 };
 
-use super::{
-    partition_source::{PartitionSource, remote_fetch_context},
-    snapshot::ResultSnapshot,
-};
+use super::{model::ResultSnapshot, remote::PartitionSource};
+
+/// Options for controlling how result-set collection fetches remaining partitions.
+#[derive(Clone, Debug)]
+pub struct CollectOptions {
+    pub(crate) prefetch_concurrency: Option<NonZeroUsize>,
+}
+
+impl CollectOptions {
+    pub fn new() -> Self {
+        Self {
+            prefetch_concurrency: None,
+        }
+    }
+
+    /// Overrides the connection's default prefetch concurrency for this collect call.
+    pub fn with_prefetch_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
+        self.prefetch_concurrency = Some(concurrency);
+        self
+    }
+}
+
+impl Default for CollectOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct CollectPolicy {
@@ -63,14 +86,13 @@ impl CollectWindow {
         while self.tasks.len() < self.max_in_flight && self.next_spawn_ordinal < self.total {
             let ordinal = self.next_spawn_ordinal;
             let source = Arc::clone(source);
-            let schema = Arc::clone(&snapshot.schema);
-            let ctx = remote_fetch_context(
-                snapshot.as_ref(),
-                ordinal,
-                Some(blocking_parse_limiter.clone()),
-            );
+            let snapshot = Arc::clone(snapshot);
+            let blocking_parse_limiter = blocking_parse_limiter.clone();
             self.tasks.spawn(async move {
-                let result = source.fetch_table(ctx, schema).await;
+                let schema = Arc::clone(&snapshot.schema);
+                let result = source
+                    .fetch_table(&snapshot, ordinal, schema, Some(blocking_parse_limiter))
+                    .await;
                 (ordinal, result)
             });
             self.next_spawn_ordinal += 1;

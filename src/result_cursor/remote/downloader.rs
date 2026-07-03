@@ -9,13 +9,24 @@ use crate::{
     error::{NetworkError, QueryScopedError, QueryScopedResult, TimeoutError},
     result_table::{ResultTable, Schema},
     rowset::{ParseWorkload, parser::parse_remote_chunk_result_table_async},
+    runtime::BlockingParseLimiter,
 };
-
-use super::partition_source::FetchContext;
 
 const MAX_RETRIES: usize = 7;
 const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(16);
+
+/// Everything the downloader needs to fetch and parse a single remote partition.
+#[derive(Clone)]
+pub(super) struct DownloadRequest {
+    pub(super) url: String,
+    pub(super) headers: Arc<HeaderMap>,
+    pub(super) query_id: Arc<str>,
+    pub(super) row_count: i64,
+    pub(super) compressed_size: i64,
+    pub(super) uncompressed_size: i64,
+    pub(super) blocking_parse_limiter: Option<BlockingParseLimiter>,
+}
 
 /// Internal download error used for retry classification.
 enum DownloadFailure {
@@ -33,26 +44,24 @@ impl DownloadFailure {
 
 /// Downloads remote partitions from S3/blob storage with retry and gzip support.
 #[derive(Clone)]
-pub(crate) struct RemotePartitionDownloader {
+pub(super) struct RemotePartitionDownloader {
     client: reqwest::Client,
 }
 
 impl RemotePartitionDownloader {
-    pub(crate) fn new(client: reqwest::Client) -> Self {
+    pub(super) fn new(client: reqwest::Client) -> Self {
         Self { client }
     }
 
-    pub(crate) async fn download_table(
+    pub(super) async fn download_table(
         &self,
-        url: &str,
-        headers: &HeaderMap,
+        request: DownloadRequest,
         schema: Arc<Schema>,
-        ctx: FetchContext,
     ) -> QueryScopedResult<ResultTable> {
         let mut retries = 0;
         loop {
             match self
-                .download_once(url, headers.clone(), Arc::clone(&schema), ctx.clone())
+                .download_once(request.clone(), Arc::clone(&schema))
                 .await
             {
                 Ok(t) => return Ok(t),
@@ -67,22 +76,26 @@ impl RemotePartitionDownloader {
 
     async fn download_once(
         &self,
-        url: &str,
-        headers: HeaderMap,
+        request: DownloadRequest,
         schema: Arc<Schema>,
-        ctx: FetchContext,
     ) -> std::result::Result<ResultTable, DownloadFailure> {
-        let response = match self.client.get(url).headers(headers).send().await {
+        let response = match self
+            .client
+            .get(&request.url)
+            .headers((*request.headers).clone())
+            .send()
+            .await
+        {
             Ok(response) => response,
             Err(error) => {
                 if error.is_timeout() {
                     return Err(DownloadFailure::Retryable(QueryScopedError::new(
-                        ctx.query_id,
+                        request.query_id,
                         TimeoutError::request(error),
                     )));
                 }
                 return Err(DownloadFailure::Retryable(QueryScopedError::new(
-                    ctx.query_id,
+                    request.query_id,
                     NetworkError::Http(error),
                 )));
             }
@@ -93,7 +106,7 @@ impl RemotePartitionDownloader {
             return Err(classify_failed_status(
                 status,
                 response.bytes().await,
-                ctx.query_id,
+                request.query_id,
             ));
         }
 
@@ -102,12 +115,12 @@ impl RemotePartitionDownloader {
             Err(error) => {
                 if error.is_timeout() {
                     return Err(DownloadFailure::Retryable(QueryScopedError::new(
-                        ctx.query_id,
+                        request.query_id,
                         TimeoutError::request(error),
                     )));
                 }
                 return Err(DownloadFailure::Retryable(QueryScopedError::new(
-                    ctx.query_id,
+                    request.query_id,
                     NetworkError::Http(error),
                 )));
             }
@@ -116,19 +129,19 @@ impl RemotePartitionDownloader {
         let gzip_encoded = body.len() >= 2 && body[0] == 0x1f && body[1] == 0x8b;
         let workload = ParseWorkload::remote_chunk(
             body.len(),
-            ctx.row_count,
+            request.row_count,
             schema.len(),
             gzip_encoded,
-            ctx.compressed_size,
-            ctx.uncompressed_size,
+            request.compressed_size,
+            request.uncompressed_size,
         );
 
         parse_remote_chunk_result_table_async(
             schema,
-            Arc::clone(&ctx.query_id),
+            Arc::clone(&request.query_id),
             body,
             workload,
-            ctx.blocking_parse_limiter,
+            request.blocking_parse_limiter,
         )
         .await
         .map_err(DownloadFailure::Fatal)

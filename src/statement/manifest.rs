@@ -1,13 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bytes::Bytes;
-
 use crate::{
     error::{ProtocolError, QueryScopedError, QueryScopedResult},
     result_cursor::{
-        download_lease::{DownloadLocator, ResolvedLease},
-        partition::PartitionSpec,
-        snapshot::{ResultIdentity, ResultSnapshot},
+        DownloadLocator, InlineRowset, PartitionSpec, ResolvedLease, ResultIdentity, ResultSnapshot,
     },
     result_table::{Column, ColumnType, Schema},
     rowset::parser::inline_rowset_has_rows_inner,
@@ -19,11 +15,6 @@ pub(crate) struct ResultManifest {
     pub(crate) snapshot: Arc<ResultSnapshot>,
     pub(crate) lease: ResolvedLease,
     pub(crate) inline_rowset: Option<InlineRowset>,
-}
-
-pub(crate) struct InlineRowset {
-    pub(crate) bytes: Bytes,
-    pub(crate) row_count_hint: Option<u64>,
 }
 
 impl TryFrom<RawQueryResponse> for ResultManifest {

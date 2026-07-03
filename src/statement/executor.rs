@@ -2,12 +2,7 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use crate::{
     error::{ProtocolError, QueryScopedError, QueryScopedResult, ServerError, SessionExpiredError},
-    result_cursor::{
-        CollectPolicy, InlineRowset, ResultCursor,
-        partition::PartitionCursor,
-        partition_source::{PartitionSource, StaticPartitionSource},
-        remote_partition_downloader::RemotePartitionDownloader,
-    },
+    result_cursor::{CollectPolicy, RemotePartitionSource, ResultCursor},
     runtime::QueryRuntime,
     statement::StatementParts,
     {Error, Result, Session},
@@ -154,21 +149,13 @@ impl StatementExecutor {
 
     fn build_result_set(self, data: RawQueryResponse) -> QueryScopedResult<ResultCursor> {
         let manifest = ResultManifest::try_from(data)?;
-        let cursor = PartitionCursor::new(manifest.snapshot.partitions.len());
 
-        let inline_rowset = manifest
-            .inline_rowset
-            .map(|rowset| InlineRowset::new(rowset.bytes, rowset.row_count_hint));
-
-        let downloader = RemotePartitionDownloader::new(self.api.http_client());
-        let source =
-            PartitionSource::Static(StaticPartitionSource::new(manifest.lease, downloader));
+        let source = RemotePartitionSource::new(manifest.lease, self.api.http_client());
         let default_collect_policy = CollectPolicy::new(self.default_collect_concurrency);
 
         Ok(ResultCursor::new(
             manifest.snapshot,
-            cursor,
-            inline_rowset,
+            manifest.inline_rowset,
             source,
             self.runtime,
             default_collect_policy,
