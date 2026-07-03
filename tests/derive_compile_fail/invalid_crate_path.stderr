@@ -1,0 +1,5 @@
+error: unexpected token
+ --> tests/derive_compile_fail/invalid_crate_path.rs:4:13
+  |
+4 | #[snowflake(crate = "not a valid path")]
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^

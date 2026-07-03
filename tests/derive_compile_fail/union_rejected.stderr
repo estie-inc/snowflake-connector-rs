@@ -1,0 +1,5 @@
+error: FromRow does not support unions
+ --> tests/derive_compile_fail/union_rejected.rs:4:1
+  |
+4 | union Bad {
+  | ^^^^^

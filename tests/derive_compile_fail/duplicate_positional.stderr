@@ -1,0 +1,5 @@
+error: duplicate `positional`
+ --> tests/derive_compile_fail/duplicate_positional.rs:4:25
+  |
+4 | #[snowflake(positional, positional)]
+  |                         ^^^^^^^^^^
