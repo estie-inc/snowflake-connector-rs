@@ -139,14 +139,6 @@ mod tests {
 
     use crate::{ClientShared, PasswordConfig};
 
-    #[cfg(feature = "key-pair-auth")]
-    use crate::KeyPairConfig;
-
-    #[cfg(feature = "key-pair-auth")]
-    const ENCRYPTED_TEST_PEM: &str = include_str!("./test_snowflake_key.p8");
-    #[cfg(feature = "key-pair-auth")]
-    const UNENCRYPTED_TEST_PEM: &str = include_str!("./test_snowflake_key_unencrypted.p8");
-
     fn dummy_client() -> AuthApiClient {
         AuthApiClient::new(ClientShared::for_test(
             Url::parse("https://example.com/").unwrap(),
@@ -244,63 +236,75 @@ mod tests {
     }
 
     #[cfg(feature = "key-pair-auth")]
-    async fn assert_key_pair_auth_prepares_jwt(auth: AuthConfig) {
-        let credential = auth
-            .prepare(
-                &dummy_client(),
-                LoginContext {
-                    username: "user",
-                    account: "account",
-                },
-            )
-            .await
-            .unwrap();
+    mod key_pair {
+        use crate::KeyPairConfig;
 
-        match credential {
-            PreparedLoginCredential::SnowflakeJwt(token) => {
-                assert!(!token.is_empty());
-                assert_eq!(token.split('.').count(), 3);
-            }
-            other => panic!("expected SnowflakeJwt credential, got {other:?}"),
-        }
-    }
+        use super::*;
 
-    #[cfg(feature = "key-pair-auth")]
-    #[tokio::test]
-    async fn encrypted_key_pair_auth_is_prepared_as_jwt_credential() {
-        let auth = AuthConfig::key_pair(KeyPairConfig::from_encrypted_pem(
-            ENCRYPTED_TEST_PEM,
-            b"12345".to_vec(),
+        const ENCRYPTED_TEST_PEM: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/test_snowflake_key.p8"
+        ));
+        const UNENCRYPTED_TEST_PEM: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/test_snowflake_key_unencrypted.p8"
         ));
 
-        assert_key_pair_auth_prepares_jwt(auth).await;
-    }
+        async fn assert_key_pair_auth_prepares_jwt(auth: AuthConfig) {
+            let credential = auth
+                .prepare(
+                    &dummy_client(),
+                    LoginContext {
+                        username: "user",
+                        account: "account",
+                    },
+                )
+                .await
+                .unwrap();
 
-    #[cfg(feature = "key-pair-auth")]
-    #[tokio::test]
-    async fn unencrypted_key_pair_auth_is_prepared_as_jwt_credential() {
-        let auth = AuthConfig::key_pair(KeyPairConfig::from_pem(UNENCRYPTED_TEST_PEM));
+            match credential {
+                PreparedLoginCredential::SnowflakeJwt(token) => {
+                    assert!(!token.is_empty());
+                    assert_eq!(token.split('.').count(), 3);
+                }
+                other => panic!("expected SnowflakeJwt credential, got {other:?}"),
+            }
+        }
 
-        assert_key_pair_auth_prepares_jwt(auth).await;
-    }
+        #[tokio::test]
+        async fn encrypted_key_pair_auth_is_prepared_as_jwt_credential() {
+            let auth = AuthConfig::key_pair(KeyPairConfig::from_encrypted_pem(
+                ENCRYPTED_TEST_PEM,
+                b"12345".to_vec(),
+            ));
 
-    #[cfg(feature = "key-pair-auth")]
-    #[test]
-    fn key_pair_jwt_generation_is_deterministic_for_tests() {
-        let credential = prepare_jwt_credential(
-            ENCRYPTED_TEST_PEM,
-            Some("12345".as_bytes()),
-            "USER_NAME",
-            "myaccount.ap-northeast-1.aws",
-            1700746374,
-        )
-        .unwrap();
+            assert_key_pair_auth_prepares_jwt(auth).await;
+        }
 
-        assert_eq!(
-            credential,
-            PreparedLoginCredential::SnowflakeJwt(
-                r#"eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3MDA3NDY5NzQsImlhdCI6MTcwMDc0NjM3NCwiaXNzIjoiTVlBQ0NPVU5ULlVTRVJfTkFNRS5TSEEyNTY6S1NFV3pOaW9sbkpGcTAwNDlNV2diU0dMbFhHdjZnVHNpaGlVUmxPZTE1dz0iLCJzdWIiOiJNWUFDQ09VTlQuVVNFUl9OQU1FIn0.CymITivfHERyl_JiM49BSG_sgD0jAD7lTa1qeTMpKFpkGS7TMfOZBYuNj4FsIGxBQtob60pUiyunjKaQbtPjHLlMDQP62rW03qC68m-d4RuYZqzi7P16Go_FVYGIxaoHUsM25IWxuKBLOmsWwG7tVhT6ZHFKvMvqxOZEVIBbB7pFEIMjsAOBCjSDARxu7fhHmR6Oy64XPMr2Xw_NDm-yVPcEv3NdonyO1zMS6QiRKX4Yqzku5fXeOJWvPaUtkYdwm15jzVvV3zH5OkSw252ZiVaZBSkWmwpn7YQk8StjRBamncLiOAU7EFmSgAt6Lzi-kLv0fg4ZfMTcxfhxwBNVfN0vK6UTPcnxbjZK0n6i5JK2m6XPdiByHmhSgwCvDJ0ZLn8uGze5nU1Zdlfcg8fci5tsh-Q6BMuqvx6M21dQ_E3GF6GDcuX-_d8Ap7CUtdMmWLUYNdgnDDV3reKqdeopPuuBO5zXXEYtek1Q6iqb57bQMFcK6tg3HMnHqUxruzuyKZv0S30teC1STBKS7IrGB_etFtEQ2eF7Qea3yIoxxXAkCxUXcIWkDWyt5RzUyCpQd-MYYTiD2o_bf_XS588bGZ1zzQ9lB-9aRVWYW3gUAOVykv-IW8FnndNePGVkPiX8uhUMW1NC6VHQvEcgWY-EfxZ4eoUZxd5ldk5kxPzDEeA"#.to_string()
+        #[tokio::test]
+        async fn unencrypted_key_pair_auth_is_prepared_as_jwt_credential() {
+            let auth = AuthConfig::key_pair(KeyPairConfig::from_pem(UNENCRYPTED_TEST_PEM));
+
+            assert_key_pair_auth_prepares_jwt(auth).await;
+        }
+
+        #[test]
+        fn key_pair_jwt_generation_is_deterministic_for_tests() {
+            let credential = prepare_jwt_credential(
+                ENCRYPTED_TEST_PEM,
+                Some("12345".as_bytes()),
+                "USER_NAME",
+                "myaccount.ap-northeast-1.aws",
+                1700746374,
             )
-        );
+            .unwrap();
+
+            assert_eq!(
+                credential,
+                PreparedLoginCredential::SnowflakeJwt(
+                    r#"eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3MDA3NDY5NzQsImlhdCI6MTcwMDc0NjM3NCwiaXNzIjoiTVlBQ0NPVU5ULlVTRVJfTkFNRS5TSEEyNTY6S1NFV3pOaW9sbkpGcTAwNDlNV2diU0dMbFhHdjZnVHNpaGlVUmxPZTE1dz0iLCJzdWIiOiJNWUFDQ09VTlQuVVNFUl9OQU1FIn0.CymITivfHERyl_JiM49BSG_sgD0jAD7lTa1qeTMpKFpkGS7TMfOZBYuNj4FsIGxBQtob60pUiyunjKaQbtPjHLlMDQP62rW03qC68m-d4RuYZqzi7P16Go_FVYGIxaoHUsM25IWxuKBLOmsWwG7tVhT6ZHFKvMvqxOZEVIBbB7pFEIMjsAOBCjSDARxu7fhHmR6Oy64XPMr2Xw_NDm-yVPcEv3NdonyO1zMS6QiRKX4Yqzku5fXeOJWvPaUtkYdwm15jzVvV3zH5OkSw252ZiVaZBSkWmwpn7YQk8StjRBamncLiOAU7EFmSgAt6Lzi-kLv0fg4ZfMTcxfhxwBNVfN0vK6UTPcnxbjZK0n6i5JK2m6XPdiByHmhSgwCvDJ0ZLn8uGze5nU1Zdlfcg8fci5tsh-Q6BMuqvx6M21dQ_E3GF6GDcuX-_d8Ap7CUtdMmWLUYNdgnDDV3reKqdeopPuuBO5zXXEYtek1Q6iqb57bQMFcK6tg3HMnHqUxruzuyKZv0S30teC1STBKS7IrGB_etFtEQ2eF7Qea3yIoxxXAkCxUXcIWkDWyt5RzUyCpQd-MYYTiD2o_bf_XS588bGZ1zzQ9lB-9aRVWYW3gUAOVykv-IW8FnndNePGVkPiX8uhUMW1NC6VHQvEcgWY-EfxZ4eoUZxd5ldk5kxPzDEeA"#.to_string()
+                )
+            );
+        }
     }
 }
