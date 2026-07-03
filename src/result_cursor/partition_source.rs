@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
 use crate::{
-    chunk::ChunkDownloader,
     error::QueryScopedResult,
     result_table::{ResultTable, Schema},
     runtime::BlockingParseLimiter,
 };
 
-use super::{download_lease::ResolvedLease, partition::PartitionSpec, snapshot::ResultSnapshot};
+use super::{
+    download_lease::ResolvedLease, partition::PartitionSpec,
+    remote_partition_downloader::RemotePartitionDownloader, snapshot::ResultSnapshot,
+};
 
 #[derive(Clone)]
 pub(crate) struct FetchContext {
@@ -41,11 +43,11 @@ impl PartitionSource {
 
 pub(crate) struct StaticPartitionSource {
     lease: ResolvedLease,
-    downloader: ChunkDownloader,
+    downloader: RemotePartitionDownloader,
 }
 
 impl StaticPartitionSource {
-    pub(crate) fn new(lease: ResolvedLease, downloader: ChunkDownloader) -> Self {
+    pub(crate) fn new(lease: ResolvedLease, downloader: RemotePartitionDownloader) -> Self {
         Self { lease, downloader }
     }
 
