@@ -5,7 +5,7 @@ use crate::{
     result_table::{FromRow, Schema, TypedResultTable},
 };
 
-use super::cursor::{CollectOptions, ResultCursor};
+use super::{collect::CollectOptions, cursor::ResultCursor};
 
 /// Typed wrapper over a [`ResultCursor`] that owns a precomputed decode plan.
 pub struct TypedResultCursor<T: FromRow> {
@@ -59,8 +59,7 @@ impl<T: FromRow> TypedResultCursor<T> {
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
-    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if fetching or
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, or `ErrorKind::Internal` if fetching or
     /// materializing the next partition fails.
     pub async fn next_table(&mut self) -> Result<Option<TypedResultTable<T>>> {
         self.inner
@@ -70,9 +69,6 @@ impl<T: FromRow> TypedResultCursor<T> {
     }
 
     /// Consume this result set and decode all rows into any collection implementing [`FromIterator<T>`](FromIterator).
-    ///
-    /// The target collection is inferred from context (e.g. a `let` binding type or a `.collect::<Vec<_>>()` turbofish),
-    /// matching [`Iterator::collect`]'s usual inference.
     ///
     /// # Errors
     ///
@@ -87,8 +83,6 @@ impl<T: FromRow> TypedResultCursor<T> {
     }
 
     /// Consume this result set and decode all rows into any collection implementing [`FromIterator<T>`](FromIterator).
-    ///
-    /// The target collection is inferred from context, as with [`TypedResultCursor::collect`].
     ///
     /// # Errors
     ///
@@ -109,8 +103,7 @@ impl<T: FromRow> TypedResultCursor<T> {
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
-    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
     /// partition fails to materialize.
     pub async fn collect_table(self) -> Result<TypedResultTable<T>> {
         let Self { inner, plan, .. } = self;
@@ -122,8 +115,7 @@ impl<T: FromRow> TypedResultCursor<T> {
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
-    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
     /// partition fails to materialize.
     pub async fn collect_table_with_options(
         self,

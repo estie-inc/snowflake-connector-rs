@@ -1,6 +1,4 @@
-use std::{fmt, num::NonZeroUsize, sync::Arc};
-
-use bytes::Bytes;
+use std::{fmt, sync::Arc};
 
 use crate::{
     Result,
@@ -11,37 +9,10 @@ use crate::{
 };
 
 use super::{
-    collect::{CollectPolicy, CollectWindow},
-    partition::{PartitionCursor, PartitionSpec},
-    partition_source::{PartitionSource, remote_fetch_context},
-    snapshot::ResultSnapshot,
+    collect::{CollectOptions, CollectPolicy, CollectWindow},
+    model::{InlineRowset, PartitionSpec, ResultSnapshot},
+    remote::{PartitionSource, RemotePartitionSource},
 };
-
-/// Options for controlling how result-set collection fetches remaining partitions.
-#[derive(Clone, Debug)]
-pub struct CollectOptions {
-    prefetch_concurrency: Option<NonZeroUsize>,
-}
-
-impl CollectOptions {
-    pub fn new() -> Self {
-        Self {
-            prefetch_concurrency: None,
-        }
-    }
-
-    /// Overrides the connection's default prefetch concurrency for this collect call.
-    pub fn with_prefetch_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
-        self.prefetch_concurrency = Some(concurrency);
-        self
-    }
-}
-
-impl Default for CollectOptions {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// A query result as a cursor over its remaining partitions.
 pub struct ResultCursor {
@@ -62,29 +33,54 @@ impl fmt::Debug for ResultCursor {
     }
 }
 
-pub(crate) struct InlineRowset {
-    bytes: Bytes,
-    row_count_hint: Option<u64>,
+/// Tracks which partition ordinal the cursor will materialize next.
+struct PartitionCursor {
+    next_ordinal: usize,
+    total: usize,
 }
 
-impl InlineRowset {
-    pub(crate) fn new(bytes: Bytes, row_count_hint: Option<u64>) -> Self {
+impl PartitionCursor {
+    fn new(total: usize) -> Self {
         Self {
-            bytes,
-            row_count_hint,
+            next_ordinal: 0,
+            total,
         }
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.next_ordinal >= self.total
+    }
+
+    fn advance(&mut self) {
+        self.next_ordinal += 1;
     }
 }
 
 impl ResultCursor {
     pub(crate) fn new(
         snapshot: Arc<ResultSnapshot>,
-        cursor: PartitionCursor,
+        inline_rowset: Option<InlineRowset>,
+        remote_source: RemotePartitionSource,
+        runtime: QueryRuntime,
+        default_collect_policy: CollectPolicy,
+    ) -> Self {
+        Self::with_source(
+            snapshot,
+            inline_rowset,
+            PartitionSource::Remote(remote_source),
+            runtime,
+            default_collect_policy,
+        )
+    }
+
+    fn with_source(
+        snapshot: Arc<ResultSnapshot>,
         inline_rowset: Option<InlineRowset>,
         source: PartitionSource,
         runtime: QueryRuntime,
         default_collect_policy: CollectPolicy,
     ) -> Self {
+        let cursor = PartitionCursor::new(snapshot.partitions.len());
         Self {
             snapshot,
             cursor,
@@ -120,8 +116,7 @@ impl ResultCursor {
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
-    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if fetching or
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, or `ErrorKind::Internal` if fetching or
     /// materializing the next partition fails.
     pub async fn next_table(&mut self) -> Result<Option<ResultTable>> {
         self.next_table_inner().await.map_err(crate::Error::from)
@@ -159,12 +154,10 @@ impl ResultCursor {
             PartitionSpec::Remote { .. } => {
                 self.source
                     .fetch_table(
-                        remote_fetch_context(
-                            self.snapshot.as_ref(),
-                            ordinal,
-                            Some(self.runtime.blocking_parse_limiter()),
-                        ),
+                        self.snapshot.as_ref(),
+                        ordinal,
                         Arc::clone(&self.snapshot.schema),
+                        Some(self.runtime.blocking_parse_limiter()),
                     )
                     .await?
             }
@@ -178,8 +171,7 @@ impl ResultCursor {
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
-    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
     /// partition fails to materialize.
     pub async fn collect_table(self) -> Result<ResultTable> {
         let policy = self.default_collect_policy;
@@ -192,8 +184,7 @@ impl ResultCursor {
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`,
-    /// `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
+    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
     /// partition fails to materialize.
     pub async fn collect_table_with_options(self, options: CollectOptions) -> Result<ResultTable> {
         let policy = CollectPolicy::new(
@@ -208,9 +199,6 @@ impl ResultCursor {
 
     /// Consume this result set and decode all rows into any collection implementing [`FromIterator<DynamicRow>`](FromIterator).
     ///
-    /// The target collection is inferred from context (e.g. a `let` binding type or a `.collect::<Vec<_>>()` turbofish),
-    /// matching [`Iterator::collect`]'s usual inference.
-    ///
     /// # Errors
     ///
     /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, `ErrorKind::Internal`, or
@@ -221,8 +209,6 @@ impl ResultCursor {
     }
 
     /// Consume this result set and decode all rows into any collection implementing [`FromIterator<DynamicRow>`](FromIterator).
-    ///
-    /// The target collection is inferred from context, as with [`ResultCursor::collect`].
     ///
     /// # Errors
     ///
@@ -317,7 +303,12 @@ impl ResultCursor {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, collections::VecDeque, ptr, sync::atomic::Ordering, time::Duration};
+    use std::{
+        cell::Cell, collections::VecDeque, num::NonZeroUsize, ptr, sync::atomic::Ordering,
+        time::Duration,
+    };
+
+    use bytes::Bytes;
 
     use super::*;
     use crate::{
@@ -326,9 +317,8 @@ mod tests {
         result_cursor::{
             TypedResultCursor,
             collect::CollectPolicy,
-            partition::{PartitionCursor, PartitionSpec},
-            partition_source::tests::{BlockingFetchProbe, FakePartitionSource, FakeResponse},
-            snapshot::{ResultIdentity, ResultSnapshot},
+            model::{ResultIdentity, ResultSnapshot},
+            remote::tests::{BlockingFetchProbe, FakePartitionSource, FakeResponse},
         },
         result_table::{
             CellConversionError, CellDecodeResult, CellRef, Column, ColumnIndex, ColumnType,
@@ -450,10 +440,8 @@ mod tests {
     }
 
     fn build_result_set(snapshot: Arc<ResultSnapshot>, source: PartitionSource) -> ResultCursor {
-        let total = snapshot.partitions.len();
-        ResultCursor::new(
+        ResultCursor::with_source(
             snapshot,
-            PartitionCursor::new(total),
             None,
             source,
             QueryRuntime::new(),
@@ -462,7 +450,10 @@ mod tests {
     }
 
     fn inline_rowset(json: &'static [u8], row_count_hint: Option<u64>) -> InlineRowset {
-        InlineRowset::new(Bytes::from_static(json), row_count_hint)
+        InlineRowset {
+            bytes: Bytes::from_static(json),
+            row_count_hint,
+        }
     }
 
     fn build_typed_result_set<T: FromRow>(
@@ -595,10 +586,8 @@ mod tests {
     async fn next_table_inline_then_remote() {
         let snapshot = snapshot_with_inline(2);
         let source = fake_source(vec![(1, vec![ok_rows(1)]), (2, vec![ok_rows(1)])]);
-        let total = snapshot.partitions.len();
-        let mut rs = ResultCursor::new(
+        let mut rs = ResultCursor::with_source(
             snapshot,
-            PartitionCursor::new(total),
             Some(inline_rowset(br#"[["10"],["11"]]"#, Some(2))),
             source,
             QueryRuntime::new(),
@@ -618,10 +607,8 @@ mod tests {
     async fn collect_table_inline_then_remote() {
         let snapshot = snapshot_with_inline(2);
         let source = fake_source(vec![(1, vec![ok_rows(3)]), (2, vec![ok_rows(2)])]);
-        let total = snapshot.partitions.len();
-        let rs = ResultCursor::new(
+        let rs = ResultCursor::with_source(
             snapshot,
-            PartitionCursor::new(total),
             Some(inline_rowset(br#"[["10"],["11"]]"#, Some(2))),
             source,
             QueryRuntime::new(),
@@ -634,10 +621,8 @@ mod tests {
     #[tokio::test]
     async fn next_table_inline_parse_failure_does_not_advance_cursor() {
         let snapshot = snapshot_with_inline(0);
-        let total = snapshot.partitions.len();
-        let mut rs = ResultCursor::new(
+        let mut rs = ResultCursor::with_source(
             snapshot,
-            PartitionCursor::new(total),
             Some(inline_rowset(br#"[["10"]"#, Some(1))),
             fake_source(vec![]),
             QueryRuntime::new(),
@@ -675,9 +660,8 @@ mod tests {
             })
             .collect();
         let source = PartitionSource::Fake(FakePartitionSource::new(map));
-        let rs = ResultCursor::new(
+        let rs = ResultCursor::with_source(
             snapshot,
-            PartitionCursor::new(4),
             None,
             source,
             QueryRuntime::with_blocking_parse_concurrency(NonZeroUsize::new(2).unwrap()),
@@ -692,7 +676,6 @@ mod tests {
     #[tokio::test]
     async fn collect_table_starts_remote_prefetch_while_inline_parse_waits_for_permit() {
         let snapshot = snapshot_with_inline(1);
-        let total = snapshot.partitions.len();
         let source = FakePartitionSource::new(
             vec![(1, VecDeque::from(vec![FakeResponse::Rows(ok_rows(1))]))]
                 .into_iter()
@@ -701,9 +684,8 @@ mod tests {
         let fetch_count = source.fetch_count();
         let runtime = QueryRuntime::with_blocking_parse_concurrency(NonZeroUsize::new(1).unwrap());
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
-        let rs = ResultCursor::new(
+        let rs = ResultCursor::with_source(
             snapshot,
-            PartitionCursor::new(total),
             Some(inline_rowset(br#"[["10"]]"#, Some(BLOCKING_PARSE_CELLS))),
             PartitionSource::Fake(source),
             runtime,

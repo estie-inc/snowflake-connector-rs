@@ -1,4 +1,8 @@
-use std::sync::Arc;
+mod downloader;
+
+use std::{collections::HashMap, sync::Arc};
+
+use http::HeaderMap;
 
 use crate::{
     error::QueryScopedResult,
@@ -6,23 +10,22 @@ use crate::{
     runtime::BlockingParseLimiter,
 };
 
-use super::{
-    download_lease::ResolvedLease, partition::PartitionSpec,
-    remote_partition_downloader::RemotePartitionDownloader, snapshot::ResultSnapshot,
-};
+use super::model::{PartitionSpec, ResultSnapshot};
 
-#[derive(Clone)]
-pub(crate) struct FetchContext {
-    pub(crate) ordinal: usize,
-    pub(crate) query_id: Arc<str>,
-    pub(crate) row_count: i64,
-    pub(crate) compressed_size: i64,
-    pub(crate) uncompressed_size: i64,
-    pub(crate) blocking_parse_limiter: Option<BlockingParseLimiter>,
+use downloader::{DownloadRequest, RemotePartitionDownloader};
+
+pub(crate) struct DownloadLocator {
+    pub(crate) url: String,
+    pub(crate) headers: Arc<HeaderMap>,
 }
 
+pub(crate) struct ResolvedLease {
+    pub(crate) locators: HashMap<usize, DownloadLocator>,
+}
+
+/// Remote partition materialization facade used by the cursor and collection paths.
 pub(crate) enum PartitionSource {
-    Static(StaticPartitionSource),
+    Remote(RemotePartitionSource),
     #[cfg(test)]
     Fake(tests::FakePartitionSource),
 }
@@ -30,56 +33,69 @@ pub(crate) enum PartitionSource {
 impl PartitionSource {
     pub(crate) async fn fetch_table(
         &self,
-        ctx: FetchContext,
+        snapshot: &ResultSnapshot,
+        ordinal: usize,
         schema: Arc<Schema>,
+        blocking_parse_limiter: Option<BlockingParseLimiter>,
     ) -> QueryScopedResult<ResultTable> {
         match self {
-            Self::Static(s) => s.fetch(ctx, schema).await,
+            Self::Remote(s) => {
+                s.fetch_table(snapshot, ordinal, schema, blocking_parse_limiter)
+                    .await
+            }
             #[cfg(test)]
-            Self::Fake(f) => f.fetch(ctx, schema).await,
+            Self::Fake(f) => {
+                f.fetch(snapshot, ordinal, schema, blocking_parse_limiter)
+                    .await
+            }
         }
     }
 }
 
-pub(crate) struct StaticPartitionSource {
+pub(crate) struct RemotePartitionSource {
     lease: ResolvedLease,
     downloader: RemotePartitionDownloader,
 }
 
-impl StaticPartitionSource {
-    pub(crate) fn new(lease: ResolvedLease, downloader: RemotePartitionDownloader) -> Self {
-        Self { lease, downloader }
+impl RemotePartitionSource {
+    pub(crate) fn new(lease: ResolvedLease, client: reqwest::Client) -> Self {
+        Self {
+            lease,
+            downloader: RemotePartitionDownloader::new(client),
+        }
     }
 
-    async fn fetch(
+    pub(crate) async fn fetch_table(
         &self,
-        ctx: FetchContext,
+        snapshot: &ResultSnapshot,
+        ordinal: usize,
         schema: Arc<Schema>,
+        blocking_parse_limiter: Option<BlockingParseLimiter>,
     ) -> QueryScopedResult<ResultTable> {
         let locator = self
             .lease
             .locators
-            .get(&ctx.ordinal)
+            .get(&ordinal)
             .expect("locator must exist for every Remote partition ordinal");
-
-        self.downloader
-            .download_table(&locator.url, &locator.headers, schema, ctx)
-            .await
+        let request = download_request(snapshot, ordinal, locator, blocking_parse_limiter);
+        self.downloader.download_table(request, schema).await
     }
 }
 
-pub(crate) fn remote_fetch_context(
+fn download_request(
     snapshot: &ResultSnapshot,
     ordinal: usize,
+    locator: &DownloadLocator,
     blocking_parse_limiter: Option<BlockingParseLimiter>,
-) -> FetchContext {
+) -> DownloadRequest {
     match snapshot.partitions[ordinal] {
         PartitionSpec::Remote {
             row_count,
             compressed_size,
             uncompressed_size,
-        } => FetchContext {
-            ordinal,
+        } => DownloadRequest {
+            url: locator.url.clone(),
+            headers: Arc::clone(&locator.headers),
             query_id: Arc::clone(&snapshot.identity.query_id),
             row_count,
             compressed_size,
@@ -87,7 +103,7 @@ pub(crate) fn remote_fetch_context(
             blocking_parse_limiter,
         },
         PartitionSpec::Inline => {
-            panic!("fetch contexts may only be constructed for remote partitions")
+            panic!("download requests may only be constructed for remote partitions")
         }
     }
 }
@@ -158,11 +174,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// Pre-configured queue of fake partition fetches keyed by ordinal.
     pub(crate) type FakeResponses = HashMap<usize, VecDeque<FakeResponse>>;
 
-    /// Test-only partition source that returns pre-configured raw rows
-    /// (then converted to a ResultTable) keyed by partition ordinal.
     pub(crate) struct FakePartitionSource {
         responses: Mutex<FakeResponses>,
         fetch_count: Arc<AtomicUsize>,
@@ -182,10 +195,13 @@ pub(crate) mod tests {
 
         pub(crate) async fn fetch(
             &self,
-            ctx: FetchContext,
+            snapshot: &ResultSnapshot,
+            ordinal: usize,
             schema: Arc<Schema>,
+            blocking_parse_limiter: Option<BlockingParseLimiter>,
         ) -> QueryScopedResult<ResultTable> {
             self.fetch_count.fetch_add(1, Ordering::SeqCst);
+            let query_id = Arc::clone(&snapshot.identity.query_id);
 
             let response = {
                 let mut map = self
@@ -193,7 +209,7 @@ pub(crate) mod tests {
                     .lock()
                     .expect("FakePartitionSource: poisoned");
                 let queue = map
-                    .get_mut(&ctx.ordinal)
+                    .get_mut(&ordinal)
                     .expect("FakePartitionSource: no responses configured for ordinal");
                 queue
                     .pop_front()
@@ -202,22 +218,22 @@ pub(crate) mod tests {
 
             let raw = match response {
                 FakeResponse::Rows(rows) => {
-                    rows.map_err(|error| QueryScopedError::new(Arc::clone(&ctx.query_id), error))?
+                    rows.map_err(|error| QueryScopedError::new(Arc::clone(&query_id), error))?
                 }
                 FakeResponse::BlockingRows { rows, probe, delay } => {
-                    let _permit = match ctx.blocking_parse_limiter {
+                    let _permit = match blocking_parse_limiter {
                         Some(limiter) => Some(limiter.acquire_owned().await),
                         None => None,
                     };
                     probe.enter();
                     sleep(delay).await;
                     probe.exit();
-                    rows.map_err(|error| QueryScopedError::new(Arc::clone(&ctx.query_id), error))?
+                    rows.map_err(|error| QueryScopedError::new(Arc::clone(&query_id), error))?
                 }
             };
 
-            inline_rows_to_result_table_inner(schema, Arc::clone(&ctx.query_id), raw)
-                .map_err(|error| QueryScopedError::new(Arc::clone(&ctx.query_id), error))
+            inline_rows_to_result_table_inner(schema, Arc::clone(&query_id), raw)
+                .map_err(|error| QueryScopedError::new(Arc::clone(&query_id), error))
         }
     }
 }
