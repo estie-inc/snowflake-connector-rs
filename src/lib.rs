@@ -65,7 +65,6 @@
 
 mod auth;
 pub mod bind;
-mod chunk;
 mod config;
 mod error;
 mod result_cursor;

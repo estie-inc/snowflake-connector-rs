@@ -7,10 +7,11 @@ use tokio::time::sleep;
 
 use crate::{
     error::{NetworkError, QueryScopedError, QueryScopedResult, TimeoutError},
-    result_cursor::partition_source::FetchContext,
     result_table::{ResultTable, Schema},
     rowset::{ParseWorkload, parser::parse_remote_chunk_result_table_async},
 };
+
+use super::partition_source::FetchContext;
 
 const MAX_RETRIES: usize = 7;
 const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -32,11 +33,11 @@ impl DownloadFailure {
 
 /// Downloads remote partitions from S3/blob storage with retry and gzip support.
 #[derive(Clone)]
-pub(crate) struct ChunkDownloader {
+pub(crate) struct RemotePartitionDownloader {
     client: reqwest::Client,
 }
 
-impl ChunkDownloader {
+impl RemotePartitionDownloader {
     pub(crate) fn new(client: reqwest::Client) -> Self {
         Self { client }
     }

@@ -1,12 +1,12 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use crate::{
-    chunk::ChunkDownloader,
     error::{ProtocolError, QueryScopedError, QueryScopedResult, ServerError, SessionExpiredError},
     result_cursor::{
         CollectPolicy, InlineRowset, ResultCursor,
         partition::PartitionCursor,
         partition_source::{PartitionSource, StaticPartitionSource},
+        remote_partition_downloader::RemotePartitionDownloader,
     },
     runtime::QueryRuntime,
     statement::StatementParts,
@@ -160,7 +160,7 @@ impl StatementExecutor {
             .inline_rowset
             .map(|rowset| InlineRowset::new(rowset.bytes, rowset.row_count_hint));
 
-        let downloader = ChunkDownloader::new(self.api.http_client());
+        let downloader = RemotePartitionDownloader::new(self.api.http_client());
         let source =
             PartitionSource::Static(StaticPartitionSource::new(manifest.lease, downloader));
         let default_collect_policy = CollectPolicy::new(self.default_collect_concurrency);
