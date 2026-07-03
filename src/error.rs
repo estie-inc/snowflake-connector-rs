@@ -32,9 +32,47 @@ const JSON_BODY_PREVIEW_MAX_BYTES: usize = 1024;
 ///
 /// Note: Errors may include sensitive information from Snowflake.
 ///
-/// Use [`Error::kind`] for stable categorization, and [`std::error::Error::source`]
-/// to inspect the underlying cause chain when one exists. The concrete source
-/// type returned by downcasting is not covered by semver guarantees.
+/// # Handling errors
+///
+/// Branch on [`Error::kind`] for the stable category, then pull structured details out with the accessors rather than
+/// parsing [`Display`](fmt::Display) output or downcasting [`source`](std::error::Error::source). The accessors are
+/// the semver-stable surface; the concrete source type reached by downcasting is not.
+///
+/// - Snowflake-provided fields: [`snowflake_code`](Error::snowflake_code),
+///   [`snowflake_message`](Error::snowflake_message), [`query_id`](Error::query_id)
+/// - Decode failures: [`as_schema_error`](Error::as_schema_error) for
+///   column-lookup mismatches, [`as_cell_decode_error`](Error::as_cell_decode_error) for cell conversion failures
+///
+/// ```
+/// use snowflake_connector_rs::{Error, ErrorKind};
+///
+/// fn report(err: &Error) {
+///     match err.kind() {
+///         // The token is stale; recover by creating a fresh session and retrying.
+///         ErrorKind::SessionExpired => eprintln!("session expired, reconnecting"),
+///         // Snowflake rejected the statement.
+///         // The code, message, and query id correlate the failure with Snowsight / query history.
+///         ErrorKind::Server => eprintln!(
+///             "server error {:?}: {:?} (query {:?})",
+///             err.snowflake_code(),
+///             err.snowflake_message(),
+///             err.query_id(),
+///         ),
+///         // A result column or cell did not match the requested Rust type.
+///         ErrorKind::Decode => {
+///             if let Some(schema) = err.as_schema_error() {
+///                 eprintln!("schema mismatch: {schema}");
+///             }
+///         }
+///         _ => eprintln!("{err}"),
+///     }
+/// }
+/// ```
+///
+/// The `examples/error_handling.rs` example runs this pattern end to end against a mock Snowflake server,
+/// producing real `Error` values for each category.
+///
+/// [`std::error::Error::source`] remains available for logging the underlying cause chain when one exists.
 pub struct Error {
     repr: Box<Repr>,
 }
@@ -62,8 +100,7 @@ impl fmt::Debug for Error {
 
 /// Semantic categories for [`Error`].
 ///
-/// Variants are partitioned by the action a caller would take, not by the
-/// internal type that produced the error.
+/// Variants are partitioned by the action a caller would take, not by the internal type that produced the error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorKind {
@@ -81,9 +118,8 @@ pub enum ErrorKind {
     Timeout,
     /// The Snowflake protocol payload was malformed or unsupported.
     ///
-    /// Includes the connector's internal `RowsetParseError` failures (chunk parser
-    /// limits, malformed payload tokens). These are surfaced as `Protocol`
-    /// rather than a separate kind because callers cannot recover from them.
+    /// Includes the connector's internal `RowsetParseError` failures (chunk parser limits, malformed payload tokens).
+    /// These are surfaced as `Protocol` rather than a separate kind because callers cannot recover from them.
     Protocol,
     /// Connector-internal runtime work failed, such as a cancelled or panicked task join.
     Internal,
@@ -91,9 +127,8 @@ pub enum ErrorKind {
     BindEncode,
     /// Caller-supplied fallback error created via [`Error::other`].
     Other,
-    /// The result schema or a cell value did not match the caller's
-    /// expectations. Use [`Error::as_schema_error`] for column-lookup level
-    /// mismatches and [`Error::as_cell_decode_error`] for cell decoding failures.
+    /// The result schema or a cell value did not match the caller's expectations. Use [`Error::as_schema_error`] for
+    /// column-lookup level mismatches and [`Error::as_cell_decode_error`] for cell decoding failures.
     Decode,
 }
 
@@ -142,16 +177,14 @@ impl Error {
         }
     }
 
-    /// Returns the related Snowflake query ID when the connector could extract
-    /// one from the failure path.
+    /// Returns the related Snowflake query ID when the connector could extract one from the failure path.
     ///
-    /// `None` does not mean "Snowflake did not assign a query ID". The
-    /// accessor may return `None` when, for example, response parsing failed
-    /// before the query ID could be extracted, or when another access path
+    /// `None` does not mean "Snowflake did not assign a query ID". The accessor may return `None` when, for example,
+    /// response parsing failed before the query ID could be extracted, or when another access path
     /// (a live `ResultCursor` / `ResultTable` receiver) was available to the caller.
     ///
-    /// If an API that reliably exposes the query ID is available (e.g.
-    /// `ResultCursor::query_id`), prefer that. Use this accessor as a best-effort fallback.
+    /// If an API that reliably exposes the query ID is available (e.g. `ResultCursor::query_id`), prefer that.
+    /// Use this accessor as a best-effort fallback.
     pub fn query_id(&self) -> Option<&str> {
         match &*self.repr {
             Repr::Network { query_id, .. }
