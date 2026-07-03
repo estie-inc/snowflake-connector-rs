@@ -67,8 +67,7 @@ pub enum EndpointConfig {
 
 /// HTTP transport-layer options.
 ///
-/// Configures how requests are physically delivered to Snowflake,
-/// independent of which endpoint they target.
+/// Configures how requests are physically delivered to Snowflake, independent of which endpoint they target.
 #[derive(Default, Clone, Debug)]
 pub struct TransportConfig {
     proxy: Option<ProxyConfig>,
@@ -76,8 +75,7 @@ pub struct TransportConfig {
 
 /// Configuration for an HTTP proxy used by [`TransportConfig`].
 ///
-/// Specifies the proxy URL and optional authentication credentials.
-/// Only HTTP and HTTPS proxy schemes are accepted.
+/// Specifies the proxy URL and optional authentication credentials. Only HTTP and HTTPS proxy schemes are accepted.
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
     url: Url,

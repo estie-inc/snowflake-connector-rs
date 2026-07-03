@@ -69,8 +69,7 @@ impl<'a> RowRef<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when
-    /// `index` is out of bounds or the cell cannot be decoded as `T`.
+    /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when `index` is out of bounds or the cell cannot be decoded as `T`.
     pub fn get<T: FromCell>(self, index: ColumnIndex) -> Result<T> {
         let cell = self.cell_at(index)?;
         T::from_cell(cell).map_err(|issue| {
@@ -95,8 +94,7 @@ impl<'a> RowRef<'a> {
 
 /// Typed iterator over result rows.
 ///
-/// Iteration is non-allocating beyond what `T`'s decode requires: the
-/// `Arc`-shared schema and decode plan are reused across rows.
+/// Iteration is non-allocating beyond what `T`'s decode requires: the `Arc`-shared schema and decode plan are reused across rows.
 pub struct Rows<'a, T: FromRow> {
     table: &'a ResultTable,
     plan: Arc<T::Plan>,

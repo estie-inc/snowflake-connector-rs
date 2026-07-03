@@ -1,8 +1,10 @@
 use quote::format_ident;
 use syn::{Data, DeriveInput, Fields, Ident, Path, Result, spanned::Spanned};
 
-use crate::attrs::{ContainerAttrs, parse_container_attrs, parse_field_attrs};
-use crate::naming::{apply_rename_all, logical_ident_name};
+use crate::{
+    attrs::{ContainerAttrs, parse_container_attrs, parse_field_attrs},
+    naming::{apply_rename_all, logical_ident_name},
+};
 
 pub(crate) struct FromRowDerive {
     pub(crate) struct_ident: Ident,

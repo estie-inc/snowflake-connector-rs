@@ -1,4 +1,8 @@
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    error::Error as StdError,
+    fmt::{self, Display},
+};
 
 use crate::result_table::{ColumnIndex, ColumnType};
 
@@ -9,12 +13,11 @@ pub type CellDecodeResult<T> = std::result::Result<T, CellConversionError>;
 
 /// Cell-local reason why decoding a value failed.
 ///
-/// This describes only the local conversion problem. Row, column, and
-/// value context live on [`CellDecodeError`].
+/// This describes only the local conversion problem. Row, column, and value context live on [`CellDecodeError`].
 #[derive(Debug)]
 pub struct CellConversionError {
     reason: Box<str>,
-    source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    source: Option<Box<dyn StdError + Send + Sync + 'static>>,
 }
 
 impl CellConversionError {
@@ -29,19 +32,19 @@ impl CellConversionError {
         &self.reason
     }
 
-    pub fn source(&self) -> Option<&(dyn std::error::Error + Send + Sync + 'static)> {
+    pub fn source(&self) -> Option<&(dyn StdError + Send + Sync + 'static)> {
         self.source.as_deref()
     }
 }
 
-impl std::fmt::Display for CellConversionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for CellConversionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.reason)
     }
 }
 
-impl std::error::Error for CellConversionError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl StdError for CellConversionError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
         self.source.as_deref().map(|source| source as _)
     }
 }
@@ -49,14 +52,11 @@ impl std::error::Error for CellConversionError {
 #[derive(Debug)]
 pub struct CellConversionErrorBuilder {
     reason: Box<str>,
-    source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    source: Option<Box<dyn StdError + Send + Sync + 'static>>,
 }
 
 impl CellConversionErrorBuilder {
-    pub fn source(
-        mut self,
-        source: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
-    ) -> Self {
+    pub fn source(mut self, source: impl Into<Box<dyn StdError + Send + Sync + 'static>>) -> Self {
         self.source = Some(source.into());
         self
     }
@@ -132,8 +132,8 @@ impl CellDecodeError {
     }
 }
 
-impl std::fmt::Display for CellDecodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for CellDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "row_index {} column_index {:?} ({}): target_type {}, found {:?}",
@@ -153,10 +153,10 @@ impl std::fmt::Display for CellDecodeError {
     }
 }
 
-impl std::error::Error for CellDecodeError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl StdError for CellDecodeError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
         self.issue
             .source()
-            .map(|_| &self.issue as &(dyn std::error::Error + 'static))
+            .map(|_| &self.issue as &(dyn StdError + 'static))
     }
 }

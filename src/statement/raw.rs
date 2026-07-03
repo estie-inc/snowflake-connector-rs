@@ -2,12 +2,11 @@ use super::bind::{Bind, BindType, BindValue, IntoBind, into_bind_sealed};
 
 /// Escape hatch for binding values when the typed wrappers don't fit.
 ///
-/// You pick the [`BindType`] and supply the value already encoded
-/// as a string in the form documented by Snowflake's SQL API. Typical use
-/// is binding `DECFLOAT` (no typed wrapper exists for it).
+/// You pick the [`BindType`] and supply the value already encoded as a string in the form documented by Snowflake's SQL API.
+/// Typical use is binding `DECFLOAT` (no typed wrapper exists for it).
 ///
-/// `Option<RawBind>` is a compile error: the wire type is caller-chosen, so
-/// `None` has no default. Use [`RawBind::null`] for a typed NULL.
+/// `Option<RawBind>` is a compile error: the wire type is caller-chosen, so `None` has no default.
+/// Use [`RawBind::null`] for a typed NULL.
 ///
 /// # Examples
 ///
@@ -25,11 +24,9 @@ pub struct RawBind {
 }
 
 impl RawBind {
-    /// Builds a `RawBind` with an explicit wire type and a pre-encoded
-    /// value string.
+    /// Builds a `RawBind` with an explicit wire type and a pre-encoded value string.
     ///
-    /// `value` is sent to Snowflake verbatim; format it according to
-    /// Snowflake's documented encoding for `ty`.
+    /// `value` is sent to Snowflake verbatim; format it according to Snowflake's documented encoding for `ty`.
     ///
     /// # Examples
     ///
@@ -59,9 +56,8 @@ impl RawBind {
     }
 }
 
-// `RawBind` deliberately does not implement `IntoBindNullable`: its wire type is
-// caller-chosen, so there is no single "default type" to use for a `None` value.
-// `Option<RawBind>` is therefore a compile error; callers should use
+// `RawBind` deliberately does not implement `IntoBindNullable`: its wire type is caller-chosen, so there is no single
+// "default type" to use for a `None` value. `Option<RawBind>` is therefore a compile error; callers should use
 // `RawBind::null(ty)` to express a typed NULL with an explicit wire type.
 impl IntoBind for RawBind {}
 

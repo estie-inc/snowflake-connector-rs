@@ -1,3 +1,5 @@
+use std::result::Result as StdResult;
+
 use bytes::Bytes;
 
 use crate::{
@@ -36,7 +38,7 @@ impl StringArenaBuilder {
     }
 
     #[cfg(any(test, feature = "bench-internals"))]
-    pub(crate) fn append(&mut self, s: &str) -> std::result::Result<TextSpan, RowsetParseError> {
+    pub(crate) fn append(&mut self, s: &str) -> StdResult<TextSpan, RowsetParseError> {
         let start = self.bytes.len();
         let len = s.len();
         self.check_capacity(len)?;
@@ -50,8 +52,8 @@ impl StringArenaBuilder {
 
     pub(crate) fn write_with(
         &mut self,
-        f: impl FnOnce(&mut Vec<u8>) -> std::result::Result<(), RowsetParseError>,
-    ) -> std::result::Result<TextSpan, RowsetParseError> {
+        f: impl FnOnce(&mut Vec<u8>) -> StdResult<(), RowsetParseError>,
+    ) -> StdResult<TextSpan, RowsetParseError> {
         let start = self.bytes.len();
         if let Err(err) = f(&mut self.bytes) {
             self.bytes.truncate(start);
@@ -76,7 +78,7 @@ impl StringArenaBuilder {
     }
 
     #[cfg(any(test, feature = "bench-internals"))]
-    fn check_capacity(&self, additional: usize) -> std::result::Result<(), RowsetParseError> {
+    fn check_capacity(&self, additional: usize) -> StdResult<(), RowsetParseError> {
         let new_len = self
             .bytes
             .len()
@@ -162,10 +164,8 @@ impl<'a> CellRef<'a> {
 
     /// Borrows the cell's raw text as Snowflake delivered it.
     ///
-    /// Returns `None` for SQL `NULL`. The format is column-type specific
-    /// (e.g. `"123"` for integers, an epoch fragment for timestamps);
-    /// usually you'll let a [`FromCell`](crate::FromCell) implementation
-    /// parse it rather than reading the raw text directly.
+    /// Returns `None` for SQL `NULL`. The format is column-type specific (e.g. `"123"` for integers, an epoch fragment for timestamps);
+    /// usually you'll let a [`FromCell`](crate::FromCell) implementation parse it rather than reading the raw text directly.
     pub fn raw(self) -> Option<&'a str> {
         self.raw
     }

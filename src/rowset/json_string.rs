@@ -20,8 +20,8 @@ pub(crate) enum JsonStringScanError<E> {
 pub(crate) fn scan_json_string_body<E>(
     bytes: &[u8],
     offset: &mut usize,
-    mut visit: impl FnMut(JsonStringFragment<'_>) -> std::result::Result<(), E>,
-) -> std::result::Result<(), JsonStringScanError<E>> {
+    mut visit: impl FnMut(JsonStringFragment<'_>) -> Result<(), E>,
+) -> Result<(), JsonStringScanError<E>> {
     let mut segment_start = *offset;
     loop {
         let Some(&byte) = bytes.get(*offset) else {
@@ -100,10 +100,7 @@ pub(crate) fn push_utf8(buf: &mut Vec<u8>, codepoint: u32) {
     }
 }
 
-fn read_unicode_escape<E>(
-    bytes: &[u8],
-    offset: &mut usize,
-) -> std::result::Result<u32, JsonStringScanError<E>> {
+fn read_unicode_escape<E>(bytes: &[u8], offset: &mut usize) -> Result<u32, JsonStringScanError<E>> {
     let codepoint = read_hex_quad::<E>(bytes, offset)?;
     if (0xd800..=0xdbff).contains(&codepoint) {
         if bytes.get(*offset).copied() != Some(b'\\')
@@ -126,10 +123,7 @@ fn read_unicode_escape<E>(
     }
 }
 
-fn read_hex_quad<E>(
-    bytes: &[u8],
-    offset: &mut usize,
-) -> std::result::Result<u32, JsonStringScanError<E>> {
+fn read_hex_quad<E>(bytes: &[u8], offset: &mut usize) -> Result<u32, JsonStringScanError<E>> {
     if bytes.len().saturating_sub(*offset) < 4 {
         return Err(JsonStringScanError::InvalidUnicodeEscape { offset: *offset });
     }

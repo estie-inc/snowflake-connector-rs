@@ -208,7 +208,7 @@ fn validate_same_origin_absolute_url(
     Ok(())
 }
 
-fn validate_statement_parts_for_wire(parts: &StatementParts) -> crate::Result<()> {
+fn validate_statement_parts_for_wire(parts: &StatementParts) -> Result<()> {
     if let StatementPartsRepr::Named { bindings, .. } = parts.repr() {
         for name in bindings.keys() {
             if name.is_empty() {

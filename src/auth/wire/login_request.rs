@@ -65,8 +65,7 @@ pub(crate) enum LoginCredentialWire<'a> {
 pub(crate) enum PasscodeWire<'a> {
     /// Sent as a separate `PASSCODE` field.
     Separate(&'a str),
-    /// The passcode is already appended to `PASSWORD`; only the method flag is
-    /// sent.
+    /// The passcode is already appended to `PASSWORD`; only the method flag is sent.
     InPassword,
 }
 

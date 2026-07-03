@@ -1,5 +1,4 @@
-//! Types passed to [`Statement::bind`](crate::Statement::bind) and
-//! [`Statement::bind_named`](crate::Statement::bind_named).
+//! Types passed to [`Statement::bind`](crate::Statement::bind) and [`Statement::bind_named`](crate::Statement::bind_named).
 //!
 //! Most callers reach for one of the typed wrappers.
 //! [`RawBind`] is the escape hatch when none of those fit (e.g. binding a `DECFLOAT`).

@@ -87,9 +87,7 @@ impl ManualRedirectConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Configuration for [`AuthConfig::external_browser`](crate::AuthConfig::external_browser).
 ///
-/// Use [`ExternalBrowserConfig::callback_listener`] or
-/// [`ExternalBrowserConfig::manual_redirect`] to choose the
-/// authentication mode.
+/// Use [`ExternalBrowserConfig::callback_listener`] or [`ExternalBrowserConfig::manual_redirect`] to choose the authentication mode.
 /// For end-to-end setup examples, see [`AuthConfig::external_browser`](crate::AuthConfig::external_browser).
 pub struct ExternalBrowserConfig {
     mode: ExternalBrowserMode,
@@ -121,12 +119,9 @@ impl ExternalBrowserConfig {
     /// This mode starts a local HTTP listener and receives the token automatically
     /// from the redirected callback URL.
     ///
-    /// - `browser_launch_mode`: controls whether the auth URL is opened automatically (`Auto`)
-    ///   or only printed for manual open (`Manual`).
-    /// - `callback_socket_addr`: bind address for the local callback listener
-    ///   (for example `127.0.0.1` or `0.0.0.0`).
-    /// - `callback_socket_port`: bind port for the callback listener.
-    ///   Use `0` to let the OS pick an available ephemeral port.
+    /// - `browser_launch_mode`: controls whether the auth URL is opened automatically (`Auto`) or only printed for manual open (`Manual`).
+    /// - `callback_socket_addr`: bind address for the local callback listener (for example `127.0.0.1` or `0.0.0.0`).
+    /// - `callback_socket_port`: bind port for the callback listener. Use `0` to let the OS pick an available ephemeral port.
     pub fn callback_listener(
         browser_launch_mode: BrowserLaunchMode,
         callback_socket_addr: IpAddr,
@@ -143,17 +138,12 @@ impl ExternalBrowserConfig {
 
     /// Creates a manual-redirect external-browser configuration.
     ///
-    /// This mode does not start a local listener. After login, paste the redirected
-    /// URL shown by the browser into the terminal prompt.
+    /// This mode does not start a local listener. After login, paste the redirected URL shown by the browser into the terminal prompt.
     ///
-    /// - `browser_launch_mode`: controls whether the auth URL is opened automatically (`Auto`)
-    ///   or only printed for manual open (`Manual`).
-    /// - `redirect_port`: port embedded in `BROWSER_MODE_REDIRECT_PORT` for Snowflake.
-    ///   No local server is started in this mode, so this port does not need to be
-    ///   actually listening.
-    ///   It is still required because Snowflake uses this value to construct the
-    ///   browser redirect URL that you later paste into the terminal; the connector
-    ///   then extracts the token from that pasted URL.
+    /// - `browser_launch_mode`: controls whether the auth URL is opened automatically (`Auto`) or only printed for manual open (`Manual`).
+    /// - `redirect_port`: port embedded in `BROWSER_MODE_REDIRECT_PORT` for Snowflake. No local server is started in this mode,
+    ///   so this port does not need to be actually listening. It is still required because Snowflake uses this value to construct
+    ///   the browser redirect URL that you later paste into the terminal; the connector then extracts the token from that pasted URL.
     pub fn manual_redirect(
         browser_launch_mode: BrowserLaunchMode,
         redirect_port: NonZeroU16,

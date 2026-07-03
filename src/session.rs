@@ -43,8 +43,7 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::BindEncode`, `ErrorKind::Network`,
-    /// `ErrorKind::Server`, `ErrorKind::SessionExpired`,
+    /// Returns `ErrorKind::BindEncode`, `ErrorKind::Network`, `ErrorKind::Server`, `ErrorKind::SessionExpired`,
     /// `ErrorKind::Timeout`, or `ErrorKind::Protocol`.
     pub async fn query<S: IntoStatement>(&self, statement: S) -> Result<ResultCursor> {
         let executor = StatementExecutor::new(self);
@@ -55,13 +54,11 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Session::query`], including
-    /// `ErrorKind::BindEncode` when bind values cannot be encoded or validated
-    /// before the request is sent. After the statement succeeds, this also
-    /// propagates any error returned by [`FromRow::build_plan`] for `T`.
+    /// Returns the same errors as [`Session::query`], including `ErrorKind::BindEncode` when bind values cannot be encoded or
+    /// validated before the request is sent. After the statement succeeds, this also propagates any error returned by
+    /// [`FromRow::build_plan`] for `T`.
     ///
-    /// Built-in and derive-based row types typically use
-    /// `ErrorKind::Decode` when the result schema does not match `T`;
+    /// Built-in and derive-based row types typically use `ErrorKind::Decode` when the result schema does not match `T`;
     /// inspect the detail via [`Error::as_schema_error`](crate::Error::as_schema_error).
     pub async fn query_as<T, S>(&self, statement: S) -> Result<TypedResultCursor<T>>
     where

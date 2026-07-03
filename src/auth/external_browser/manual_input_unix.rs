@@ -9,10 +9,9 @@ use crate::{Result, error::AuthError};
 pub(super) fn try_read_redirected_url_line_noncanonical() -> Option<Result<String>> {
     let stdin = io::stdin();
 
-    // We intentionally use nix termios wrappers (instead of raw libc calls) so this crate
-    // can avoid `unsafe` while still controlling TTY mode.
-    // On macOS, canonical mode has a small line-length limit (MAX_CANON), so long redirected
-    // URLs can trigger terminal bell/input rejection. Non-canonical mode avoids that limit.
+    // We intentionally use nix termios wrappers so this crate can avoid `unsafe` while still controlling TTY mode.
+    // On macOS, canonical mode has a small line-length limit (MAX_CANON), so long redirected URLs can trigger terminal
+    // bell/input rejection. Non-canonical mode avoids that limit.
     if !stdin.is_terminal() {
         // Only switch modes for interactive TTY. If stdin is redirected/piped, keep default read_line.
         return None;

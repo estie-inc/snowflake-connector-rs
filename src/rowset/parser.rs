@@ -1,10 +1,8 @@
-//! Snowflake response body / chunk parser.
+//! Snowflake rowset parser.
 //!
-//! Implements a span-based JSON scanner that converts Snowflake rowset and
-//! chunk bytes directly into a [`ResultTable`] without deserializing into
-//! `Vec<Vec<Option<String>>>`. Strings without escapes are kept as byte
-//! spans into the original `Bytes` buffer; strings with escapes are
-//! unescaped once into a per-table arena.
+//! Parses extracted inline `data.rowset` arrays and decoded remote chunk row sequences directly into a [`ResultTable`].
+//! Strings without escapes are kept as byte spans into the retained `Bytes` buffer; strings with escapes are unescaped once
+//! into a per-table arena.
 
 use std::sync::Arc;
 
@@ -29,7 +27,7 @@ enum RowsetShape {
     ChunkFragmentSequence,
 }
 
-type ParseResult<T> = std::result::Result<T, RowsetParseError>;
+type ParseResult<T> = Result<T, RowsetParseError>;
 
 fn parse_table_with_shape(
     schema: Arc<Schema>,
@@ -108,8 +106,7 @@ fn checked_row_count_hint(row_count: Option<u64>) -> ParseResult<Option<usize>> 
 
 /// Determine whether an extracted inline rowset array contains any rows.
 ///
-/// This treats JSON-insignificant whitespace around `[` / `]` as equivalent,
-/// so `[ ]` and `[]` are both empty arrays.
+/// This treats JSON-insignificant whitespace around `[` / `]` as equivalent, so `[ ]` and `[]` are both empty arrays.
 pub(crate) fn inline_rowset_has_rows_inner(body: &[u8]) -> ParseResult<bool> {
     let mut scanner = JsonScanner::new(body);
     scanner.skip_ws();
@@ -240,8 +237,7 @@ impl<'a> JsonScanner<'a> {
         builder.finish_row()
     }
 
-    /// Parse a single JSON value as a cell. Snowflake's driver-API rowset
-    /// emits each cell as either `null` or a JSON string.
+    /// Parse a single JSON value as a cell. Snowflake's driver-API rowset emits each cell as either `null` or a JSON string.
     fn parse_cell(&mut self, builder: &mut ResultTableBuilder) -> ParseResult<()> {
         match self.peek() {
             Some(b'n') => {
@@ -266,8 +262,7 @@ impl<'a> JsonScanner<'a> {
         Ok(())
     }
 
-    /// Parse a JSON string. Records a `RawSpan` if no escapes; otherwise
-    /// unescapes once into the builder's arena.
+    /// Parse a JSON string. Records a `RawSpan` if no escapes; otherwise unescapes once into the builder's arena.
     fn parse_string_into_cell(&mut self, builder: &mut ResultTableBuilder) -> ParseResult<()> {
         debug_assert_eq!(self.peek(), Some(b'"'));
         self.advance(); // consume "
@@ -327,8 +322,7 @@ impl<'a> JsonScanner<'a> {
         }
 
         let bytes = self.bytes;
-        // We can't borrow self.bytes mutably; capture an outer offset and
-        // update it after the closure runs.
+        // We can't borrow self.bytes mutably; capture an outer offset and update it after the closure runs.
         let mut local_offset = self.offset;
         let result = builder.push_decoded_with(|buf: &mut Vec<u8>| {
             buf.extend_from_slice(prefix);
@@ -435,8 +429,7 @@ pub(crate) fn parse_inline_result_table(
         .map_err(crate::Error::from)
 }
 
-/// Parse the inline rowset bytes (already extracted from `data.rowset`)
-/// using the span scanner. Bytes must be a `[..]` array.
+/// Parse the inline rowset bytes (already extracted from `data.rowset`) using the span scanner. Bytes must be a `[..]` array.
 pub(crate) async fn parse_inline_result_table_async(
     schema: Arc<Schema>,
     query_id: Arc<str>,

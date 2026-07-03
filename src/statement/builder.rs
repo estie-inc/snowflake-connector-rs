@@ -17,21 +17,18 @@ pub struct UnboundBinds;
 
 /// Typestate marker for a [`Statement`] using positional (`?`) binds.
 ///
-/// While in this state, only [`Statement::bind`] is callable —
-/// [`Statement::bind_named`] is rejected at compile time.
+/// While in this state, only [`Statement::bind`] is callable — [`Statement::bind_named`] is rejected at compile time.
 #[derive(Debug, Clone)]
 pub struct PositionalBinds(Vec<Bind>);
 
 /// Typestate marker for a [`Statement`] using named (`:name` / `:1`) binds.
 ///
-/// While in this state, only [`Statement::bind_named`] is callable.
-/// Re-binding the same name is last-wins.
+/// While in this state, only [`Statement::bind_named`] is callable. Re-binding the same name is last-wins.
 #[derive(Debug, Clone)]
 pub struct NamedBinds(IndexMap<BindName, Bind>);
 
 /// Builder for a SQL statement and its bind values, accepted by
-/// [`Session::query`](crate::Session::query) /
-/// [`Session::query_as`](crate::Session::query_as).
+/// [`Session::query`](crate::Session::query) / [`Session::query_as`](crate::Session::query_as).
 ///
 /// A `Statement` is in one of three bind modes captured by the typestate
 /// parameter `M`:
@@ -102,9 +99,8 @@ impl Statement<UnboundBinds> {
 
     /// Adds a positional bind, transitioning to [`PositionalBinds`] mode.
     ///
-    /// `T` is any [`IntoBind`] value — primary scalars, the typed wrappers,
-    /// [`RawBind`](crate::bind::RawBind), or `Option<T>` where
-    /// `T:` [`IntoBindNullable`](crate::bind::IntoBindNullable).
+    /// `T` is any [`IntoBind`] value — primary scalars, the typed wrappers, [`RawBind`](crate::bind::RawBind), or
+    /// `Option<T>` where `T:` [`IntoBindNullable`](crate::bind::IntoBindNullable).
     ///
     /// # Examples
     ///
@@ -128,9 +124,8 @@ impl Statement<UnboundBinds> {
 
     /// Adds a named bind, transitioning to [`NamedBinds`] mode.
     ///
-    /// Pass the bare placeholder name (no leading `:`): `"id"` matches
-    /// `:id`, `"1"` matches `:1`. The name is sent verbatim. Empty names
-    /// are rejected when the statement is submitted.
+    /// Pass the bare placeholder name (no leading `:`): `"id"` matches `:id`, `"1"` matches `:1`. The name is sent verbatim.
+    /// Empty names are rejected when the statement is submitted.
     ///
     /// # Examples
     ///
@@ -158,10 +153,8 @@ impl Statement<UnboundBinds> {
 impl Statement<PositionalBinds> {
     /// Builds an empty positional-mode statement.
     ///
-    /// Use this when the bind mode must be fixed before the first bind
-    /// (e.g. in generic helpers that return `Statement<PositionalBinds>`).
-    /// Otherwise [`Statement::new`] followed by [`bind`](Self::bind) is
-    /// equivalent.
+    /// Use this when the bind mode must be fixed before the first bind (e.g. in generic helpers that return
+    /// `Statement<PositionalBinds>`). Otherwise [`Statement::new`] followed by [`bind`](Self::bind) is equivalent.
     ///
     /// # Examples
     ///
@@ -207,10 +200,8 @@ impl Statement<PositionalBinds> {
 impl Statement<NamedBinds> {
     /// Builds an empty named-mode statement.
     ///
-    /// Use this when the bind mode must be fixed before the first bind
-    /// (e.g. in generic helpers that return `Statement<NamedBinds>`).
-    /// Otherwise [`Statement::new`] followed by
-    /// [`bind_named`](Self::bind_named) is equivalent.
+    /// Use this when the bind mode must be fixed before the first bind (e.g. in generic helpers that return
+    /// `Statement<NamedBinds>`). Otherwise [`Statement::new`] followed by [`bind_named`](Self::bind_named) is equivalent.
     ///
     /// # Examples
     ///
@@ -230,8 +221,7 @@ impl Statement<NamedBinds> {
 
     /// Inserts a named bind, last-wins for duplicated names.
     ///
-    /// `T` may be any [`IntoBind`] value. Pass the bare placeholder name
-    /// (no leading `:`).
+    /// `T` may be any [`IntoBind`] value. Pass the bare placeholder name (no leading `:`).
     ///
     /// # Examples
     ///
@@ -281,9 +271,7 @@ impl From<String> for Statement<UnboundBinds> {
     }
 }
 
-/// Marker trait for values accepted by
-/// [`Session::query`](crate::Session::query) /
-/// [`Session::query_as`](crate::Session::query_as).
+/// Marker trait for values accepted by [`Session::query`](crate::Session::query) / [`Session::query_as`](crate::Session::query_as).
 ///
 /// # Example
 ///

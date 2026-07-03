@@ -131,8 +131,7 @@ pub(crate) struct ClientShared {
 
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Prints only non-secret identity fields; credentials, the reqwest
-        // client, and the runtime are omitted.
+        // Prints only non-secret identity fields; credentials, the reqwest client, and the runtime are omitted.
         f.debug_struct("Client")
             .field("base_url", &self.inner.shared.base_url)
             .field("username", &self.inner.login.username())
@@ -169,9 +168,8 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Config`, `ErrorKind::Auth`, `ErrorKind::Network`,
-    /// `ErrorKind::Timeout`, `ErrorKind::Protocol`, or `ErrorKind::Internal`
-    /// depending on how session establishment fails.
+    /// Returns `ErrorKind::Config`, `ErrorKind::Auth`, `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, or
+    /// `ErrorKind::Internal` depending on how session establishment fails.
     pub async fn create_session(&self) -> Result<Session> {
         let session_token = login(&self.inner.login, Arc::clone(&self.inner.shared)).await?;
         Ok(Session {

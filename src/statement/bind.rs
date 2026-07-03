@@ -6,8 +6,7 @@ use std::{borrow::Cow, fmt};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 
-/// Snowflake server-side bind type, used with [`RawBind`](crate::bind::RawBind) to
-/// pick the wire type explicitly.
+/// Snowflake server-side bind type, used with [`RawBind`](crate::bind::RawBind) to pick the wire type explicitly.
 ///
 /// The typed wrappers select the right variant for you; reach for this
 /// enum only when going through [`RawBind`](crate::bind::RawBind).
@@ -43,8 +42,7 @@ pub enum BindType {
     /// `BINARY` — byte buffer.
     Binary,
     /// `DECFLOAT` (decimal floating-point). No typed wrapper is provided;
-    /// bind via [`RawBind`](super::raw::RawBind) with the documented decimal-string
-    /// payload (e.g. `"1.23e-40"`).
+    /// bind via [`RawBind`](super::raw::RawBind) with the documented decimal-string payload (e.g. `"1.23e-40"`).
     DecFloat,
 }
 
@@ -119,10 +117,9 @@ impl Bind {
 
 /// Placeholder name used by [`Statement::bind_named`](crate::Statement::bind_named).
 ///
-/// Pass the bare name (without the leading `:`): use `"id"` for `:id` and
-/// `"1"` for `:1`. The name is sent to Snowflake verbatim — leading colons
-/// and other characters are not stripped or normalized. Empty names are
-/// rejected when the statement is submitted.
+/// Pass the bare name (without the leading `:`): use `"id"` for `:id` and `"1"` for `:1`. The name is sent to Snowflake
+/// verbatim — leading colons and other characters are not stripped or normalized. Empty names are rejected when the statement
+/// is submitted.
 ///
 /// Built from `&'static str` or `String` via [`From`].
 ///
@@ -175,9 +172,8 @@ impl From<String> for BindName {
 
 /// Wrapper that binds a byte buffer as Snowflake `BINARY`.
 ///
-/// A bare `Vec<u8>` could plausibly mean BINARY, TEXT, VARIANT JSON, or
-/// staged-upload bytes; the wrapper pins the BINARY interpretation so the
-/// intent is explicit at the call site.
+/// A bare `Vec<u8>` could plausibly mean BINARY, TEXT, VARIANT JSON, or staged-upload bytes; the wrapper pins the BINARY
+/// interpretation so the intent is explicit at the call site.
 ///
 /// `Option<Binary>::None` produces a typed `BINARY` NULL.
 ///
@@ -204,8 +200,7 @@ impl fmt::Debug for Binary {
 impl Binary {
     /// Wraps any byte buffer as a Snowflake `BINARY` bind value.
     ///
-    /// Accepts anything convertible to `Vec<u8>` (`Vec<u8>`, `&[u8]`,
-    /// `[u8; N]`, …).
+    /// Accepts anything convertible to `Vec<u8>` (`Vec<u8>`, `&[u8]`, `[u8; N]`, …).
     ///
     /// # Examples
     ///
@@ -221,11 +216,10 @@ impl Binary {
 
 /// Wrapper for integers bound as Snowflake `NUMBER(38, 0)`.
 ///
-/// Snowflake's widest exact integer is `NUMBER(38, 0)`, accepting absolute
-/// values up to [`Integer::MAX_ABS_VALUE`] (`10^38 - 1`). `i128` / `u128`
-/// can exceed that range, so they go through [`TryFrom`] and produce
-/// [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) on overflow. `i8`〜`i64` and `u8`〜`u64`
-/// always fit and convert infallibly via [`From`].
+/// Snowflake's widest exact integer is `NUMBER(38, 0)`, accepting absolute values up to [`Integer::MAX_ABS_VALUE`] (`10^38 - 1`).
+/// `i128` / `u128` can exceed that range, so they go through [`TryFrom`] and produce
+/// [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) on overflow.
+/// `i8`〜`i64` and `u8`〜`u64` always fit and convert infallibly via [`From`].
 ///
 /// # Examples
 ///
@@ -244,8 +238,7 @@ impl Binary {
 pub struct Integer(i128);
 
 impl Integer {
-    /// Largest absolute value accepted by Snowflake's `NUMBER(38, 0)`
-    /// (`10^38 - 1`).
+    /// Largest absolute value accepted by Snowflake's `NUMBER(38, 0)` (`10^38 - 1`).
     pub const MAX_ABS_VALUE: i128 = 99_999_999_999_999_999_999_999_999_999_999_999_999_i128;
 }
 
@@ -254,8 +247,7 @@ impl TryFrom<i128> for Integer {
 
     /// # Errors
     ///
-    /// Returns [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) when `|value|` exceeds
-    /// [`Integer::MAX_ABS_VALUE`].
+    /// Returns [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) when `|value|` exceeds [`Integer::MAX_ABS_VALUE`].
     ///
     /// # Examples
     ///
@@ -280,8 +272,7 @@ impl TryFrom<u128> for Integer {
 
     /// # Errors
     ///
-    /// Returns [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) when the input exceeds
-    /// [`Integer::MAX_ABS_VALUE`].
+    /// Returns [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) when the input exceeds [`Integer::MAX_ABS_VALUE`].
     ///
     /// # Examples
     ///
@@ -315,10 +306,9 @@ impl_from_int_for_integer!(i8, i16, i32, i64, u8, u16, u32, u64);
 
 /// Wrapper for `DateTime<FixedOffset>` bound as Snowflake `TIMESTAMP_TZ`.
 ///
-/// Snowflake's `TIMESTAMP_TZ` carries the offset as a whole-minute count
-/// and cannot represent leap seconds. Sub-minute offsets and leap-second
-/// values are rejected at construction so that the wall-clock the caller
-/// wrote is not silently shifted on the wire.
+/// Snowflake's `TIMESTAMP_TZ` carries the offset as a whole-minute count and cannot represent leap seconds. Sub-minute
+/// offsets and leap-second values are rejected at construction so that the wall-clock the caller wrote is not silently
+/// shifted on the wire.
 ///
 /// # Examples
 ///
@@ -352,8 +342,7 @@ impl TryFrom<DateTime<FixedOffset>> for TimestampTz {
     /// # Errors
     ///
     /// Returns [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) when the offset is not
-    /// whole-minute, or when the value is a leap second
-    /// (`nanosecond() >= 1_000_000_000`).
+    /// whole-minute, or when the value is a leap second (`nanosecond() >= 1_000_000_000`).
     fn try_from(value: DateTime<FixedOffset>) -> crate::Result<Self> {
         if value.offset().local_minus_utc() % 60 != 0 {
             return Err(crate::Error::bind_encode(
@@ -371,10 +360,8 @@ impl TryFrom<DateTime<FixedOffset>> for TimestampTz {
 
 /// Wrapper for `NaiveDateTime` bound as Snowflake `TIMESTAMP_NTZ`.
 ///
-/// Snowflake `TIMESTAMP_NTZ` cannot represent leap seconds. `chrono`'s
-/// `NaiveDateTime` can (`nanosecond() >= 1_000_000_000`), so leap-second
-/// values are rejected at construction to avoid an off-by-one-second
-/// silent shift.
+/// Snowflake `TIMESTAMP_NTZ` cannot represent leap seconds. `chrono`'s `NaiveDateTime` can (`nanosecond() >= 1_000_000_000`),
+/// so leap-second values are rejected at construction to avoid an off-by-one-second silent shift.
 ///
 /// # Examples
 ///
@@ -402,8 +389,7 @@ impl TryFrom<NaiveDateTime> for TimestampNtz {
 
     /// # Errors
     ///
-    /// Returns [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) for leap-second values
-    /// (`nanosecond() >= 1_000_000_000`).
+    /// Returns [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) for leap-second values (`nanosecond() >= 1_000_000_000`).
     fn try_from(value: NaiveDateTime) -> crate::Result<Self> {
         if value.nanosecond() >= 1_000_000_000 {
             return Err(crate::Error::bind_encode(
@@ -416,8 +402,7 @@ impl TryFrom<NaiveDateTime> for TimestampNtz {
 
 /// Wrapper for `DateTime<Utc>` bound as Snowflake `TIMESTAMP_LTZ`.
 ///
-/// Same leap-second rule as [`TimestampNtz`]: leap-second values are
-/// rejected at construction.
+/// Same leap-second rule as [`TimestampNtz`]: leap-second values are rejected at construction.
 ///
 /// # Examples
 ///
@@ -447,8 +432,7 @@ impl TryFrom<DateTime<Utc>> for TimestampLtz {
 
     /// # Errors
     ///
-    /// Returns [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) for leap-second values
-    /// (`naive_utc().nanosecond() >= 1_000_000_000`).
+    /// Returns [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) for leap-second values (`naive_utc().nanosecond() >= 1_000_000_000`).
     fn try_from(value: DateTime<Utc>) -> crate::Result<Self> {
         if value.naive_utc().nanosecond() >= 1_000_000_000 {
             return Err(crate::Error::bind_encode(
@@ -461,9 +445,8 @@ impl TryFrom<DateTime<Utc>> for TimestampLtz {
 
 /// Wrapper for `NaiveTime` bound as Snowflake `TIME`.
 ///
-/// Snowflake `TIME` cannot represent leap seconds. `chrono::NaiveTime`
-/// can (`nanosecond() >= 1_000_000_000`), so leap-second values are
-/// rejected at construction.
+/// Snowflake `TIME` cannot represent leap seconds. `chrono::NaiveTime` can (`nanosecond() >= 1_000_000_000`),
+/// so leap-second values are rejected at construction.
 ///
 /// # Examples
 ///
@@ -484,8 +467,7 @@ impl TryFrom<NaiveTime> for Time {
 
     /// # Errors
     ///
-    /// Returns [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) for leap-second values
-    /// (`nanosecond() >= 1_000_000_000`).
+    /// Returns [`ErrorKind::BindEncode`](crate::ErrorKind::BindEncode) for leap-second values (`nanosecond() >= 1_000_000_000`).
     fn try_from(value: NaiveTime) -> crate::Result<Self> {
         if value.nanosecond() >= 1_000_000_000 {
             return Err(crate::Error::bind_encode(
@@ -496,24 +478,21 @@ impl TryFrom<NaiveTime> for Time {
     }
 }
 
-/// Marker trait for values accepted by
-/// [`Statement::bind`](crate::Statement::bind) and
+/// Marker trait for values accepted by [`Statement::bind`](crate::Statement::bind) and
 /// [`Statement::bind_named`](crate::Statement::bind_named).
 ///
 /// Implemented for primary scalars, every wrapper in this module,
 /// [`RawBind`](super::raw::RawBind), and `Option<T>` where `T: IntoBindNullable`.
 ///
-/// The trait is sealed; outside crates cannot add implementations. To bind
-/// a type not covered here, either convert it to one of the supported
-/// types or go through [`RawBind`](super::raw::RawBind).
+/// The trait is sealed; outside crates cannot add implementations. To bind a type not covered here, either convert
+/// it to one of the supported types or go through [`RawBind`](super::raw::RawBind).
 pub trait IntoBind: Sized + into_bind_sealed::Sealed {}
 
 /// Marker for [`IntoBind`] types whose `None` produces a typed wire NULL.
 ///
-/// `Option<T>` implements [`IntoBind`] only when `T: IntoBindNullable`.
-/// [`RawBind`](super::raw::RawBind) does not implement this trait, so
-/// `Option<RawBind>` is a compile error; use [`RawBind::null`](super::raw::RawBind::null)
-/// for a typed NULL with an explicit wire type.
+/// `Option<T>` implements [`IntoBind`] only when `T: IntoBindNullable`. [`RawBind`](super::raw::RawBind) does not implement
+/// this trait, so `Option<RawBind>` is a compile error; use [`RawBind::null`](super::raw::RawBind::null) for a typed NULL
+/// with an explicit wire type.
 ///
 /// # Example
 ///

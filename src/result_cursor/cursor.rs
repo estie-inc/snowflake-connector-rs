@@ -304,8 +304,8 @@ impl ResultCursor {
 #[cfg(test)]
 mod tests {
     use std::{
-        cell::Cell, collections::VecDeque, num::NonZeroUsize, ptr, sync::atomic::Ordering,
-        time::Duration,
+        cell::Cell, collections::VecDeque, num::NonZeroUsize, ptr, result::Result as StdResult,
+        sync::atomic::Ordering, time::Duration,
     };
 
     use bytes::Bytes;
@@ -396,23 +396,23 @@ mod tests {
         })
     }
 
-    fn ok_rows(n: usize) -> std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr> {
+    fn ok_rows(n: usize) -> StdResult<Vec<Vec<Option<String>>>, QueryScopedRepr> {
         Ok((0..n).map(|i| vec![Some(i.to_string())]).collect())
     }
 
-    fn fail() -> std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr> {
+    fn fail() -> StdResult<Vec<Vec<Option<String>>>, QueryScopedRepr> {
         Err(crate::error::NetworkError::chunk_download(500, "simulated failure").into())
     }
 
-    fn fail_timeout() -> std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr> {
+    fn fail_timeout() -> StdResult<Vec<Vec<Option<String>>>, QueryScopedRepr> {
         Err(crate::error::TimeoutError::query().into())
     }
 
-    fn fail_protocol() -> std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr> {
+    fn fail_protocol() -> StdResult<Vec<Vec<Option<String>>>, QueryScopedRepr> {
         Err(crate::error::ProtocolError::missing_field("data").into())
     }
 
-    async fn fail_internal() -> std::result::Result<Vec<Vec<Option<String>>>, QueryScopedRepr> {
+    async fn fail_internal() -> StdResult<Vec<Vec<Option<String>>>, QueryScopedRepr> {
         let handle = tokio::spawn(std::future::pending::<()>());
         handle.abort();
 
@@ -422,7 +422,7 @@ mod tests {
     type FakeRows = Vec<Vec<Option<String>>>;
 
     fn fake_source(
-        responses: Vec<(usize, Vec<std::result::Result<FakeRows, QueryScopedRepr>>)>,
+        responses: Vec<(usize, Vec<StdResult<FakeRows, QueryScopedRepr>>)>,
     ) -> PartitionSource {
         let map = responses
             .into_iter()
@@ -458,7 +458,7 @@ mod tests {
 
     fn build_typed_result_set<T: FromRow>(
         result_set: ResultCursor,
-    ) -> crate::Result<TypedResultCursor<T>> {
+    ) -> Result<TypedResultCursor<T>> {
         let plan = T::build_plan(RowPlanContext::new(result_set.shared_schema()))?;
         Ok(TypedResultCursor::new(result_set, plan))
     }
@@ -469,11 +469,11 @@ mod tests {
     impl FromRow for PlanErrorRow {
         type Plan = ();
 
-        fn build_plan(_: RowPlanContext<'_>) -> crate::Result<Self::Plan> {
+        fn build_plan(_: RowPlanContext<'_>) -> Result<Self::Plan> {
             Err(SchemaError::MissingColumn(MissingColumnError::new("MISSING")).into())
         }
 
-        fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> crate::Result<Self> {
+        fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> Result<Self> {
             unreachable!("plan build should fail before any row is decoded")
         }
     }
@@ -484,12 +484,12 @@ mod tests {
     impl FromRow for CountingRow {
         type Plan = ();
 
-        fn build_plan(_: RowPlanContext<'_>) -> crate::Result<Self::Plan> {
+        fn build_plan(_: RowPlanContext<'_>) -> Result<Self::Plan> {
             record_build_plan_call();
             Ok(())
         }
 
-        fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> crate::Result<Self> {
+        fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> Result<Self> {
             Ok(Self)
         }
     }
@@ -510,11 +510,11 @@ mod tests {
     impl FromRow for DecodeErrorRow {
         type Plan = ();
 
-        fn build_plan(_: RowPlanContext<'_>) -> crate::Result<Self::Plan> {
+        fn build_plan(_: RowPlanContext<'_>) -> Result<Self::Plan> {
             Ok(())
         }
 
-        fn from_row_with_plan(row: RowRef<'_>, _: &Self::Plan) -> crate::Result<Self> {
+        fn from_row_with_plan(row: RowRef<'_>, _: &Self::Plan) -> Result<Self> {
             row.get::<DecodeErrorCell>(ColumnIndex::new(0))?;
             unreachable!("decode failure should bubble out before constructing DecodeErrorRow")
         }
@@ -771,7 +771,7 @@ mod tests {
         let expected_rows = collected_table
             .dynamic_rows()
             .unwrap()
-            .collect::<crate::Result<Vec<_>>>()
+            .collect::<Result<Vec<_>>>()
             .unwrap();
 
         assert_eq!(collected_rows.len(), expected_rows.len());
@@ -865,7 +865,7 @@ mod tests {
         .unwrap();
         assert_eq!(table.query_id(), "test");
 
-        let err = table.rows().collect::<crate::Result<Vec<_>>>().unwrap_err();
+        let err = table.rows().collect::<Result<Vec<_>>>().unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Decode);
         assert!(err.as_cell_decode_error().is_some());
         assert_eq!(err.query_id(), None);
@@ -926,11 +926,11 @@ mod tests {
         let second = result.next_table().await.unwrap().unwrap();
 
         assert_eq!(
-            first.rows().collect::<crate::Result<Vec<_>>>().unwrap(),
+            first.rows().collect::<Result<Vec<_>>>().unwrap(),
             vec![CountingRow]
         );
         assert_eq!(
-            second.rows().collect::<crate::Result<Vec<_>>>().unwrap(),
+            second.rows().collect::<Result<Vec<_>>>().unwrap(),
             vec![CountingRow]
         );
         assert_eq!(build_plan_calls(), 1);
