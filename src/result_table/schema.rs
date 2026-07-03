@@ -149,9 +149,7 @@ impl ColumnType {
         }
     }
 
-    /// Returns the lowercase Snowflake type tag (matching the
-    /// `rowtype.type` field).
-    ///
+    /// Returns the lowercase Snowflake type tag (matching the `rowtype.type` field).
     pub fn as_str(&self) -> &str {
         match self {
             ColumnType::Fixed { .. } => "fixed",
@@ -337,28 +335,20 @@ impl Schema {
 
     /// Resolve a column name to its [`ColumnIndex`].
     ///
-    /// Matching is case-sensitive against the raw label Snowflake reported
-    /// (a quoted `"Id"` and an unquoted `ID` are distinct).
+    /// Matching is case-sensitive against the raw label Snowflake reported, so `Id` and `ID` are treated as distinct names.
     ///
     /// # Errors
     ///
     /// - [`SchemaError::MissingColumn`] when no column carries the name.
     /// - [`SchemaError::AmbiguousColumn`] when several columns share it.
     pub fn column_index(&self, name: &str) -> std::result::Result<ColumnIndex, SchemaError> {
-        lookup_result(name, self.indices.get(name))
-    }
-}
-
-fn lookup_result(
-    name: &str,
-    entry: Option<&LookupEntry>,
-) -> std::result::Result<ColumnIndex, SchemaError> {
-    match entry {
-        Some(LookupEntry::Unique(idx)) => Ok(*idx),
-        Some(LookupEntry::Ambiguous(candidates)) => Err(SchemaError::AmbiguousColumn(
-            AmbiguousColumnError::new(name, candidates.clone()),
-        )),
-        None => Err(SchemaError::MissingColumn(MissingColumnError::new(name))),
+        match self.indices.get(name) {
+            Some(LookupEntry::Unique(idx)) => Ok(*idx),
+            Some(LookupEntry::Ambiguous(candidates)) => Err(SchemaError::AmbiguousColumn(
+                AmbiguousColumnError::new(name, candidates.clone()),
+            )),
+            None => Err(SchemaError::MissingColumn(MissingColumnError::new(name))),
+        }
     }
 }
 
