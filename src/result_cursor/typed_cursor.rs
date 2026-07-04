@@ -92,6 +92,8 @@ impl<T: FromRow> TypedResultCursor<T> {
 
     /// Like [`collect`](Self::collect), but overrides the connection's default prefetch concurrency via `options`.
     ///
+    /// The returned future has the same `Send` behavior as [`collect`](Self::collect).
+    ///
     /// # Errors
     ///
     /// Returns the same errors as [`collect`](Self::collect).
