@@ -221,7 +221,7 @@ impl Display for IncompatibleColumnTypeError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "column {:?} ({}) of type {:?} cannot decode into {}",
+            "column {:?} ({}) of type {:?} cannot be decoded as {}",
             self.column_index, self.column_name, self.actual_column_type, self.target_type_name
         )?;
         if let Some(detail) = &self.detail {
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(without_detail.detail(), None);
         assert_eq!(
             without_detail.to_string(),
-            "column ColumnIndex(2) (TS) of type Boolean cannot decode into chrono::NaiveDateTime"
+            "column ColumnIndex(2) (TS) of type Boolean cannot be decoded as chrono::NaiveDateTime"
         );
 
         let with_detail = IncompatibleColumnTypeError::new(

@@ -18,7 +18,7 @@ const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 /// Implementations exist for primitive Rust types, [`DecimalValue`](crate::DecimalValue), and `Option<T>`.
 /// Implement it yourself when adapting Snowflake values into domain types.
 ///
-/// Decoding is split in two so schema-dependent work happens once per table rather than once per cell:
+/// Decoding is split in two so schema-dependent work happens once per result schema rather than once per cell:
 /// [`build_plan`](FromCell::build_plan) validates the column and precomputes any state, and
 /// [`from_cell_with_plan`](FromCell::from_cell_with_plan) converts the raw cell text using that state.
 ///
@@ -78,12 +78,12 @@ pub trait FromCell: Sized {
 
 /// A resolved column paired with a prepared [`FromCell::Plan`].
 ///
-/// Built once per table in [`FromRow::build_plan`], then handed to [`RowRef::get_planned`] for each row, avoiding
+/// Built by [`FromRow::build_plan`], then handed to [`RowRef::get_with_plan`] for each row, avoiding
 /// per-row schema lookups and per-cell type matching.
 pub struct CellPlan<T: FromCell> {
     pub(crate) column: Column,
     pub(crate) offset: usize,
-    pub(crate) decode: T::Plan,
+    pub(crate) decode_plan: T::Plan,
 }
 
 impl<T: FromCell> CellPlan<T> {
@@ -96,7 +96,7 @@ impl<T: FromCell> CellPlan<T> {
         Ok(Self {
             column: column.clone(),
             offset: column.index().as_usize(),
-            decode: T::build_plan(column)?,
+            decode_plan: T::build_plan(column)?,
         })
     }
 
@@ -169,19 +169,19 @@ impl<T: FromCell> CellPlan<T> {
 ///
 ///     fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
 ///         Ok(UserRow {
-///             id: row.get_planned(&plan.id)?,
-///             name: row.get_planned(&plan.name)?,
+///             id: row.get_with_plan(&plan.id)?,
+///             name: row.get_with_plan(&plan.name)?,
 ///         })
 ///     }
 /// }
 /// ```
 pub trait FromRow: Sized {
-    /// Per-table state reused while decoding rows.
+    /// Per-result-schema state reused while decoding rows.
     ///
     /// `Send + Sync` so the plan can be shared across threads when an iterator is moved between tasks.
     type Plan: Send + Sync;
 
-    /// Build the per-table decode plan from the result-set metadata.
+    /// Build the per-result-schema decode plan from the result-set metadata.
     ///
     /// # Errors
     ///
@@ -237,7 +237,7 @@ fn required_raw(raw: Option<&str>) -> CellDecodeResult<&str> {
     raw.ok_or_else(|| CellConversionError::builder("value is NULL").build())
 }
 
-/// Build the plan-time error for a column that cannot decode into `T`.
+/// Build the plan-time error for a column that cannot be decoded as `T`.
 fn incompatible_column<T>(column: &Column, detail: Option<String>) -> Error {
     SchemaError::IncompatibleColumnType(IncompatibleColumnTypeError::new(
         column.index(),
@@ -894,7 +894,7 @@ macro_rules! impl_tuple_from_row {
             }
 
             fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
-                Ok(($(row.get_planned(&plan.$idx)?,)*))
+                Ok(($(row.get_with_plan(&plan.$idx)?,)*))
             }
         }
     };

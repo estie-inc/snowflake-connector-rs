@@ -521,7 +521,7 @@ mod tests {
         }
 
         fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
-            row.get_planned(plan)?;
+            row.get_with_plan(plan)?;
             unreachable!("decode failure should bubble out before constructing DecodeErrorRow")
         }
     }

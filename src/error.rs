@@ -41,7 +41,7 @@ const JSON_BODY_PREVIEW_MAX_BYTES: usize = 1024;
 /// - Snowflake-provided fields: [`snowflake_code`](Error::snowflake_code),
 ///   [`snowflake_message`](Error::snowflake_message), [`query_id`](Error::query_id)
 /// - Decode failures: [`as_schema_error`](Error::as_schema_error) for
-///   column-lookup mismatches, [`as_cell_decode_error`](Error::as_cell_decode_error) for cell conversion failures
+///   schema validation failures, [`as_cell_decode_error`](Error::as_cell_decode_error) for cell conversion failures
 ///
 /// ```
 /// use snowflake_connector_rs::{Error, ErrorKind};
@@ -128,7 +128,7 @@ pub enum ErrorKind {
     /// Caller-supplied fallback error created via [`Error::other`].
     Other,
     /// The result schema or a cell value did not match the caller's expectations. Use [`Error::as_schema_error`] for
-    /// column-lookup level mismatches and [`Error::as_cell_decode_error`] for cell decoding failures.
+    /// schema validation failures and [`Error::as_cell_decode_error`] for cell decoding failures.
     Decode,
 }
 

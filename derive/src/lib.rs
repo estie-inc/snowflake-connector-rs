@@ -112,7 +112,7 @@ use syn::{DeriveInput, parse_macro_input};
 /// - `MissingColumn` for required named lookups, including `Option<T>` fields.
 /// - `AmbiguousColumn` when the schema contains duplicate raw labels.
 /// - `ColumnCountMismatch` when required positional fields exceed the schema.
-/// - `IncompatibleColumnType` when a column's Snowflake type cannot decode into the field's Rust type. This is
+/// - `IncompatibleColumnType` when a column's Snowflake type cannot be decoded as the field's Rust type. This is
 ///   raised during plan building, so a type mismatch fails the whole `rows` call before any row is read.
 /// - cell decode errors while converting individual cells, including SQL `NULL` for a non-`Option` field.
 ///

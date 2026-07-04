@@ -70,11 +70,11 @@ impl<'a> RowRef<'a> {
     /// # Errors
     ///
     /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when the cell cannot be decoded as `T`.
-    pub fn get_planned<T: FromCell>(self, plan: &CellPlan<T>) -> Result<T> {
+    pub fn get_with_plan<T: FromCell>(self, plan: &CellPlan<T>) -> Result<T> {
         let cell = self.block.cell(self.local_row, plan.offset);
         let raw = self.block.cell_text(cell);
 
-        T::from_cell_with_plan(raw, &plan.decode).map_err(|issue| {
+        T::from_cell_with_plan(raw, &plan.decode_plan).map_err(|issue| {
             CellDecodeError::new(
                 self.global_row,
                 plan.column.index(),

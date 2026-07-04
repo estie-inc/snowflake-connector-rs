@@ -78,5 +78,5 @@ fn row_body(model: &FromRowDerive) -> TokenStream2 {
 
 fn decode_field_value(index: usize) -> TokenStream2 {
     let index = syn::Index::from(index);
-    quote! { row.get_planned(&plan.#index)? }
+    quote! { row.get_with_plan(&plan.#index)? }
 }
