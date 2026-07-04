@@ -70,6 +70,8 @@ impl<T: FromRow> TypedResultCursor<T> {
 
     /// Consume this result set and decode all rows into any collection implementing [`FromIterator<T>`](FromIterator).
     ///
+    /// Rows are decoded as partitions arrive, so a decode error may be returned before every partition has been fetched.
+    ///
     /// # Errors
     ///
     /// Returns the same errors as [`TypedResultCursor::collect_table`].
@@ -78,25 +80,23 @@ impl<T: FromRow> TypedResultCursor<T> {
     /// Built-in and derive-based row types typically use `ErrorKind::Decode` for per-row conversion failures; inspect the
     /// detail via [`crate::Error::as_cell_decode_error`].
     pub async fn collect<C: FromIterator<T>>(self) -> Result<C> {
-        let table = self.collect_table().await?;
-        table.rows().collect()
+        let Self { inner, plan, .. } = self;
+        let policy = inner.collect_policy();
+        inner.collect_typed_rows::<T, C>(policy, plan).await
     }
 
-    /// Consume this result set and decode all rows into any collection implementing [`FromIterator<T>`](FromIterator).
+    /// Like [`collect`](Self::collect), but overrides the connection's default prefetch concurrency via `options`.
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`TypedResultCursor::collect_table_with_options`].
-    /// Decoding rows then propagates any error returned by [`FromRow::from_row_with_plan`] for `T`.
-    ///
-    /// Built-in and derive-based row types typically use `ErrorKind::Decode` for per-row conversion failures; inspect the
-    /// detail via [`crate::Error::as_cell_decode_error`].
+    /// Returns the same errors as [`collect`](Self::collect).
     pub async fn collect_with_options<C: FromIterator<T>>(
         self,
         options: CollectOptions,
     ) -> Result<C> {
-        let table = self.collect_table_with_options(options).await?;
-        table.rows().collect()
+        let Self { inner, plan, .. } = self;
+        let policy = inner.resolve_policy(&options);
+        inner.collect_typed_rows::<T, C>(policy, plan).await
     }
 
     /// Consume this result set and collect all remaining partitions into a typed table.
