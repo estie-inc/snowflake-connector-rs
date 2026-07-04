@@ -106,12 +106,15 @@ use syn::{DeriveInput, parse_macro_input};
 ///
 /// # Error behavior
 ///
-/// The generated implementation propagates schema and row access errors:
+/// The generated implementation validates the schema while building the decode plan, then propagates cell decode
+/// errors while reading rows:
 ///
 /// - `MissingColumn` for required named lookups, including `Option<T>` fields.
 /// - `AmbiguousColumn` when the schema contains duplicate raw labels.
 /// - `ColumnCountMismatch` when required positional fields exceed the schema.
-/// - `InvalidColumnIndex` and cell decode errors from row access.
+/// - `IncompatibleColumnType` when a column's Snowflake type cannot be decoded as the field's Rust type. This is
+///   raised during plan building, so a type mismatch fails the whole `rows` call before any row is read.
+/// - cell decode errors while converting individual cells, including SQL `NULL` for a non-`Option` field.
 ///
 /// SQL `NULL` only maps to `None` for `Option<T>`. Other field types propagate their normal `FromCell` decode error.
 #[proc_macro_derive(FromRow, attributes(snowflake))]

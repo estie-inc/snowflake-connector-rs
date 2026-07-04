@@ -6,30 +6,27 @@ use crate::input::{FieldInfo, FieldLookup, FromRowDerive, StructShape};
 pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
     let crate_path = &model.crate_path;
     let struct_ident = &model.struct_ident;
-    let plan_len = syn::LitInt::new(&model.fields.len().to_string(), struct_ident.span());
 
-    let build_plan_lines = model
+    let plan_field_tys = model.fields.iter().map(|field| {
+        let ty = &field.ty;
+        quote! { #crate_path::CellPlan<#ty> }
+    });
+    let plan_field_inits = model
         .fields
         .iter()
-        .map(|field| build_plan_line(field, crate_path));
-    let plan_init_idents = model
-        .fields
-        .iter()
-        .map(|field| &field.plan_ident)
-        .collect::<Vec<_>>();
+        .map(|field| plan_field_init(field, crate_path));
     let row_body = row_body(model);
 
     quote! {
         const _: () = {
             impl #crate_path::FromRow for #struct_ident {
-                type Plan = [#crate_path::ColumnIndex; #plan_len];
+                type Plan = ( #(#plan_field_tys,)* );
 
                 fn build_plan(
                     ctx: #crate_path::RowPlanContext<'_>,
                 ) -> #crate_path::Result<Self::Plan> {
                     let schema = ctx.schema();
-                    #(#build_plan_lines)*
-                    ::core::result::Result::Ok([#(#plan_init_idents),*])
+                    ::core::result::Result::Ok(( #(#plan_field_inits,)* ))
                 }
 
                 fn from_row_with_plan(
@@ -43,22 +40,16 @@ pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
     }
 }
 
-fn build_plan_line(field: &FieldInfo, crate_path: &syn::Path) -> TokenStream2 {
-    let ident = &field.plan_ident;
+fn plan_field_init(field: &FieldInfo, crate_path: &syn::Path) -> TokenStream2 {
+    let ty = &field.ty;
     match &field.lookup {
-        FieldLookup::Name(name) => quote! { let #ident = schema.column_index(#name)?; },
+        FieldLookup::Name(name) => quote! {
+            #crate_path::CellPlan::<#ty>::by_name(schema, #name)?
+        },
         FieldLookup::Position(pos) => {
-            let pos_lit = syn::Index::from(*pos);
+            let pos = *pos;
             quote! {
-                if schema.len() <= #pos_lit {
-                    return ::core::result::Result::Err(
-                        #crate_path::SchemaError::ColumnCountMismatch(
-                            #crate_path::ColumnCountMismatchError::new(#pos_lit + 1, schema.len())
-                        )
-                        .into()
-                    );
-                }
-                let #ident = schema.columns()[#pos_lit].index();
+                #crate_path::CellPlan::<#ty>::by_position(schema, #pos)?
             }
         }
     }
@@ -69,7 +60,7 @@ fn row_body(model: &FromRowDerive) -> TokenStream2 {
         StructShape::Named => {
             let assigns = model.fields.iter().enumerate().map(|(index, field)| {
                 let field_ident = field.field_ident.as_ref().expect("named");
-                let value = decode_field_value(field, index);
+                let value = decode_field_value(index);
                 quote! { #field_ident: #value }
             });
             quote! { ::core::result::Result::Ok(Self { #(#assigns),* }) }
@@ -79,14 +70,13 @@ fn row_body(model: &FromRowDerive) -> TokenStream2 {
                 .fields
                 .iter()
                 .enumerate()
-                .map(|(index, field)| decode_field_value(field, index));
+                .map(|(index, _)| decode_field_value(index));
             quote! { ::core::result::Result::Ok(Self ( #(#assigns),* )) }
         }
     }
 }
 
-fn decode_field_value(field: &FieldInfo, index: usize) -> TokenStream2 {
+fn decode_field_value(index: usize) -> TokenStream2 {
     let index = syn::Index::from(index);
-    let ty = &field.ty;
-    quote! { row.get::<#ty>(plan[#index])? }
+    quote! { row.get_with_plan(&plan.#index)? }
 }

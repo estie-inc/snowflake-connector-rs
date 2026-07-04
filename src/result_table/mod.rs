@@ -8,7 +8,7 @@ mod table;
 mod typed_table;
 
 pub use cell::CellRef;
-pub use decode::{FromCell, FromRow};
+pub use decode::{CellPlan, FromCell, FromRow, TimePlan, TimestampPlan, UtcTimestampPlan};
 pub use dynamic::{CellValue, DecimalValue, DynamicRow};
 pub use plan::RowPlanContext;
 pub use row::{RowRef, Rows};
