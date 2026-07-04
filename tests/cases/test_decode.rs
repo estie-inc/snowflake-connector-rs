@@ -107,6 +107,42 @@ async fn test_decode() -> Result<()> {
             .and_utc()
     );
 
+    let table = session
+        .query(
+            "SELECT
+                '1969-12-31 23:59:58.900000000'::TIMESTAMP_NTZ(9) AS ntz,
+                '1969-12-31 23:59:58.900000000'::TIMESTAMP_LTZ(9) AS ltz,
+                '1969-12-31 23:59:58.900000000 +09:00'::TIMESTAMP_TZ(9) AS tz",
+        )
+        .await?
+        .collect_table()
+        .await?;
+
+    let expected_local = NaiveDate::from_ymd_opt(1969, 12, 31)
+        .unwrap()
+        .and_hms_nano_opt(23, 59, 58, 900_000_000)
+        .unwrap();
+    let expected_tz_utc = NaiveDate::from_ymd_opt(1969, 12, 31)
+        .unwrap()
+        .and_hms_nano_opt(14, 59, 58, 900_000_000)
+        .unwrap()
+        .and_utc();
+
+    let (ntz, ltz, tz_utc) = table
+        .rows::<(NaiveDateTime, DateTime<Utc>, DateTime<Utc>)>()?
+        .next()
+        .unwrap()?;
+    assert_eq!(ntz, expected_local);
+    assert_eq!(ltz, expected_local.and_utc());
+    assert_eq!(tz_utc, expected_tz_utc);
+
+    let (_, _, tz_offset) = table
+        .rows::<(NaiveDateTime, DateTime<Utc>, DateTime<FixedOffset>)>()?
+        .next()
+        .unwrap()?;
+    assert_eq!(tz_offset.offset().local_minus_utc(), 9 * 3600);
+    assert_eq!(tz_offset.naive_local(), expected_local);
+
     Ok(())
 }
 
