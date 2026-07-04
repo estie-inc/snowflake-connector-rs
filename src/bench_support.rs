@@ -48,7 +48,7 @@ pub fn parse_inline_result_table(
 }
 
 pub fn decode_gzip_chunk(body: Bytes) -> Result<Bytes> {
-    rowset::decode_gzip_chunk(body).map_err(crate::Error::from)
+    rowset::decode_gzip_chunk(body, None).map_err(crate::Error::from)
 }
 
 pub fn inline_rows_to_result_table(
