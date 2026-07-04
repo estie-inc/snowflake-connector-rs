@@ -721,10 +721,85 @@ fn parse_timestamp_epoch_scaled(
         .ok_or_else(|| format!("Could not decode {kind}: {original}"))
 }
 
+fn parse_unsigned_timestamp_epoch_fast(
+    s: &str,
+    plan: &TimestampPlan,
+    original: &str,
+    kind: &'static str,
+) -> Option<StdResult<DateTime<Utc>, String>> {
+    let s = s.trim();
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || matches!(bytes[0], b'-' | b'+') {
+        return None;
+    }
+
+    let mut i = 0usize;
+    let mut secs = 0i64;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if !b.is_ascii_digit() {
+            break;
+        }
+        secs = match secs
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(i64::from(b - b'0')))
+        {
+            Some(value) => value,
+            None => return Some(Err(format!("Could not decode {kind}: {s}"))),
+        };
+        i += 1;
+    }
+    if i == 0 {
+        return Some(Err(format!("Could not decode {kind}: {s}")));
+    }
+
+    let nsec = if i == bytes.len() {
+        0u32
+    } else {
+        if bytes[i] != b'.' {
+            return Some(Err(format!("Could not decode {kind}: {s}")));
+        }
+        i += 1;
+        if i == bytes.len() || plan.scale == 0 {
+            return Some(Err(format!("Could not decode {kind}: {s}")));
+        }
+
+        let mut frac = 0u64;
+        let mut frac_len = 0usize;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if !b.is_ascii_digit() || frac_len >= plan.scale {
+                return Some(Err(format!("Could not decode {kind}: {s}")));
+            }
+            frac = frac * 10 + u64::from(b - b'0');
+            frac_len += 1;
+            i += 1;
+        }
+        for _ in frac_len..plan.scale {
+            frac *= 10;
+        }
+        match frac
+            .checked_mul(plan.nanos_multiplier)
+            .and_then(|value| u32::try_from(value).ok())
+        {
+            Some(value) => value,
+            None => return Some(Err(format!("Could not decode {kind}: {s}"))),
+        }
+    };
+
+    Some(
+        DateTime::from_timestamp(secs, nsec)
+            .ok_or_else(|| format!("Could not decode {kind}: {original}")),
+    )
+}
+
 pub(crate) fn parse_timestamp_epoch_with(
     s: &str,
     plan: &TimestampPlan,
 ) -> StdResult<DateTime<Utc>, String> {
+    if let Some(result) = parse_unsigned_timestamp_epoch_fast(s, plan, s, "timestamp") {
+        return result;
+    }
     let scaled = parse_scaled_decimal_i128(s, plan, "timestamp")?;
     parse_timestamp_epoch_scaled(scaled, plan, s, "timestamp")
 }
