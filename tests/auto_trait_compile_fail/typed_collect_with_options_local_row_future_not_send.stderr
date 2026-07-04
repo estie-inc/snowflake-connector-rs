@@ -1,0 +1,81 @@
+error[E0277]: `Rc<()>` cannot be sent between threads safely
+  --> tests/auto_trait_compile_fail/typed_collect_with_options_local_row_future_not_send.rs:31:9
+   |
+30 |       assert_send(
+   |       ----------- required by a bound introduced by this call
+31 |           typed_cursor::<LocalRow>().collect_with_options::<Vec<LocalRow>>(CollectOptions::default()),
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Rc<()>` cannot be sent between threads safely
+   |
+  ::: src/result_cursor/typed_cursor.rs
+   |
+   | /     pub async fn collect_with_options<C: FromIterator<T>>(
+   | |         self,
+   | |         options: CollectOptions,
+   | |     ) -> Result<C> {
+   | |__________________- within this `impl Future<Output = Result<Vec<LocalRow>, snowflake_connector_rs::Error>>`
+   |
+   = help: within `impl Future<Output = Result<Vec<LocalRow>, snowflake_connector_rs::Error>>`, the trait `Send` is not implemented for `Rc<()>`
+note: required because it appears within the type `LocalRow`
+  --> tests/auto_trait_compile_fail/typed_collect_with_options_local_row_future_not_send.rs:15:8
+   |
+15 | struct LocalRow(Rc<()>);
+   |        ^^^^^^^^
+note: required because it appears within the type `PhantomData<LocalRow>`
+  --> $RUST/core/src/marker.rs
+   |
+   | pub struct PhantomData<T: ?Sized>;
+   |            ^^^^^^^^^^^
+note: required because it appears within the type `alloc::raw_vec::RawVec<LocalRow>`
+  --> $RUST/alloc/src/raw_vec/mod.rs
+   |
+   | pub(crate) struct RawVec<T, A: Allocator = Global> {
+   |                   ^^^^^^
+note: required because it appears within the type `Vec<LocalRow>`
+  --> $RUST/alloc/src/vec/mod.rs
+   |
+   | pub struct Vec<T, #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global> {
+   |            ^^^
+note: required because it's used within this `async` fn body
+  --> src/result_cursor/cursor.rs
+   |
+   |       ) -> Result<S> {
+   |  ____________________^
+   | |         let Self {
+   | |             snapshot,
+   | |             cursor,
+...  |
+   | |         Ok(state)
+   | |     }
+   | |_____^
+note: required because it's used within this `async` fn body
+  --> src/result_cursor/cursor.rs
+   |
+   |       ) -> Result<C> {
+   |  ____________________^
+   | |         let rows = Vec::with_capacity(self.remaining_row_estimate());
+   | |         let rows = self
+   | |             .fold_tables(policy, rows, |mut rows: Vec<T>, table| {
+...  |
+   | |         Ok(rows.into_iter().collect())
+   | |     }
+   | |_____^
+note: required because it's used within this `async` fn body
+  --> src/result_cursor/typed_cursor.rs
+   |
+   |       ) -> Result<C> {
+   |  ____________________^
+   | |         let Self { inner, plan, .. } = self;
+   | |         let policy = inner.resolve_policy(&options);
+   | |         inner.collect_typed_rows::<T, C>(policy, plan).await
+   | |     }
+   | |_____^
+note: required by a bound in `assert_send`
+  --> tests/auto_trait_compile_fail/typed_collect_with_options_local_row_future_not_send.rs:13:19
+   |
+13 | fn assert_send<T: Send>(_: T) {}
+   |                   ^^^^ required by this bound in `assert_send`
+help: consider removing this method call, as the receiver has type `TypedResultCursor<LocalRow>` and `TypedResultCursor<LocalRow>: Send` trivially holds
+   |
+31 -         typed_cursor::<LocalRow>().collect_with_options::<Vec<LocalRow>>(CollectOptions::default()),
+31 +         typed_cursor::<LocalRow>(),
+   |

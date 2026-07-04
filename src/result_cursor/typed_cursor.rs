@@ -72,6 +72,11 @@ impl<T: FromRow> TypedResultCursor<T> {
     ///
     /// Rows are decoded as partitions arrive, so a decode error may be returned before every partition has been fetched.
     ///
+    /// # Send
+    ///
+    /// `!Send` row types are allowed, but the returned future is `Send` only when `T: Send`. If a `Send` future is
+    /// required, collect a typed table first and iterate `rows()` after awaiting.
+    ///
     /// # Errors
     ///
     /// Returns the same errors as [`TypedResultCursor::collect_table`].
@@ -86,6 +91,8 @@ impl<T: FromRow> TypedResultCursor<T> {
     }
 
     /// Like [`collect`](Self::collect), but overrides the connection's default prefetch concurrency via `options`.
+    ///
+    /// The returned future has the same `Send` behavior as [`collect`](Self::collect).
     ///
     /// # Errors
     ///

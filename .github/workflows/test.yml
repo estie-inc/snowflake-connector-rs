@@ -57,6 +57,9 @@ jobs:
       - name: Test derive macro
         run: cargo test --profile ci --workspace --all-features --test derive_trybuild
 
+      - name: Test auto trait contracts
+        run: cargo test --profile ci --workspace --all-features --test auto_trait_trybuild
+
       - name: Test integration
         run: cargo test --profile ci --workspace --test integration
 
