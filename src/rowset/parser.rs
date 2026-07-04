@@ -501,9 +501,11 @@ pub(crate) async fn parse_remote_chunk_result_table_async(
         }
     };
     let query_id_for_work = Arc::clone(&query_id);
+    let expected_uncompressed_size = workload.uncompressed_bytes;
 
     let parse_work_result = execute_parse_work(workload, blocking_parse_limiter, move || {
-        let bytes = decode_gzip_chunk(body).map_err(QueryScopedRepr::from)?;
+        let bytes =
+            decode_gzip_chunk(body, expected_uncompressed_size).map_err(QueryScopedRepr::from)?;
         parse_table_with_shape(
             schema,
             query_id_for_work,
