@@ -3,7 +3,7 @@ use std::{fmt, sync::Arc};
 use crate::{
     Result,
     error::QueryScopedResult,
-    result_table::{DynamicRow, ResultTable, Schema},
+    result_table::{DynamicRow, FromRow, ResultTable, Schema, TypedResultTable},
     rowset::parser::parse_inline_result_table_async,
     runtime::QueryRuntime,
 };
@@ -13,6 +13,9 @@ use super::{
     model::{InlineRowset, PartitionSpec, ResultSnapshot},
     remote::{PartitionSource, RemotePartitionSource},
 };
+
+/// Upper bound on rows pre-reserved for the decode accumulator.
+const MAX_PREALLOCATED_ROWS: usize = 64 * 1024 * 1024;
 
 /// A query result as a cursor over its remaining partitions.
 pub struct ResultCursor {
@@ -175,9 +178,7 @@ impl ResultCursor {
     /// partition fails to materialize.
     pub async fn collect_table(self) -> Result<ResultTable> {
         let policy = self.default_collect_policy;
-        self.collect_with_policy(policy)
-            .await
-            .map_err(crate::Error::from)
+        self.collect_table_with_policy(policy).await
     }
 
     /// Consume this result set and merge all remaining partitions into a single `ResultTable`.
@@ -187,42 +188,120 @@ impl ResultCursor {
     /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, or `ErrorKind::Internal` if any remaining
     /// partition fails to materialize.
     pub async fn collect_table_with_options(self, options: CollectOptions) -> Result<ResultTable> {
-        let policy = CollectPolicy::new(
-            options
-                .prefetch_concurrency
-                .unwrap_or(self.default_collect_policy.prefetch_concurrency),
-        );
-        self.collect_with_policy(policy)
-            .await
-            .map_err(crate::Error::from)
+        let policy = self.resolve_policy(&options);
+        self.collect_table_with_policy(policy).await
     }
 
     /// Consume this result set and decode all rows into any collection implementing [`FromIterator<DynamicRow>`](FromIterator).
+    ///
+    /// Rows are decoded as partitions arrive, so a decode error may be returned before every partition has been fetched.
     ///
     /// # Errors
     ///
     /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, `ErrorKind::Internal`, or
     /// `ErrorKind::Decode`; inspect the detail via [`crate::Error::as_cell_decode_error`].
     pub async fn collect<C: FromIterator<DynamicRow>>(self) -> Result<C> {
-        let table = self.collect_table().await?;
-        table.dynamic_rows()?.collect()
+        let policy = self.default_collect_policy;
+        self.collect_dynamic_rows(policy).await
     }
 
-    /// Consume this result set and decode all rows into any collection implementing [`FromIterator<DynamicRow>`](FromIterator).
+    /// Like [`collect`](Self::collect), but overrides the connection's default prefetch concurrency via `options`.
     ///
     /// # Errors
     ///
-    /// Returns `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, `ErrorKind::Internal`, or
-    /// `ErrorKind::Decode`; inspect the detail via [`crate::Error::as_cell_decode_error`].
+    /// Returns the same errors as [`collect`](Self::collect).
     pub async fn collect_with_options<C: FromIterator<DynamicRow>>(
         self,
         options: CollectOptions,
     ) -> Result<C> {
-        let table = self.collect_table_with_options(options).await?;
-        table.dynamic_rows()?.collect()
+        let policy = self.resolve_policy(&options);
+        self.collect_dynamic_rows(policy).await
     }
 
-    async fn collect_with_policy(self, policy: CollectPolicy) -> QueryScopedResult<ResultTable> {
+    pub(crate) fn collect_policy(&self) -> CollectPolicy {
+        self.default_collect_policy
+    }
+
+    pub(crate) fn resolve_policy(&self, options: &CollectOptions) -> CollectPolicy {
+        CollectPolicy::new(
+            options
+                .prefetch_concurrency
+                .unwrap_or(self.default_collect_policy.prefetch_concurrency),
+        )
+    }
+
+    fn remaining_row_estimate(&self) -> usize {
+        self.snapshot.partitions[self.cursor.next_ordinal..]
+            .iter()
+            .map(|spec| match spec {
+                PartitionSpec::Remote { row_count, .. } => usize::try_from(*row_count).unwrap_or(0),
+                PartitionSpec::Inline => self
+                    .inline_rowset
+                    .as_ref()
+                    .and_then(|rowset| rowset.row_count_hint)
+                    .and_then(|hint| usize::try_from(hint).ok())
+                    .unwrap_or(0),
+            })
+            .fold(0usize, usize::saturating_add)
+            .min(MAX_PREALLOCATED_ROWS)
+    }
+
+    async fn collect_dynamic_rows<C: FromIterator<DynamicRow>>(
+        self,
+        policy: CollectPolicy,
+    ) -> Result<C> {
+        let rows = Vec::with_capacity(self.remaining_row_estimate());
+        let rows = self
+            .fold_tables(policy, rows, |mut rows: Vec<DynamicRow>, table| {
+                for row in table.dynamic_rows()? {
+                    rows.push(row?);
+                }
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    pub(crate) async fn collect_typed_rows<T: FromRow, C: FromIterator<T>>(
+        self,
+        policy: CollectPolicy,
+        plan: Arc<T::Plan>,
+    ) -> Result<C> {
+        let rows = Vec::with_capacity(self.remaining_row_estimate());
+        let rows = self
+            .fold_tables(policy, rows, |mut rows: Vec<T>, table| {
+                let table = TypedResultTable::<T>::new(table, Arc::clone(&plan));
+                for row in table.rows() {
+                    rows.push(row?);
+                }
+                Ok(rows)
+            })
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    async fn collect_table_with_policy(self, policy: CollectPolicy) -> Result<ResultTable> {
+        let schema = Arc::clone(&self.snapshot.schema);
+        let query_id = Arc::clone(&self.snapshot.identity.query_id);
+        let tables = self
+            .fold_tables(policy, Vec::new(), |mut tables: Vec<ResultTable>, table| {
+                tables.push(table);
+                Ok(tables)
+            })
+            .await?;
+        if tables.is_empty() {
+            return Ok(ResultTable::empty(schema, query_id));
+        }
+        Ok(ResultTable::concat_same_schema(tables))
+    }
+
+    /// Drive the remaining partitions to completion, folding each materialized `ResultTable` into `state` in partition order.
+    async fn fold_tables<S>(
+        self,
+        policy: CollectPolicy,
+        mut state: S,
+        mut on_table: impl FnMut(S, ResultTable) -> Result<S>,
+    ) -> Result<S> {
         let Self {
             snapshot,
             cursor,
@@ -232,15 +311,10 @@ impl ResultCursor {
             ..
         } = self;
 
-        let schema = Arc::clone(&snapshot.schema);
         if cursor.is_exhausted() {
-            return Ok(ResultTable::empty(
-                schema,
-                Arc::clone(&snapshot.identity.query_id),
-            ));
+            return Ok(state);
         }
 
-        let mut tables = Vec::new();
         let total = snapshot.partitions.len();
         let inline_ordinal = cursor.next_ordinal;
         let inline_first = matches!(
@@ -278,26 +352,24 @@ impl ResultCursor {
                 Some(runtime.blocking_parse_limiter()),
             )
             .await?;
-            tables.push(table);
+            state = on_table(state, table)?;
         }
 
         if let (Some(source), Some(blocking_parse_limiter), Some(mut window)) =
             (source, blocking_parse_limiter, window.take())
         {
+            let mut committed = Vec::new();
             while let Some(result) = window.join_next().await {
                 let (ordinal, table) = result?;
-                window.commit(ordinal, table, &mut tables);
+                window.commit(ordinal, table, &mut committed);
+                for table in committed.drain(..) {
+                    state = on_table(state, table)?;
+                }
                 window.fill(&source, &snapshot, &blocking_parse_limiter);
             }
         }
 
-        if tables.is_empty() {
-            return Ok(ResultTable::empty(
-                schema,
-                Arc::clone(&snapshot.identity.query_id),
-            ));
-        }
-        Ok(ResultTable::concat_same_schema(tables))
+        Ok(state)
     }
 }
 
@@ -876,6 +948,66 @@ mod tests {
         assert!(err.as_cell_decode_error().is_some());
         assert_eq!(err.query_id(), None);
         assert_eq!(table.query_id(), "test");
+    }
+
+    #[test]
+    fn remaining_row_estimate_saturates_and_clamps_untrusted_row_counts() {
+        let schema = make_schema();
+        let partitions = vec![
+            PartitionSpec::Remote {
+                row_count: i64::MAX,
+                compressed_size: 0,
+                uncompressed_size: 0,
+            },
+            PartitionSpec::Remote {
+                row_count: i64::MAX,
+                compressed_size: 0,
+                uncompressed_size: 0,
+            },
+        ];
+        let snapshot = Arc::new(ResultSnapshot {
+            identity: ResultIdentity {
+                query_id: Arc::from("test"),
+            },
+            schema,
+            partitions,
+        });
+        let rs = build_result_set(snapshot, fake_source(vec![]));
+
+        assert_eq!(rs.remaining_row_estimate(), MAX_PREALLOCATED_ROWS);
+    }
+
+    #[tokio::test]
+    async fn typed_collect_decode_error_short_circuits_before_fetching_later_partitions() {
+        // Partition 0 fetches but fails to decode; with prefetch concurrency of 1 that
+        // error must short-circuit before partition 1 is ever fetched.
+        let snapshot = dummy_snapshot(2);
+        let source = FakePartitionSource::new(
+            vec![
+                (0, VecDeque::from(vec![FakeResponse::Rows(ok_rows(1))])),
+                (1, VecDeque::from(vec![FakeResponse::from(fail())])),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let fetch_count = source.fetch_count();
+        let rs = ResultCursor::with_source(
+            snapshot,
+            None,
+            PartitionSource::Fake(source),
+            QueryRuntime::new(),
+            CollectPolicy::new(NonZeroUsize::new(1).unwrap()),
+        );
+
+        let err = build_typed_result_set::<DecodeErrorRow>(rs)
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        assert!(err.as_cell_decode_error().is_some());
+        assert_eq!(fetch_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
