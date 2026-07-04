@@ -17,7 +17,6 @@ const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(16);
 
 /// Everything the downloader needs to fetch and parse a single remote partition.
-#[derive(Clone)]
 pub(super) struct DownloadRequest {
     pub(super) url: String,
     pub(super) headers: Arc<HeaderMap>,
@@ -32,6 +31,11 @@ pub(super) struct DownloadRequest {
 enum DownloadFailure {
     Retryable(QueryScopedError),
     Fatal(QueryScopedError),
+}
+
+struct DownloadedChunk {
+    body: Bytes,
+    workload: ParseWorkload,
 }
 
 impl DownloadFailure {
@@ -59,12 +63,19 @@ impl RemotePartitionDownloader {
         schema: Arc<Schema>,
     ) -> QueryScopedResult<ResultTable> {
         let mut retries = 0;
+        let column_count = schema.len();
         loop {
-            match self
-                .download_once(request.clone(), Arc::clone(&schema))
-                .await
-            {
-                Ok(t) => return Ok(t),
+            match self.download_once(&request, column_count).await {
+                Ok(chunk) => {
+                    return parse_remote_chunk_result_table_async(
+                        schema,
+                        request.query_id,
+                        chunk.body,
+                        chunk.workload,
+                        request.blocking_parse_limiter,
+                    )
+                    .await;
+                }
                 Err(DownloadFailure::Retryable(_)) if retries < MAX_RETRIES => {
                     sleep(retry_delay(retries)).await;
                     retries += 1;
@@ -76,9 +87,9 @@ impl RemotePartitionDownloader {
 
     async fn download_once(
         &self,
-        request: DownloadRequest,
-        schema: Arc<Schema>,
-    ) -> StdResult<ResultTable, DownloadFailure> {
+        request: &DownloadRequest,
+        column_count: usize,
+    ) -> StdResult<DownloadedChunk, DownloadFailure> {
         let response = match self
             .client
             .get(&request.url)
@@ -90,12 +101,12 @@ impl RemotePartitionDownloader {
             Err(error) => {
                 if error.is_timeout() {
                     return Err(DownloadFailure::Retryable(QueryScopedError::new(
-                        request.query_id,
+                        Arc::clone(&request.query_id),
                         TimeoutError::request(error),
                     )));
                 }
                 return Err(DownloadFailure::Retryable(QueryScopedError::new(
-                    request.query_id,
+                    Arc::clone(&request.query_id),
                     NetworkError::Http(error),
                 )));
             }
@@ -106,7 +117,7 @@ impl RemotePartitionDownloader {
             return Err(classify_failed_status(
                 status,
                 response.bytes().await,
-                request.query_id,
+                Arc::clone(&request.query_id),
             ));
         }
 
@@ -115,12 +126,12 @@ impl RemotePartitionDownloader {
             Err(error) => {
                 if error.is_timeout() {
                     return Err(DownloadFailure::Retryable(QueryScopedError::new(
-                        request.query_id,
+                        Arc::clone(&request.query_id),
                         TimeoutError::request(error),
                     )));
                 }
                 return Err(DownloadFailure::Retryable(QueryScopedError::new(
-                    request.query_id,
+                    Arc::clone(&request.query_id),
                     NetworkError::Http(error),
                 )));
             }
@@ -130,21 +141,13 @@ impl RemotePartitionDownloader {
         let workload = ParseWorkload::remote_chunk(
             body.len(),
             request.row_count,
-            schema.len(),
+            column_count,
             gzip_encoded,
             request.compressed_size,
             request.uncompressed_size,
         );
 
-        parse_remote_chunk_result_table_async(
-            schema,
-            Arc::clone(&request.query_id),
-            body,
-            workload,
-            request.blocking_parse_limiter,
-        )
-        .await
-        .map_err(DownloadFailure::Fatal)
+        Ok(DownloadedChunk { body, workload })
     }
 }
 
