@@ -41,6 +41,9 @@ session
     .query("INSERT INTO example (id, value) VALUES (1, 'hello'), (2, 'world')")
     .await?;
 
+// The following SELECT examples show alternative consumption styles.
+// In application code, choose the one that fits your use case.
+
 let dynamic_rows = session
     .query("SELECT id, value FROM example ORDER BY id")
     .await?
@@ -83,10 +86,6 @@ while let Some(table) = result.next_table().await? {
         println!("{row:?}");
     }
 }
-
-let result = session.query("SELECT id, value FROM example ORDER BY id").await?;
-let table = result.collect_table().await?;
-assert_eq!(table.row_count(), 2);
 ```
 
 ## Authentication
