@@ -83,8 +83,6 @@ impl StatementApiClient {
         timeout: Duration,
         query_id: Arc<str>,
     ) -> QueryScopedResult<SnowflakeResponse> {
-        const POLL_INTERVAL: Duration = Duration::from_secs(10);
-
         let poll_url = match resolve_poll_url(&self.shared.base_url, poll_relative_url) {
             Ok(url) => url,
             Err(err) => {
@@ -92,6 +90,7 @@ impl StatementApiClient {
             }
         };
         let deadline = Instant::now() + timeout;
+        let mut backoff = PollBackoff::new();
 
         loop {
             let resp = self
@@ -151,11 +150,42 @@ impl StatementApiClient {
                     if remaining.is_zero() {
                         return Err(QueryScopedError::new(query_id, TimeoutError::query()));
                     }
-                    sleep(remaining.min(POLL_INTERVAL)).await;
+                    sleep(remaining.min(backoff.next_delay())).await;
                 }
                 Err(err) => return Err(QueryScopedError::new(query_id, err)),
             }
         }
+    }
+}
+
+/// Client-side backoff between consecutive poll GETs for an async query.
+///
+/// The poll endpoint is a server-side long-poll: each GET blocks until the query completes or the server-side
+/// timeout elapses, so the client normally does not sleep at all. This backoff only takes effect when a GET
+/// returns in-progress quickly, bounding how tightly the poll loop can spin in that case.
+struct PollBackoff {
+    step: usize,
+}
+
+impl PollBackoff {
+    const STEPS: [Duration; 7] = [
+        Duration::from_millis(500),
+        Duration::from_millis(500),
+        Duration::from_secs(1),
+        Duration::from_millis(1500),
+        Duration::from_secs(2),
+        Duration::from_secs(4),
+        Duration::from_secs(5),
+    ];
+
+    fn new() -> Self {
+        Self { step: 0 }
+    }
+
+    fn next_delay(&mut self) -> Duration {
+        let delay = Self::STEPS[self.step];
+        self.step = (self.step + 1).min(Self::STEPS.len() - 1);
+        delay
     }
 }
 
@@ -306,6 +336,28 @@ mod tests {
 
         server.abort();
         let _ = server.await;
+    }
+
+    #[test]
+    fn poll_backoff_steps_up_then_plateaus_at_five_seconds() {
+        let mut backoff = PollBackoff::new();
+        let observed: Vec<Duration> = (0..9).map(|_| backoff.next_delay()).collect();
+
+        assert_eq!(
+            observed,
+            vec![
+                Duration::from_millis(500),
+                Duration::from_millis(500),
+                Duration::from_secs(1),
+                Duration::from_millis(1500),
+                Duration::from_secs(2),
+                Duration::from_secs(4),
+                Duration::from_secs(5),
+                // Plateaus at the 5s tail once the table is exhausted.
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            ]
+        );
     }
 
     #[test]
