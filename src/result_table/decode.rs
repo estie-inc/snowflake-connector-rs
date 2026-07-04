@@ -447,7 +447,7 @@ impl FromCell for NaiveDateTime {
 
     fn build_plan(column: &Column) -> Result<Self::Plan> {
         match column.ty() {
-            ColumnType::TimestampNtz { scale } => TimestampPlan::new(i64::from(scale.unwrap_or(9)))
+            ColumnType::TimestampNtz { scale } => TimestampPlan::from_metadata_scale(*scale)
                 .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
             _ => Err(incompatible_column::<Self>(column, None)),
         }
@@ -474,10 +474,10 @@ impl FromCell for DateTime<Utc> {
 
     fn build_plan(column: &Column) -> Result<Self::Plan> {
         match column.ty() {
-            ColumnType::TimestampLtz { scale } => TimestampPlan::new(i64::from(scale.unwrap_or(9)))
+            ColumnType::TimestampLtz { scale } => TimestampPlan::from_metadata_scale(*scale)
                 .map(UtcTimestampPlan::Ltz)
                 .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
-            ColumnType::TimestampTz { scale } => TimestampPlan::new(i64::from(scale.unwrap_or(9)))
+            ColumnType::TimestampTz { scale } => TimestampPlan::from_metadata_scale(*scale)
                 .map(UtcTimestampPlan::Tz)
                 .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
             _ => Err(incompatible_column::<Self>(column, None)),
@@ -499,7 +499,7 @@ impl FromCell for DateTime<FixedOffset> {
 
     fn build_plan(column: &Column) -> Result<Self::Plan> {
         match column.ty() {
-            ColumnType::TimestampTz { scale } => TimestampPlan::new(i64::from(scale.unwrap_or(9)))
+            ColumnType::TimestampTz { scale } => TimestampPlan::from_metadata_scale(*scale)
                 .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
             _ => Err(incompatible_column::<Self>(column, None)),
         }
@@ -568,7 +568,7 @@ impl TimePlan {
 /// Precomputed scale factors for a timestamp column, shared by the `NTZ` / `LTZ` / `TZ` decoders.
 #[derive(Clone, Copy)]
 pub struct TimestampPlan {
-    scale: i64,
+    scale: usize,
     /// `10^scale`, converting between the scaled integer wire value and whole seconds.
     scale_factor: i128,
     /// `10^(9 - scale)`, scaling the fractional remainder up to nanoseconds.
@@ -582,7 +582,11 @@ impl TimestampPlan {
         nanos_multiplier: 1_000_000_000,
     };
 
-    fn new(scale: i64) -> StdResult<Self, String> {
+    fn from_metadata_scale(scale: Option<u8>) -> StdResult<Self, String> {
+        Self::new(scale.unwrap_or(9))
+    }
+
+    fn new(scale: u8) -> StdResult<Self, String> {
         let scale = validate_ts_scale(scale)?;
         // `scale` is `0..=9`, so neither power can overflow.
         Ok(Self {
@@ -593,11 +597,11 @@ impl TimestampPlan {
     }
 }
 
-fn validate_ts_scale(scale: i64) -> StdResult<i64, String> {
-    if !(0..=9).contains(&scale) {
+fn validate_ts_scale(scale: u8) -> StdResult<usize, String> {
+    if scale > 9 {
         return Err(format!("invalid timestamp scale: {scale} (expected 0..=9)"));
     }
-    Ok(scale)
+    Ok(usize::from(scale))
 }
 
 fn parse_scaled_decimal_i128(
@@ -611,52 +615,71 @@ fn parse_scaled_decimal_i128(
         return Err(format!("Could not decode {kind}: {s}"));
     }
 
-    let (negative, digits) = if let Some(rest) = s.strip_prefix('-') {
-        (true, rest)
-    } else if let Some(rest) = s.strip_prefix('+') {
-        (false, rest)
-    } else {
-        (false, s)
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    let negative = match bytes[0] {
+        b'-' => {
+            i = 1;
+            true
+        }
+        b'+' => {
+            i = 1;
+            false
+        }
+        _ => false,
     };
-    if digits.is_empty() {
+    if i == bytes.len() {
         return Err(format!("Could not decode {kind}: {s}"));
     }
 
-    let (whole_str, frac_str) = match digits.split_once('.') {
-        Some((whole, frac)) if !frac.is_empty() => (whole, Some(frac)),
-        Some(_) => return Err(format!("Could not decode {kind}: {s}")),
-        None => (digits, None),
-    };
-    if whole_str.is_empty() || !whole_str.as_bytes().iter().all(|b| b.is_ascii_digit()) {
+    let mut whole = 0i128;
+    let whole_start = i;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if !b.is_ascii_digit() {
+            break;
+        }
+        whole = whole
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(i128::from(b - b'0')))
+            .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
+        i += 1;
+    }
+    if i == whole_start {
         return Err(format!("Could not decode {kind}: {s}"));
     }
 
-    let whole = whole_str
-        .parse::<i128>()
-        .map_err(|_| format!("Could not decode {kind}: {s}"))?;
     let mut scaled = whole
         .checked_mul(plan.scale_factor)
         .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
 
-    if let Some(frac_str) = frac_str {
+    if i < bytes.len() {
+        if bytes[i] != b'.' {
+            return Err(format!("Could not decode {kind}: {s}"));
+        }
+        i += 1;
+        if i == bytes.len() {
+            return Err(format!("Could not decode {kind}: {s}"));
+        }
         if scale == 0 {
-            return Err(format!("Could not decode {kind}: {s}"));
-        }
-        if !frac_str.as_bytes().iter().all(|b| b.is_ascii_digit()) {
-            return Err(format!("Could not decode {kind}: {s}"));
-        }
-        if frac_str.len() > scale as usize {
             return Err(format!("Could not decode {kind}: {s}"));
         }
 
         let mut frac = 0i128;
-        for b in frac_str.bytes() {
+        let mut frac_len = 0usize;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if !b.is_ascii_digit() || frac_len >= scale {
+                return Err(format!("Could not decode {kind}: {s}"));
+            }
             frac = frac
                 .checked_mul(10)
                 .and_then(|value| value.checked_add(i128::from(b - b'0')))
                 .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
+            frac_len += 1;
+            i += 1;
         }
-        for _ in frac_str.len()..scale as usize {
+        for _ in frac_len..scale {
             frac = frac
                 .checked_mul(10)
                 .ok_or_else(|| format!("Could not decode {kind}: {s}"))?;
@@ -706,7 +729,7 @@ pub(crate) fn parse_timestamp_epoch_with(
     parse_timestamp_epoch_scaled(scaled, plan, s, "timestamp")
 }
 
-pub(crate) fn parse_timestamp_epoch(s: &str, scale: i64) -> StdResult<DateTime<Utc>, String> {
+pub(crate) fn parse_timestamp_epoch(s: &str, scale: u8) -> StdResult<DateTime<Utc>, String> {
     parse_timestamp_epoch_with(s, &TimestampPlan::new(scale)?)
 }
 
@@ -794,7 +817,7 @@ pub(crate) fn parse_timestamp_tz_with_offset_with(
 
 pub(crate) fn parse_timestamp_tz_with_offset(
     s: &str,
-    scale: i64,
+    scale: u8,
 ) -> StdResult<DateTime<FixedOffset>, String> {
     parse_timestamp_tz_with_offset_with(s, &TimestampPlan::new(scale)?)
 }
@@ -930,16 +953,16 @@ mod tests {
         rowset::parser::parse_inline_result_table,
     };
 
-    fn timestamp_scale(ty: &ColumnType) -> Option<i64> {
+    fn timestamp_scale(ty: &ColumnType) -> Option<u8> {
         match ty {
             ColumnType::TimestampNtz { scale }
             | ColumnType::TimestampLtz { scale }
-            | ColumnType::TimestampTz { scale } => scale.map(i64::from),
+            | ColumnType::TimestampTz { scale } => *scale,
             _ => None,
         }
     }
 
-    fn parse_timestamp_tz_as_utc(s: &str, scale: i64) -> StdResult<DateTime<Utc>, String> {
+    fn parse_timestamp_tz_as_utc(s: &str, scale: u8) -> StdResult<DateTime<Utc>, String> {
         parse_timestamp_tz_as_utc_with(s, &TimestampPlan::new(scale)?)
     }
 
@@ -1012,7 +1035,7 @@ mod tests {
     /// Snowflake documents timestamp scales in the `0..=9` range.
     #[test]
     fn parse_timestamp_epoch_rejects_out_of_range_scale() {
-        for scale in [-1, 10] {
+        for scale in [10, u8::MAX] {
             let err = parse_timestamp_epoch("0.1", scale).unwrap_err();
             assert!(err.contains("invalid timestamp scale"), "actual: {err}");
         }

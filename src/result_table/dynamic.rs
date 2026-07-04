@@ -338,19 +338,19 @@ fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<CellValue> {
             Ok(CellValue::Time(t))
         }
         ColumnType::TimestampNtz { scale } => {
-            let scale = i64::from(scale.unwrap_or(9));
+            let scale = scale.unwrap_or(9);
             let dt = parse_timestamp_epoch(raw, scale)
                 .map_err(|m| CellConversionError::builder(m).build())?;
             Ok(CellValue::TimestampNtz(dt.naive_utc()))
         }
         ColumnType::TimestampLtz { scale } => {
-            let scale = i64::from(scale.unwrap_or(9));
+            let scale = scale.unwrap_or(9);
             let dt = parse_timestamp_epoch(raw, scale)
                 .map_err(|m| CellConversionError::builder(m).build())?;
             Ok(CellValue::TimestampLtz(dt))
         }
         ColumnType::TimestampTz { scale } => {
-            let scale = i64::from(scale.unwrap_or(9));
+            let scale = scale.unwrap_or(9);
             let dt = parse_timestamp_tz_with_offset(raw, scale)
                 .map_err(|m| CellConversionError::builder(m).build())?;
             Ok(CellValue::TimestampTz(dt))
