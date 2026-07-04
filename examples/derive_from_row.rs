@@ -113,8 +113,7 @@ async fn run_exact_rename_example(session: &Session) -> Result<()> {
 }
 
 async fn run_position_examples(session: &Session) -> Result<()> {
-    // Tuple structs decode by position automatically; named structs opt in with
-    // container-level `#[snowflake(positional)]`.
+    // Tuple structs decode by position automatically; named structs opt in with container-level `#[snowflake(positional)]`.
     let tuple_rows = session
         .query_as(r#"SELECT 7, 'tuple row'"#)
         .await?

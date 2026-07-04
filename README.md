@@ -49,9 +49,9 @@ let dynamic_rows = session
 assert_eq!(dynamic_rows.len(), 2);
 
 let rows = session
-    .query_as::<ExampleRow, _>("SELECT id, value FROM example ORDER BY id")
+    .query_as("SELECT id, value FROM example ORDER BY id")
     .await?
-    .collect::<Vec<_>>()
+    .collect::<Vec<ExampleRow>>()
     .await?;
 assert_eq!(
     rows,
