@@ -1,13 +1,14 @@
 use std::{any::type_name, fmt, mem, result::Result as StdResult, sync::Arc};
 
 use base64::Engine as _;
+use bytes::Bytes;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
 use crate::result_table::{
     CellConversionError, CellDecodeResult, FromRow, RowPlanContext,
     cell::CellRef,
     decode::{
-        decode_hex, parse_time_seconds_and_nanos, parse_timestamp_epoch,
+        decode_hex, decode_json_payload, parse_time_seconds_and_nanos, parse_timestamp_epoch,
         parse_timestamp_tz_with_offset,
     },
     row::RowRef,
@@ -41,6 +42,44 @@ impl DecimalValue {
 impl fmt::Display for DecimalValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.raw)
+    }
+}
+
+/// Result-side representation of a Snowflake `BINARY` cell.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BinaryValue(Bytes);
+
+impl BinaryValue {
+    pub(crate) fn new(bytes: impl Into<Bytes>) -> Self {
+        Self(bytes.into())
+    }
+
+    /// Borrow the decoded bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Consume the wrapper, returning the underlying [`bytes::Bytes`].
+    pub fn into_bytes(self) -> Bytes {
+        self.0
+    }
+}
+
+impl From<Bytes> for BinaryValue {
+    fn from(bytes: Bytes) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<Vec<u8>> for BinaryValue {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(bytes.into())
+    }
+}
+
+impl AsRef<[u8]> for BinaryValue {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
     }
 }
 
@@ -85,11 +124,10 @@ pub enum CellValue {
     TimestampLtz(DateTime<Utc>),
     /// `TIMESTAMP_TZ`, with the wire-reported offset preserved.
     TimestampTz(DateTime<FixedOffset>),
-    /// `VARIANT` / `OBJECT` / `ARRAY` — semi-structured payloads decoded
-    /// as JSON.
+    /// `VARIANT` / `OBJECT` / `ARRAY` payloads represented as JSON.
     Json(serde_json::Value),
     /// `BINARY`, decoded from Snowflake's hex representation.
-    Binary(Vec<u8>),
+    Binary(BinaryValue),
 }
 
 impl CellValue {
@@ -235,9 +273,9 @@ impl CellValue {
             CellValue::TimestampLtz(dt) => serde_json::Value::String(dt.to_rfc3339()),
             CellValue::TimestampTz(dt) => serde_json::Value::String(dt.to_rfc3339()),
             CellValue::Json(v) => v,
-            CellValue::Binary(bytes) => {
-                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(&bytes))
-            }
+            CellValue::Binary(bytes) => serde_json::Value::String(
+                base64::engine::general_purpose::STANDARD.encode(bytes.as_bytes()),
+            ),
         }
     }
 }
@@ -356,16 +394,11 @@ fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<CellValue> {
             Ok(CellValue::TimestampTz(dt))
         }
         ColumnType::Variant | ColumnType::Object | ColumnType::Array => {
-            let v = serde_json::from_str(raw).map_err(|e| {
-                CellConversionError::builder(format!("invalid json: {e}"))
-                    .source(e)
-                    .build()
-            })?;
-            Ok(CellValue::Json(v))
+            Ok(CellValue::Json(decode_json_payload(raw)?))
         }
         ColumnType::Binary { .. } => {
             let bytes = decode_hex(raw).map_err(|m| CellConversionError::builder(m).build())?;
-            Ok(CellValue::Binary(bytes))
+            Ok(CellValue::Binary(BinaryValue::new(bytes)))
         }
         ColumnType::Geography
         | ColumnType::Geometry

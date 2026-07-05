@@ -1,8 +1,10 @@
 use super::common;
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
-use snowflake_connector_rs::{CellValue, Result, SchemaError};
+use snowflake_connector_rs::{BinaryValue, CellValue, Json, Result, SchemaError};
 
 #[tokio::test]
 async fn test_decode() -> Result<()> {
@@ -142,6 +144,84 @@ async fn test_decode() -> Result<()> {
         .unwrap()?;
     assert_eq!(tz_offset.offset().local_minus_utc(), 9 * 3600);
     assert_eq!(tz_offset.naive_local(), expected_local);
+
+    let table = session
+        .query(
+            "SELECT
+                PARSE_JSON('{\"a\":1,\"b\":\"x\"}')                             AS variant_obj,
+                ARRAY_CONSTRUCT(1, NULL, 3)                                     AS arr_with_null,
+                TO_BINARY('48656C6C6F', 'HEX')                                  AS bin,
+                ARRAY_CONSTRUCT(1, 2, 3)::ARRAY(INTEGER)                        AS structured_array,
+                OBJECT_CONSTRUCT('name', 'x', 'age', 1)::OBJECT(name VARCHAR, age INTEGER) AS structured_object,
+                OBJECT_CONSTRUCT('1', 'a', '2', 'b')::MAP(NUMBER, VARCHAR)      AS number_map",
+        )
+        .await?
+        .collect_table()
+        .await?;
+    assert_eq!(table.row_count(), 1);
+
+    // Dynamic path: semi-structured columns land in `CellValue::Json`, BINARY in `CellValue::Binary`.
+    // The NULL array element surfaces as JSON `null`.
+    let row = table.dynamic_rows()?.next().unwrap()?;
+    assert_eq!(
+        row.value("VARIANT_OBJ").unwrap(),
+        &CellValue::Json(serde_json::json!({"a": 1, "b": "x"}))
+    );
+    assert_eq!(
+        row.value("ARR_WITH_NULL").unwrap(),
+        &CellValue::Json(serde_json::json!([1, null, 3]))
+    );
+    assert!(matches!(
+        row.value("BIN").unwrap(),
+        CellValue::Binary(bin) if bin.as_bytes() == b"Hello"
+    ));
+    assert_eq!(
+        row.value("STRUCTURED_ARRAY").unwrap(),
+        &CellValue::Json(serde_json::json!([1, 2, 3]))
+    );
+    assert_eq!(
+        row.value("STRUCTURED_OBJECT").unwrap(),
+        &CellValue::Json(serde_json::json!({"name": "x", "age": 1}))
+    );
+    assert_eq!(
+        row.value("NUMBER_MAP").unwrap(),
+        &CellValue::Json(serde_json::json!({"1": "a", "2": "b"}))
+    );
+
+    // Typed path: `serde_json::Value`, `Json<T>` for concrete Rust shapes, and `BinaryValue` for BINARY.
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    struct Person {
+        name: String,
+        age: i64,
+    }
+
+    let (variant_obj, arr_with_null, bin, structured_array, structured_object, number_map) = table
+        .rows::<(
+            serde_json::Value,
+            Json<Vec<Option<i64>>>,
+            BinaryValue,
+            Json<Vec<i64>>,
+            Json<Person>,
+            Json<BTreeMap<i64, String>>,
+        )>()?
+        .next()
+        .unwrap()?;
+
+    assert_eq!(variant_obj, serde_json::json!({"a": 1, "b": "x"}));
+    assert_eq!(arr_with_null.into_inner(), vec![Some(1), None, Some(3)]);
+    assert_eq!(bin.as_bytes(), b"Hello");
+    assert_eq!(structured_array.into_inner(), vec![1, 2, 3]);
+    assert_eq!(
+        structured_object.into_inner(),
+        Person {
+            name: "x".to_owned(),
+            age: 1
+        }
+    );
+    assert_eq!(
+        number_map.into_inner(),
+        BTreeMap::from([(1, "a".to_owned()), (2, "b".to_owned())])
+    );
 
     Ok(())
 }
