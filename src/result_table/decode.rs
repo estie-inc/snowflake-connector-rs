@@ -1,10 +1,11 @@
-use std::{any::type_name, result::Result as StdResult};
+use std::{any::type_name, borrow::Cow, result::Result as StdResult};
 
 use chrono::{DateTime, Days, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use serde::de::DeserializeOwned;
 
 use crate::result_table::{
     CellConversionError, CellDecodeResult,
-    dynamic::DecimalValue,
+    dynamic::{BinaryValue, DecimalValue},
     plan::RowPlanContext,
     row::RowRef,
     schema::{Column, ColumnIndex, ColumnType, Schema},
@@ -524,15 +525,60 @@ impl FromCell for serde_json::Value {
 
     fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
         let raw = required_raw(raw)?;
-        serde_json::from_str(raw).map_err(|e| {
-            CellConversionError::builder(format!("invalid json: {e}"))
-                .source(e)
-                .build()
-        })
+        decode_json_payload(raw)
     }
 }
 
-impl FromCell for Vec<u8> {
+/// Decode wrapper for Snowflake `VARIANT`, `OBJECT`, and `ARRAY` cells.
+///
+/// Snowflake result metadata identifies only the root kind; structured element types, object fields, and map key/value
+/// types are not available for plan-time checking. Decoding succeeds when the cell payload can be interpreted as `T`
+/// after normalizing Snowflake's array-element `undefined` values to JSON `null`.
+///
+/// Use `Option<_>` for array element positions that may contain SQL `NULL`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Json<T>(T);
+
+impl<T> Json<T> {
+    /// Consume the wrapper, returning the decoded value.
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> AsRef<T> for Json<T> {
+    fn as_ref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> FromCell for Json<T>
+where
+    T: DeserializeOwned,
+{
+    type Plan = ();
+
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::Variant | ColumnType::Object | ColumnType::Array => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        let normalized = normalize_json_undefined(raw);
+        serde_json::from_str::<T>(&normalized)
+            .map(Json)
+            .map_err(|e| {
+                CellConversionError::builder(format!("invalid json payload: {e}"))
+                    .source(e)
+                    .build()
+            })
+    }
+}
+
+impl FromCell for BinaryValue {
     type Plan = ();
 
     fn build_plan(column: &Column) -> Result<Self::Plan> {
@@ -544,8 +590,86 @@ impl FromCell for Vec<u8> {
 
     fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
         let raw = required_raw(raw)?;
-        decode_hex(raw).map_err(|m| CellConversionError::builder(m).build())
+        decode_hex(raw)
+            .map(BinaryValue::new)
+            .map_err(|m| CellConversionError::builder(m).build())
     }
+}
+
+/// Decode a `VARIANT`, `OBJECT`, or `ARRAY` payload into a [`serde_json::Value`], normalizing bare `undefined` tokens first.
+pub(crate) fn decode_json_payload(raw: &str) -> CellDecodeResult<serde_json::Value> {
+    let normalized = normalize_json_undefined(raw);
+    serde_json::from_str(&normalized).map_err(|e| {
+        CellConversionError::builder(format!("invalid json payload: {e}"))
+            .source(e)
+            .build()
+    })
+}
+
+/// Replace bare `undefined` tokens with JSON `null`.
+///
+/// Snowflake emits a NULL array element as a bare `undefined`, which is not valid JSON.
+/// Returns [`Cow::Borrowed`] and allocates nothing when no replacement is needed.
+pub(crate) fn normalize_json_undefined(raw: &str) -> Cow<'_, str> {
+    const TOKEN: &[u8] = b"undefined";
+
+    // Cheap reject: without the substring anywhere there is nothing to rewrite.
+    if !raw.as_bytes().windows(TOKEN.len()).any(|w| w == TOKEN) {
+        return Cow::Borrowed(raw);
+    }
+
+    let bytes = raw.as_bytes();
+    let mut out: Option<String> = None;
+    let mut copied = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if b == b'u' && bytes[i..].starts_with(TOKEN) {
+            let after = i + TOKEN.len();
+            // Guard against an unquoted word that merely contains the token (`undefinedX`, `_undefined`).
+            let prev_ok = i == 0 || !is_bare_word_byte(bytes[i - 1]);
+            let next_ok = after >= bytes.len() || !is_bare_word_byte(bytes[after]);
+            if prev_ok && next_ok {
+                let buf = out.get_or_insert_with(|| String::with_capacity(raw.len()));
+                buf.push_str(&raw[copied..i]);
+                buf.push_str("null");
+                copied = after;
+                i = after;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    match out {
+        Some(mut buf) => {
+            buf.push_str(&raw[copied..]);
+            Cow::Owned(buf)
+        }
+        None => Cow::Borrowed(raw),
+    }
+}
+
+fn is_bare_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// Precomputed fractional-seconds state for a `TIME` column.
@@ -1554,18 +1678,163 @@ mod tests {
         assert_eq!(value["message"], "line\n\\path");
     }
 
-    /// `TEXT` hex must NOT decode as `Vec<u8>`.
+    /// `TEXT` hex must NOT decode as `BinaryValue`.
     #[test]
     fn binary_rejects_text_column() {
         let t = one_cell_table(ColumnType::Text { length: None }, "48656C6C6F");
-        let err = match t.rows::<(Vec<u8>,)>() {
-            Ok(_) => panic!("expected plan build to reject text column for Vec<u8>"),
+        let err = match t.rows::<(BinaryValue,)>() {
+            Ok(_) => panic!("expected plan build to reject text column for BinaryValue"),
             Err(err) => err,
         };
         assert!(matches!(
             err.as_schema_error(),
             Some(SchemaError::IncompatibleColumnType(_))
         ));
+    }
+
+    #[test]
+    fn binary_value_decodes_binary_column() {
+        let t = one_cell_table(ColumnType::Binary { length: None }, "48656C6C6F");
+        let value = t
+            .rows::<(BinaryValue,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value.as_bytes(), b"Hello");
+    }
+
+    #[test]
+    fn json_typed_array_decodes_null_elements_via_undefined_normalization() {
+        let t = one_cell_table(ColumnType::Array, "[\n  1,\n  undefined,\n  3\n]");
+        let value = t
+            .rows::<(Json<Vec<Option<i64>>>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value.into_inner(), vec![Some(1), None, Some(3)]);
+    }
+
+    #[test]
+    fn json_typed_object_decodes_integer_keyed_map() {
+        let t = one_cell_table(ColumnType::Object, r#"{"1":"a","2":"b"}"#);
+        let value = t
+            .rows::<(Json<std::collections::BTreeMap<i64, String>>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        let map = value.into_inner();
+        assert_eq!(map.get(&1).map(String::as_str), Some("a"));
+        assert_eq!(map.get(&2).map(String::as_str), Some("b"));
+    }
+
+    #[test]
+    fn json_typed_nested_struct_decodes() {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Inner {
+            x: i64,
+        }
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Outer {
+            nested: Inner,
+        }
+
+        let t = one_cell_table(ColumnType::Object, r#"{"nested":{"x":7}}"#);
+        let value = t
+            .rows::<(Json<Outer>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(
+            value.into_inner(),
+            Outer {
+                nested: Inner { x: 7 }
+            }
+        );
+    }
+
+    /// A NULL array element (`undefined`) cannot land in a non-`Option` slot: `serde` rejects the `null`.
+    #[test]
+    fn json_typed_non_option_vec_rejects_null_element() {
+        let t = one_cell_table(ColumnType::Array, "[\n  1,\n  undefined,\n  3\n]");
+        let err = t
+            .rows::<(Json<Vec<i64>>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap_err();
+        let decode = err
+            .as_cell_decode_error()
+            .expect("null element should fail cell decode");
+        assert!(
+            decode
+                .conversion_error()
+                .reason()
+                .contains("invalid json payload"),
+            "actual: {}",
+            decode.conversion_error().reason()
+        );
+    }
+
+    #[test]
+    fn json_typed_rejects_text_column() {
+        let t = one_cell_table(ColumnType::Text { length: None }, "[1,2,3]");
+        let err = match t.rows::<(Json<Vec<i64>>,)>() {
+            Ok(_) => panic!("expected plan build to reject text column for Json"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
+    }
+
+    #[test]
+    fn serde_json_value_normalizes_undefined_array_elements() {
+        let t = one_cell_table(ColumnType::Array, "[\n  1,\n  undefined,\n  3\n]");
+        let value = t
+            .rows::<(serde_json::Value,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value, serde_json::json!([1, null, 3]));
+    }
+
+    #[test]
+    fn normalize_json_undefined_leaves_clean_json_borrowed() {
+        let raw = r#"{"a":1,"b":[1,2,3]}"#;
+        assert!(matches!(normalize_json_undefined(raw), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn normalize_json_undefined_preserves_string_literals() {
+        // `undefined` inside a quoted value, plus escaped quotes and backslashes, must not be rewritten.
+        let raw = r#"["undefined","a \" undefined","c\\undefined"]"#;
+        assert!(matches!(normalize_json_undefined(raw), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn normalize_json_undefined_rewrites_bare_tokens_outside_strings() {
+        let raw = r#"[undefined,"undefined",undefined]"#;
+        assert_eq!(normalize_json_undefined(raw), r#"[null,"undefined",null]"#);
+    }
+
+    #[test]
+    fn normalize_json_undefined_keeps_object_null_values() {
+        let raw = "{\n  \"k1\": null,\n  \"k2\": undefined\n}";
+        assert_eq!(
+            normalize_json_undefined(raw),
+            "{\n  \"k1\": null,\n  \"k2\": null\n}"
+        );
     }
 
     /// `TIMESTAMP_LTZ` must NOT decode as `NaiveDateTime` — semantics differ.
