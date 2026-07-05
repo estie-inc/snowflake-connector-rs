@@ -27,13 +27,13 @@ struct BindingRoundTripCase {
 
 #[tokio::test]
 async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::default_session().await?;
+    let table_name = common::unique_temp_table_name("bind_round_trip");
 
     session
-        .query(
+        .query(format!(
             "
-            CREATE TEMPORARY TABLE bind_round_trip (
+            CREATE TEMPORARY TABLE {table_name} (
                 id NUMBER,
                 text_val STRING,
                 flag BOOLEAN,
@@ -48,8 +48,8 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
                 decfloat_val DECFLOAT,
                 binary_val BINARY
             )
-            ",
-        )
+            "
+        ))
         .await?;
 
     let cases = [
@@ -102,9 +102,9 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
     ];
 
     for case in &cases {
-        let insert = Statement::new(
+        let insert = Statement::new(format!(
             "
-            INSERT INTO bind_round_trip (
+            INSERT INTO {table_name} (
                 id,
                 text_val,
                 flag,
@@ -119,8 +119,8 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
                 decfloat_val,
                 binary_val
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ",
-        )
+            "
+        ))
         .bind(case.id)
         .bind(case.text)
         .bind(case.flag)
@@ -138,7 +138,7 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
     }
 
     let rows = session
-        .query_as(
+        .query_as(format!(
             "
             SELECT
                 id,
@@ -154,11 +154,11 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
                 TO_VARCHAR(wide_integer_val) AS wide_integer_val,
                 binary_val
             FROM
-                bind_round_trip
+                {table_name}
             ORDER BY
                 id
-            ",
-        )
+            "
+        ))
         .await?
         .collect::<Vec<(
             i64,
@@ -200,8 +200,10 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
 
     let filtered = session
         .query_as(
-            Statement::new("SELECT text_val, nullable_text FROM bind_round_trip WHERE id = ?")
-                .bind(2_i64),
+            Statement::new(format!(
+                "SELECT text_val, nullable_text FROM {table_name} WHERE id = ?"
+            ))
+            .bind(2_i64),
         )
         .await?
         .collect::<Vec<(String, Option<String>)>>()
@@ -214,18 +216,18 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
     for case in &cases {
         let matched = session
             .query_as(
-                Statement::new(
+                Statement::new(format!(
                     "
                     SELECT
                         id
                     FROM
-                        bind_round_trip
+                        {table_name}
                     WHERE
                         id = ?
                         AND wide_integer_val = ?
                         AND decfloat_val = ?::DECFLOAT
-                    ",
-                )
+                    "
+                ))
                 .bind(case.id)
                 .bind(case.wide_integer)
                 .bind(case.decfloat),
@@ -238,10 +240,12 @@ async fn test_bind_parameters_round_trip_common_types_and_where_clause() -> Resu
 
     let named_filtered = session
         .query_as(
-            Statement::new("SELECT id FROM bind_round_trip WHERE id = :id OR id = :1 ORDER BY id")
-                .bind_named("id", 0_i64)
-                .bind_named("id", 2_i64)
-                .bind_named("1", 1_i64),
+            Statement::new(format!(
+                "SELECT id FROM {table_name} WHERE id = :id OR id = :1 ORDER BY id"
+            ))
+            .bind_named("id", 0_i64)
+            .bind_named("id", 2_i64)
+            .bind_named("1", 1_i64),
         )
         .await?
         .collect::<Vec<(i64,)>>()
@@ -287,11 +291,13 @@ fn format_tzhtzm(offset: FixedOffset) -> String {
 
 #[tokio::test]
 async fn test_bind_parameters_timestamp_tz_round_trips_control_and_extreme_offsets() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::default_session().await?;
+    let table_name = common::unique_temp_table_name("bind_ts_tz");
 
     session
-        .query("CREATE TEMPORARY TABLE bind_ts_tz (id NUMBER, ts TIMESTAMP_TZ)")
+        .query(format!(
+            "CREATE TEMPORARY TABLE {table_name} (id NUMBER, ts TIMESTAMP_TZ)"
+        ))
         .await?;
 
     let control_offset = FixedOffset::east_opt(9 * 3600).unwrap();
@@ -301,25 +307,27 @@ async fn test_bind_parameters_timestamp_tz_round_trips_control_and_extreme_offse
         .unwrap()
         .and_local_timezone(control_offset)
         .unwrap();
-    let insert = Statement::new("INSERT INTO bind_ts_tz (id, ts) VALUES (?, ?)")
+    let insert = Statement::new(format!("INSERT INTO {table_name} (id, ts) VALUES (?, ?)"))
         .bind(1_i64)
         .bind(TimestampTz::try_from(control_insert)?);
     session.query(insert).await?;
     session
-        .query("INSERT INTO bind_ts_tz VALUES (2, '2024-06-15 21:30:45 +09:00'::TIMESTAMP_TZ)")
+        .query(format!(
+            "INSERT INTO {table_name} VALUES (2, '2024-06-15 21:30:45 +09:00'::TIMESTAMP_TZ)"
+        ))
         .await?;
 
     let inserted_rows = session
-        .query_as(
+        .query_as(format!(
             "
             SELECT
                 TO_CHAR(ts, 'YYYY-MM-DD HH24:MI:SS TZHTZM') AS ts_str
             FROM
-                bind_ts_tz
+                {table_name}
             ORDER BY
                 id
-            ",
-        )
+            "
+        ))
         .await?
         .collect::<Vec<(String,)>>()
         .await?;
@@ -333,7 +341,7 @@ async fn test_bind_parameters_timestamp_tz_round_trips_control_and_extreme_offse
         .await?
         .collect::<Vec<(String,)>>()
         .await?;
-    let control_bound = render_bound_timestamp_tz(&session, control_offset).await?;
+    let control_bound = render_bound_timestamp_tz(session, control_offset).await?;
     assert_eq!(control_bound, control_literal.into_iter().next().unwrap().0);
 
     let candidates = [
@@ -359,7 +367,7 @@ async fn test_bind_parameters_timestamp_tz_round_trips_control_and_extreme_offse
     ];
 
     for (label, offset) in candidates {
-        let rendered = render_bound_timestamp_tz(&session, offset)
+        let rendered = render_bound_timestamp_tz(session, offset)
             .await
             .map_err(|err| {
                 snowflake_connector_rs::Error::other(format!(

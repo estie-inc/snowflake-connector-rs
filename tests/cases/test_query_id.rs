@@ -4,8 +4,7 @@ use snowflake_connector_rs::{ColumnType, Result};
 
 #[tokio::test]
 async fn result_set_query_id_and_schema_survive_inline_empty_and_chunked_paths() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::default_session().await?;
 
     let mut inline = session.query("SELECT 1 AS X, 2 AS Y").await?;
     let inline_query_id = inline.query_id().to_string();

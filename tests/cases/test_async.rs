@@ -8,8 +8,7 @@ use snowflake_connector_rs::{QueryConfig, Result};
 async fn test_async_query_picked_up_in_final_polling_window() -> Result<()> {
     let query_config =
         QueryConfig::default().with_async_query_completion_timeout(Duration::from_secs(15));
-    let client = common::connect_with_query(query_config)?;
-    let session = client.create_session().await?;
+    let session = common::fresh_session_with_query(query_config).await?;
 
     let table = session
         .query(r#"CALL SYSTEM$WAIT(50)"#)

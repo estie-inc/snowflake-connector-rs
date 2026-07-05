@@ -1,10 +1,49 @@
-use std::env;
+use std::{
+    env,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
+use tokio::sync::OnceCell;
 use url::Url;
 
 use snowflake_connector_rs::{
-    AuthConfig, Client, ClientConfig, EndpointConfig, QueryConfig, Result, SessionConfig,
+    AuthConfig, Client, ClientConfig, EndpointConfig, QueryConfig, Result, Session, SessionConfig,
 };
+
+static DEFAULT_SESSION: OnceCell<Session> = OnceCell::const_new();
+
+/// Returns a process-shared session built with the default config.
+pub async fn default_session() -> Result<&'static Session> {
+    DEFAULT_SESSION
+        .get_or_try_init(|| async {
+            let client = connect()?;
+            client.create_session().await
+        })
+        .await
+}
+
+/// Returns a dedicated session for tests that need isolation.
+pub async fn fresh_session() -> Result<Session> {
+    connect()?.create_session().await
+}
+
+/// Like [`fresh_session`], but applies a custom [`SessionConfig`].
+pub async fn fresh_session_with_config(session_config: SessionConfig) -> Result<Session> {
+    connect_with_session(session_config)?.create_session().await
+}
+
+/// Like [`fresh_session`], but applies a custom [`QueryConfig`].
+pub async fn fresh_session_with_query(query_config: QueryConfig) -> Result<Session> {
+    connect_with_query(query_config)?.create_session().await
+}
+
+static TEMP_TABLE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Builds a process-unique temporary table name so tests can share [`default_session`] without colliding on fixed names.
+pub fn unique_temp_table_name(base: &str) -> String {
+    let seq = TEMP_TABLE_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{base}_{seq}")
+}
 
 pub fn connect() -> Result<Client> {
     connect_with_configs(session_config(), QueryConfig::default())

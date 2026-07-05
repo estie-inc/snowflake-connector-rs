@@ -28,8 +28,7 @@ fn assert_rows_are_contiguous(rows: &[(u64, String)], expected_start: u64) {
 
 #[tokio::test]
 async fn test_chunked_typed_streaming_preserves_order() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::default_session().await?;
 
     let mut result = session
         .query_as::<(u64, String), _>(chunked_ordered_query())
@@ -58,8 +57,7 @@ async fn test_chunked_typed_streaming_preserves_order() -> Result<()> {
 
 #[tokio::test]
 async fn test_partial_typed_stream_then_collect_preserves_order() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::default_session().await?;
 
     for use_options in [false, true] {
         let mut result = session

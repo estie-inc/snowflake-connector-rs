@@ -74,8 +74,7 @@ struct NamedByPosition {
 
 #[tokio::test]
 async fn derive_named_lookup_variants_decode_expected_rows() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::fresh_session().await?;
 
     let users = session
         .query_as(
@@ -163,8 +162,7 @@ async fn derive_named_lookup_variants_decode_expected_rows() -> Result<()> {
 
 #[tokio::test]
 async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::default_session().await?;
 
     let err = session
         .query_as::<UserRow, _>("SELECT 1 AS id, 'alice' AS user_name, TRUE AS is_active")
@@ -229,8 +227,7 @@ async fn derive_required_fields_surface_schema_and_decode_errors() -> Result<()>
 
 #[tokio::test]
 async fn derive_nondefault_lookup_modes_cover_metadata_and_named_position_paths() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::fresh_session().await?;
 
     session
         .query("ALTER SESSION SET TIMEZONE = 'Asia/Tokyo'")

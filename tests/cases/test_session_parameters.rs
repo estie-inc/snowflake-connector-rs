@@ -10,12 +10,12 @@ async fn test_session_parameters_support_bulk_and_incremental_configuration() ->
         "CLIENT_RESULT_CHUNK_SIZE".to_string(),
         serde_json::json!(48),
     )]);
-    let client = common::connect_with_session(
+    let session = common::fresh_session_with_config(
         common::session_config()
             .with_session_parameters(params)
             .with_session_parameter("TIMEZONE", serde_json::json!("Asia/Tokyo")),
-    )?;
-    let session = client.create_session().await?;
+    )
+    .await?;
 
     let rows = session
         .query("SHOW PARAMETERS LIKE 'CLIENT_RESULT_CHUNK_SIZE' IN SESSION")

@@ -10,8 +10,7 @@ use snowflake_connector_rs::{
 
 #[tokio::test]
 async fn test_decode() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::fresh_session().await?;
 
     session.query("ALTER SESSION SET TIMEZONE = 'UTC'").await?;
 
@@ -458,8 +457,7 @@ async fn test_decode() -> Result<()> {
 
 #[tokio::test]
 async fn test_dynamic_row_value_resolves_escaped_identifiers() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::default_session().await?;
 
     let table = session
         .query(
@@ -496,8 +494,7 @@ async fn test_dynamic_row_value_resolves_escaped_identifiers() -> Result<()> {
 /// western (UTC-05:00) offsets.
 #[tokio::test]
 async fn test_decode_timestamp_tz_offsets() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::fresh_session().await?;
 
     // Use a session timezone that is not UTC so any accidental session-default leakage shows up in the failure mode.
     session

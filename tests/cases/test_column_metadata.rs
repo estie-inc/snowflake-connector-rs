@@ -8,8 +8,7 @@ use snowflake_connector_rs::{
 // in the expected variants and widths. `CAST(NULL AS T)` carries the declared type's metadata without needing rows.
 #[tokio::test]
 async fn column_type_metadata_maps_declared_types() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::default_session().await?;
 
     let sql = "
     SELECT
