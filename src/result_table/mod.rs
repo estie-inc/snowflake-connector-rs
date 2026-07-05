@@ -8,8 +8,10 @@ mod table;
 mod typed_table;
 
 pub use cell::CellRef;
-pub use decode::{CellPlan, FromCell, FromRow, Json, TimePlan, TimestampPlan, UtcTimestampPlan};
-pub use dynamic::{BinaryValue, CellValue, DecimalValue, DynamicRow};
+pub use decode::{
+    CellPlan, FromCell, FromRow, Json, TimePlan, TimestampPlan, UtcTimestampPlan, Vector,
+};
+pub use dynamic::{BinaryValue, CellValue, DecimalValue, DynamicRow, VectorValue};
 pub use plan::RowPlanContext;
 pub use row::{RowRef, Rows};
 pub use schema::{Column, ColumnIndex, ColumnType, Schema};

@@ -116,6 +116,9 @@ pub enum ColumnType {
     /// `GEOMETRY`, when reported directly as a logical type.
     Geometry,
     /// `VECTOR`.
+    ///
+    /// SELECT result metadata reports `VECTOR`, but not the element type or dimension. Use
+    /// [`Vector<i32>`](crate::Vector) / [`Vector<f32>`](crate::Vector) when decoding the expected element type.
     Vector,
     /// Type tag the connector did not recognize. The original (lowercased) server-side tag is preserved for diagnostics;
     /// values come through as raw text.

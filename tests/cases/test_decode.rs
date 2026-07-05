@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
-use snowflake_connector_rs::{BinaryValue, CellValue, ColumnType, Json, Result, SchemaError};
+use snowflake_connector_rs::{
+    BinaryValue, CellValue, ColumnType, Json, Result, SchemaError, Vector, VectorValue,
+};
 
 #[tokio::test]
 async fn test_decode() -> Result<()> {
@@ -343,6 +345,113 @@ async fn test_decode() -> Result<()> {
         ),
         other => panic!("expected Decode error, got: {other:?}"),
     }
+
+    // VECTOR: reported as `ColumnType::Vector` with no element-type or dimension metadata; the element type is
+    // recovered from the payload. `Vector<i32>` reads VECTOR(INT); `Vector<f32>` reads VECTOR(FLOAT) and restores
+    // Snowflake's lowercase `inf` / `-inf` / `nan` tokens.
+    let table = session
+        .query(
+            "SELECT
+                [1, 2, 3]::VECTOR(INT, 3)                                     AS vec_int,
+                [1.5, -2.25, 0]::VECTOR(FLOAT, 3)                             AS vec_float,
+                ['inf'::FLOAT, '-inf'::FLOAT, 'NaN'::FLOAT]::VECTOR(FLOAT, 3) AS vec_nonfinite",
+        )
+        .await?
+        .collect_table()
+        .await?;
+    for column in table.schema().columns() {
+        assert_eq!(column.ty(), &ColumnType::Vector);
+    }
+
+    // Dynamic path: element type inferred from the payload.
+    let row = table.dynamic_rows()?.next().unwrap()?;
+    match row.value("VEC_INT").unwrap() {
+        CellValue::Vector(VectorValue::Int(v)) => assert_eq!(v.as_slice(), &[1, 2, 3]),
+        other => panic!("expected Vector(Int), got {other:?}"),
+    }
+    match row.value("VEC_FLOAT").unwrap() {
+        CellValue::Vector(VectorValue::Float(v)) => assert_eq!(v.as_slice(), &[1.5f32, -2.25, 0.0]),
+        other => panic!("expected Vector(Float), got {other:?}"),
+    }
+
+    // Typed path: non-finite tokens restore to the corresponding `f32` values.
+    let (vec_int, vec_float, vec_nonfinite) = table
+        .rows::<(Vector<i32>, Vector<f32>, Vector<f32>)>()?
+        .next()
+        .unwrap()?;
+    assert_eq!(vec_int.as_slice(), &[1, 2, 3]);
+    assert_eq!(vec_float.as_slice(), &[1.5f32, -2.25, 0.0]);
+    let nf = vec_nonfinite.as_slice();
+    assert!(nf[0].is_infinite() && nf[0].is_sign_positive());
+    assert!(nf[1].is_infinite() && nf[1].is_sign_negative());
+    assert!(nf[2].is_nan());
+
+    // Element-type mismatch is a per-cell decode error: the INT column rejects float tokens, the FLOAT column
+    // rejects integer tokens. The first offending column drives the row error.
+    let err = table
+        .rows::<(Vector<f32>, Vector<f32>, Vector<f32>)>()?
+        .next()
+        .unwrap()
+        .expect_err("VECTOR(INT) must not decode as Vector<f32>");
+    assert!(
+        err.as_cell_decode_error().is_some(),
+        "unexpected error: {err:?}"
+    );
+    let err = table
+        .rows::<(Vector<i32>, Vector<i32>, Vector<i32>)>()?
+        .next()
+        .unwrap()
+        .expect_err("VECTOR(FLOAT) must not decode as Vector<i32>");
+    assert!(
+        err.as_cell_decode_error().is_some(),
+        "unexpected error: {err:?}"
+    );
+
+    // SQL NULL vector decodes to `None`.
+    let table = session
+        .query("SELECT IFF(1 = 0, [1, 2, 3]::VECTOR(INT, 3), NULL) AS v")
+        .await?
+        .collect_table()
+        .await?;
+    let (vec_null,) = table.rows::<(Option<Vector<i32>>,)>()?.next().unwrap()?;
+    assert!(vec_null.is_none());
+
+    // VECTOR(FLOAT) renders every element as a fixed decimal (always a `.`, never exponent notation) across the full
+    // f32 magnitude range: extremes render as e.g. `3.4e38 -> 339...704.000000` and tiny values as `0.000000`.
+    // `Vector<f32>` decoding relies on this, since an integer-only token would be rejected as a VECTOR(INT) payload.
+    let table = session
+        .query(
+            "SELECT
+                [3.4e38, 1e-30]::VECTOR(FLOAT, 2)               AS huge_and_tiny,
+                [3.4028235e38, -3.4028235e38]::VECTOR(FLOAT, 2) AS f32_max,
+                [1.4e-45, 9.9e37]::VECTOR(FLOAT, 2)             AS subnormal_and_large",
+        )
+        .await?
+        .collect_table()
+        .await?;
+    let (a, b, c) = table.rows::<(String, String, String)>()?.next().unwrap()?;
+    for raw in [&a, &b, &c] {
+        let body = raw
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+            .unwrap_or_else(|| panic!("vector wire is not a bracketed list: {raw}"));
+        for token in body.split(',') {
+            let token = token.trim();
+            assert!(
+                token.contains('.'),
+                "element `{token}` lacks a decimal point: {raw}"
+            );
+            assert!(
+                !token.contains(['e', 'E']),
+                "element `{token}` uses exponent notation: {raw}"
+            );
+        }
+    }
+    // The fixed-decimal wire always decodes as `Vector<f32>`.
+    table
+        .rows::<(Vector<f32>, Vector<f32>, Vector<f32>)>()?
+        .next()
+        .unwrap()?;
 
     Ok(())
 }
