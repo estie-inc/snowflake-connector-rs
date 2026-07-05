@@ -9,17 +9,17 @@ use crate::{
 };
 
 use super::{
-    client::StatementApiClient,
+    client::{QueryResponseDeadline, StatementApiClient},
     manifest::ResultManifest,
     wire::response::{
-        DEFAULT_TIMEOUT_SECONDS, QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE,
-        RawQueryResponse, SESSION_EXPIRED, SnowflakeResponse,
+        QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, RawQueryResponse, SESSION_EXPIRED,
+        SnowflakeResponse,
     },
 };
 
 pub(crate) struct StatementExecutor {
     api: StatementApiClient,
-    async_completion_timeout: Duration,
+    query_response_timeout: Duration,
     default_collect_concurrency: NonZeroUsize,
     runtime: QueryRuntime,
 }
@@ -54,23 +54,18 @@ impl QueryScopedResponse {
 
 impl StatementExecutor {
     pub(crate) fn new(session: &Session) -> Self {
-        let timeout = session
-            .shared
-            .query
-            .async_query_completion_timeout()
-            .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS));
-
         Self {
             api: StatementApiClient::new(Arc::clone(&session.shared), Arc::clone(&session.auth)),
-            async_completion_timeout: timeout,
+            query_response_timeout: session.shared.query.query_response_timeout(),
             default_collect_concurrency: session.shared.query.collect_prefetch_concurrency(),
             runtime: session.shared.runtime.clone(),
         }
     }
 
     pub(crate) async fn execute(self, parts: StatementParts) -> Result<ResultCursor> {
-        let response = QueryScopedResponse::from_submit(self.api.submit(&parts).await?)?;
-        self.execute_query_scoped(response)
+        let deadline = QueryResponseDeadline::new(self.query_response_timeout);
+        let response = QueryScopedResponse::from_submit(self.api.submit(&parts, deadline).await?)?;
+        self.execute_query_scoped(response, deadline)
             .await
             .map_err(Error::from)
     }
@@ -78,6 +73,7 @@ impl StatementExecutor {
     async fn execute_query_scoped(
         self,
         response: QueryScopedResponse,
+        deadline: QueryResponseDeadline,
     ) -> QueryScopedResult<ResultCursor> {
         let (query_id, mut response) = response.into_parts();
 
@@ -98,11 +94,7 @@ impl StatementExecutor {
 
             response = self
                 .api
-                .poll_async_results(
-                    &result_url,
-                    self.async_completion_timeout,
-                    Arc::clone(&query_id),
-                )
+                .poll_async_results(&result_url, deadline, Arc::clone(&query_id))
                 .await?;
         }
 
@@ -170,7 +162,7 @@ mod tests {
         net::TcpListener as StdTcpListener,
         num::NonZeroUsize,
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use bytes::Bytes;
@@ -208,7 +200,16 @@ mod tests {
     fn executor() -> StatementExecutor {
         StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
-            async_completion_timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
+            query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
+            default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
+            runtime: QueryRuntime::new(),
+        }
+    }
+
+    fn executor_with_timeout(base_url: Url, timeout: Duration) -> StatementExecutor {
+        StatementExecutor {
+            api: test_statement_api(base_url),
+            query_response_timeout: timeout,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime: QueryRuntime::new(),
         }
@@ -247,24 +248,46 @@ mod tests {
         Url::parse(&format!("http://{addr}/")).unwrap()
     }
 
-    fn spawn_response_sequence_server(responses: Vec<Option<&'static str>>) -> Url {
+    /// One accepted connection's behavior for [`spawn_scripted_server`].
+    enum ServerStep {
+        /// Read the request and immediately respond with the given JSON body.
+        Respond(&'static str),
+        /// Read the request, wait, then respond with the given JSON body.
+        RespondAfter(Duration, &'static str),
+        /// Read the request and hold the connection open without responding, emulating a server-side long-poll that
+        /// outlives the client-side deadline.
+        Block,
+    }
+
+    fn spawn_scripted_server(steps: Vec<ServerStep>) -> Url {
         let listener = StdTcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
 
         thread::spawn(move || {
-            for response in responses {
+            for step in steps {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut buf = [0_u8; 4096];
                 let _ = stream.read(&mut buf);
 
-                if let Some(body) = response {
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{}",
-                        body.len(),
+                let body = match step {
+                    ServerStep::Respond(body) => body,
+                    ServerStep::RespondAfter(delay, body) => {
+                        thread::sleep(delay);
                         body
-                    );
-                    stream.write_all(response.as_bytes()).unwrap();
-                }
+                    }
+                    ServerStep::Block => {
+                        // Keep the connection open so the client's own deadline is what returns control.
+                        thread::sleep(Duration::from_secs(30));
+                        continue;
+                    }
+                };
+
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
             }
         });
 
@@ -376,21 +399,50 @@ mod tests {
         assert_eq!(err.query_id(), Some("query-id"));
     }
 
+    // These two are intentionally byte-identical: an async submit response and an in-progress poll response both carry
+    // code 333334 with the same query id and poll URL. The distinct names document which step each server reply plays.
+    const ASYNC_SUBMIT_RESPONSE: &str =
+        r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"/poll"}}"#;
+    const ASYNC_IN_PROGRESS_RESPONSE: &str =
+        r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"/poll"}}"#;
+    const FINAL_INLINE_RESPONSE: &str = r#"{"success":true,"data":{"queryId":"query-id","rowset":[["x"]],"rowtype":[{"name":"X","nullable":false,"length":16,"type":"text"}],"queryResultFormat":"json"}}"#;
+
+    #[test]
+    fn query_response_deadline_clamps_overflowing_timeout() {
+        // An extreme timeout from the public setter must not panic on `Instant + Duration`; it clamps to a far-off
+        // deadline that leaves effectively unbounded remaining budget.
+        let deadline = QueryResponseDeadline::new(Duration::from_secs(u64::MAX));
+        assert!(deadline.remaining() > Duration::from_secs(60 * 60 * 24 * 300));
+    }
+
+    #[tokio::test]
+    async fn execute_submit_timeout_has_no_query_id() {
+        // The submit request never gets a response, so no query id is known when the deadline elapses.
+        let executor = executor_with_timeout(
+            spawn_scripted_server(vec![ServerStep::Block]),
+            Duration::from_millis(100),
+        );
+
+        let err = match executor.execute(select_1_parts()).await {
+            Ok(_) => panic!("submit timeout must fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), ErrorKind::Timeout);
+        assert_eq!(err.to_string(), "timed out waiting for query response");
+        assert_eq!(err.query_id(), None);
+    }
+
     #[tokio::test]
     async fn execute_async_poll_timeout_preserves_query_id() {
-        let executor = StatementExecutor {
-            api: test_statement_api(spawn_response_sequence_server(vec![
-                Some(
-                    r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"/poll"}}"#,
-                ),
-                Some(
-                    r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"/poll"}}"#,
-                ),
-            ])),
-            async_completion_timeout: Duration::ZERO,
-            default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
-            runtime: QueryRuntime::new(),
-        };
+        // Submit resolves to an async response, one poll returns in-progress, then the deadline elapses.
+        let executor = executor_with_timeout(
+            spawn_scripted_server(vec![
+                ServerStep::Respond(ASYNC_SUBMIT_RESPONSE),
+                ServerStep::Respond(ASYNC_IN_PROGRESS_RESPONSE),
+            ]),
+            Duration::from_millis(150),
+        );
 
         let err = match executor.execute(select_1_parts()).await {
             Ok(_) => panic!("poll timeout must fail"),
@@ -399,6 +451,81 @@ mod tests {
 
         assert_eq!(err.kind(), ErrorKind::Timeout);
         assert_eq!(err.query_id(), Some("query-id"));
+    }
+
+    #[tokio::test]
+    async fn execute_blocking_poll_is_interrupted_by_deadline() {
+        // A single poll GET blocks past the deadline (server-side long-poll); the client-side timeout returns control
+        // and the query id from the async submit response is preserved.
+        let executor = executor_with_timeout(
+            spawn_scripted_server(vec![
+                ServerStep::Respond(ASYNC_SUBMIT_RESPONSE),
+                ServerStep::Block,
+            ]),
+            Duration::from_millis(150),
+        );
+
+        let err = match executor.execute(select_1_parts()).await {
+            Ok(_) => panic!("blocking poll must time out"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), ErrorKind::Timeout);
+        assert_eq!(err.query_id(), Some("query-id"));
+    }
+
+    #[tokio::test]
+    async fn execute_timeout_budget_spans_submit_and_poll() {
+        // Submit consumes half of the budget before responding, then the poll blocks. If the budget were reset when
+        // polling began, the total wait would be the submit delay plus a fresh full budget; instead it tracks the
+        // single shared deadline.
+        let executor = executor_with_timeout(
+            spawn_scripted_server(vec![
+                ServerStep::RespondAfter(Duration::from_millis(200), ASYNC_SUBMIT_RESPONSE),
+                ServerStep::Block,
+            ]),
+            Duration::from_millis(400),
+        );
+
+        let start = Instant::now();
+        let err = match executor.execute(select_1_parts()).await {
+            Ok(_) => panic!("blocking poll must time out"),
+            Err(err) => err,
+        };
+        let elapsed = start.elapsed();
+
+        assert_eq!(err.kind(), ErrorKind::Timeout);
+        assert_eq!(err.query_id(), Some("query-id"));
+        assert!(
+            elapsed >= Duration::from_millis(350),
+            "deadline fired before spanning submit and poll: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(550),
+            "poll appears to have reset the timeout budget: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_async_final_response_within_deadline_succeeds() {
+        let executor = executor_with_timeout(
+            spawn_scripted_server(vec![
+                ServerStep::Respond(ASYNC_SUBMIT_RESPONSE),
+                ServerStep::Respond(FINAL_INLINE_RESPONSE),
+            ]),
+            Duration::from_secs(30),
+        );
+
+        let mut result = executor
+            .execute(select_1_parts())
+            .await
+            .expect("final response within deadline must build a cursor");
+        let table = result
+            .next_table()
+            .await
+            .unwrap()
+            .expect("inline partition");
+        assert_eq!(table.row_count(), 1);
     }
 
     #[tokio::test]
@@ -510,7 +637,7 @@ mod tests {
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
-            async_completion_timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
+            query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
         };
@@ -553,7 +680,7 @@ mod tests {
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
-            async_completion_timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
+            query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
         };
@@ -591,7 +718,7 @@ mod tests {
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
-            async_completion_timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
+            query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
         };

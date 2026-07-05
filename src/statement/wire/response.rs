@@ -11,8 +11,6 @@ pub(crate) const SESSION_EXPIRED: &str = "390112";
 pub(crate) const QUERY_IN_PROGRESS_CODE: &str = "333333";
 pub(crate) const QUERY_IN_PROGRESS_ASYNC_CODE: &str = "333334";
 
-pub(crate) const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
-
 const HEADER_SSE_C_ALGORITHM: &str = "x-amz-server-side-encryption-customer-algorithm";
 const HEADER_SSE_C_KEY: &str = "x-amz-server-side-encryption-customer-key";
 const AES256: &str = "AES256";

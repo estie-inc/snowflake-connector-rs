@@ -5,7 +5,7 @@ use std::{
 
 use http::header::{ACCEPT, AUTHORIZATION};
 use reqwest::{Client, Url};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use crate::{
@@ -28,6 +28,43 @@ use crate::{
     },
 };
 
+/// Client-side deadline for obtaining a query response from Snowflake.
+///
+/// Created once at the start of statement execution and shared unchanged across the initial submit and any subsequent
+/// async result polling, so the whole submit-to-response path runs against a single budget.
+#[derive(Clone, Copy)]
+pub(crate) struct QueryResponseDeadline {
+    deadline: Instant,
+}
+
+const FAR_FUTURE: Duration = Duration::from_secs(60 * 60 * 24 * 365);
+
+impl QueryResponseDeadline {
+    pub(crate) fn new(timeout: Duration) -> Self {
+        let now = Instant::now();
+        let deadline = now
+            .checked_add(timeout)
+            .or_else(|| now.checked_add(FAR_FUTURE))
+            .unwrap_or(now);
+        Self { deadline }
+    }
+
+    /// Time left before the deadline, saturating at zero once it has passed.
+    pub(crate) fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+
+    /// Remaining budget, or a timeout error when the deadline has already elapsed.
+    pub(crate) fn remaining_or_timeout(&self) -> std::result::Result<Duration, TimeoutError> {
+        let remaining = self.remaining();
+        if remaining.is_zero() {
+            Err(TimeoutError::query())
+        } else {
+            Ok(remaining)
+        }
+    }
+}
+
 pub(crate) struct StatementApiClient {
     shared: Arc<ClientShared>,
     auth: Arc<SessionAuth>,
@@ -42,7 +79,11 @@ impl StatementApiClient {
         self.shared.http.clone()
     }
 
-    pub(crate) async fn submit(&self, parts: &StatementParts) -> Result<SnowflakeResponse> {
+    pub(crate) async fn submit(
+        &self,
+        parts: &StatementParts,
+        deadline: QueryResponseDeadline,
+    ) -> Result<SnowflakeResponse> {
         validate_statement_parts_for_wire(parts)?;
 
         let request_id = Uuid::new_v4();
@@ -54,7 +95,10 @@ impl StatementApiClient {
         url.query_pairs_mut()
             .append_pair("requestId", &request_id.to_string());
 
-        let response = self
+        // Apply the shared query-response deadline while waiting for Snowflake's submit response. No query id is known
+        // yet, so a timeout here yields an error without one.
+        let remaining = deadline.remaining_or_timeout()?;
+        let request = self
             .shared
             .http
             .post(url)
@@ -63,16 +107,25 @@ impl StatementApiClient {
                 AUTHORIZATION,
                 format!(r#"Snowflake Token="{}""#, self.auth.session_token),
             )
-            .json(&WireQueryBody::from_statement_parts(parts))
-            .send()
-            .await
-            .map_err(classify_request_error)?;
+            .json(&WireQueryBody::from_statement_parts(parts));
 
-        let status = response.status();
-        let body = response.bytes().await.map_err(classify_request_error)?;
-        if !status.is_success() {
-            return Err(NetworkError::http_status(status.as_u16(), &body).into());
-        }
+        let body = match timeout(remaining, async {
+            let response = request.send().await.map_err(classify_request_error)?;
+            let status = response.status();
+            let body = response.bytes().await.map_err(classify_request_error)?;
+            if !status.is_success() {
+                return Err(Error::from(NetworkError::http_status(
+                    status.as_u16(),
+                    &body,
+                )));
+            }
+            Ok(body)
+        })
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => return Err(TimeoutError::query().into()),
+        };
 
         parse_response(body).map_err(Error::from)
     }
@@ -80,7 +133,7 @@ impl StatementApiClient {
     pub(crate) async fn poll_async_results(
         &self,
         poll_relative_url: &str,
-        timeout: Duration,
+        deadline: QueryResponseDeadline,
         query_id: Arc<str>,
     ) -> QueryScopedResult<SnowflakeResponse> {
         let poll_url = match resolve_poll_url(&self.shared.base_url, poll_relative_url) {
@@ -89,11 +142,17 @@ impl StatementApiClient {
                 return Err(QueryScopedError::new(query_id, err));
             }
         };
-        let deadline = Instant::now() + timeout;
         let mut backoff = PollBackoff::new();
 
         loop {
-            let resp = self
+            // The poll endpoint is a server-side long-poll, so apply the remaining query-response budget to the whole
+            // GET instead of only checking the deadline between poll attempts.
+            let remaining = match deadline.remaining_or_timeout() {
+                Ok(remaining) => remaining,
+                Err(err) => return Err(QueryScopedError::new(query_id, err)),
+            };
+
+            let request = self
                 .shared
                 .http
                 .get(poll_url.clone())
@@ -101,13 +160,18 @@ impl StatementApiClient {
                 .header(
                     AUTHORIZATION,
                     format!(r#"Snowflake Token="{}""#, self.auth.session_token),
-                )
-                .send()
-                .await;
+                );
 
-            let resp = match resp {
-                Ok(resp) => resp,
-                Err(error) => {
+            let response = match timeout(remaining, async {
+                let resp = request.send().await?;
+                let status = resp.status();
+                let body = resp.bytes().await?;
+                Ok::<_, reqwest::Error>((status, body))
+            })
+            .await
+            {
+                Ok(Ok(pair)) => pair,
+                Ok(Err(error)) => {
                     if error.is_timeout() {
                         return Err(QueryScopedError::new(
                             query_id,
@@ -116,21 +180,12 @@ impl StatementApiClient {
                     }
                     return Err(QueryScopedError::new(query_id, NetworkError::Http(error)));
                 }
-            };
-
-            let status = resp.status();
-            let body = match resp.bytes().await {
-                Ok(body) => body,
-                Err(error) => {
-                    if error.is_timeout() {
-                        return Err(QueryScopedError::new(
-                            query_id,
-                            TimeoutError::request(error),
-                        ));
-                    }
-                    return Err(QueryScopedError::new(query_id, NetworkError::Http(error)));
+                Err(_elapsed) => {
+                    return Err(QueryScopedError::new(query_id, TimeoutError::query()));
                 }
             };
+
+            let (status, body) = response;
             if !status.is_success() {
                 return Err(QueryScopedError::new(
                     query_id,
@@ -146,7 +201,7 @@ impl StatementApiClient {
                     return Ok(response);
                 }
                 Ok(_) => {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let remaining = deadline.remaining();
                     if remaining.is_zero() {
                         return Err(QueryScopedError::new(query_id, TimeoutError::query()));
                     }
@@ -329,7 +384,9 @@ mod tests {
         );
 
         let parts = into_statement_parts(Statement::from("select 1"));
-        let err = client.submit(&parts).await.unwrap_err();
+        // A generous deadline leaves the reqwest client-wide timeout as the trigger for this case.
+        let deadline = QueryResponseDeadline::new(Duration::from_secs(30));
+        let err = client.submit(&parts, deadline).await.unwrap_err();
 
         assert_eq!(err.kind(), ErrorKind::Timeout);
         assert!(err.is_timeout());

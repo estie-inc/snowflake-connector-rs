@@ -87,7 +87,7 @@ impl Display for Error {
             Repr::Timeout {
                 error: TimeoutError::Query,
                 ..
-            } => f.write_str("timed out waiting for query results"),
+            } => f.write_str("timed out waiting for query response"),
             #[cfg(feature = "external-browser-sso")]
             Repr::Timeout {
                 error: TimeoutError::BrowserCallback,
