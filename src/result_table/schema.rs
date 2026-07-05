@@ -26,6 +26,13 @@ impl ColumnIndex {
 /// Unknown or unrecognized server-side types fall through to [`ColumnType::Unknown`] rather than failing — this
 /// keeps the connector usable when Snowflake introduces new types.
 ///
+/// # GEOGRAPHY / GEOMETRY
+///
+/// Driver API query results normally report GEOGRAPHY / GEOMETRY values according to the session's
+/// `GEOGRAPHY_OUTPUT_FORMAT` / `GEOMETRY_OUTPUT_FORMAT`: GeoJSON as [`Object`](ColumnType::Object), WKT/EWKT as
+/// [`Text`](ColumnType::Text), and WKB/EWKB as [`Binary`](ColumnType::Binary). The connector does not parse or validate
+/// the geo payload itself.
+///
 /// # Example
 ///
 /// ```
@@ -104,9 +111,9 @@ pub enum ColumnType {
         /// Maximum length in bytes, when reported by Snowflake.
         length: Option<u32>,
     },
-    /// `GEOGRAPHY`.
+    /// `GEOGRAPHY`, when reported directly as a logical type.
     Geography,
-    /// `GEOMETRY`.
+    /// `GEOMETRY`, when reported directly as a logical type.
     Geometry,
     /// `VECTOR`.
     Vector,

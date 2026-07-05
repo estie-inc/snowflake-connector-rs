@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
-use snowflake_connector_rs::{BinaryValue, CellValue, Json, Result, SchemaError};
+use snowflake_connector_rs::{BinaryValue, CellValue, ColumnType, Json, Result, SchemaError};
 
 #[tokio::test]
 async fn test_decode() -> Result<()> {
@@ -222,6 +222,104 @@ async fn test_decode() -> Result<()> {
         number_map.into_inner(),
         BTreeMap::from([(1, "a".to_owned()), (2, "b".to_owned())])
     );
+
+    // GeoJSON: reported as `Object`, decodes as `serde_json::Value`.
+    session
+        .query("ALTER SESSION SET GEOGRAPHY_OUTPUT_FORMAT='GeoJSON'")
+        .await?;
+    session
+        .query("ALTER SESSION SET GEOMETRY_OUTPUT_FORMAT='GeoJSON'")
+        .await?;
+    let table = session
+        .query_as::<(serde_json::Value, serde_json::Value), _>(
+            "SELECT
+                TO_GEOGRAPHY('POINT(-122.35 37.55)') AS geog,
+                TO_GEOMETRY('POINT(1 2)') AS geom",
+        )
+        .await?
+        .collect_table()
+        .await?;
+    let columns = table.schema().columns();
+    assert!(matches!(columns[0].ty(), ColumnType::Object));
+    assert!(matches!(columns[1].ty(), ColumnType::Object));
+    let (geog, geom) = table.rows().next().unwrap()?;
+    assert_eq!(
+        geog,
+        serde_json::json!({"type": "Point", "coordinates": [-122.35, 37.55]})
+    );
+    // GEOMETRY GeoJSON renders coordinates in scientific notation, but they parse to plain JSON numbers.
+    assert_eq!(
+        geom,
+        serde_json::json!({"type": "Point", "coordinates": [1.0, 2.0]})
+    );
+
+    // WKT / EWKT: reported as `Text`, decodes as `String`; EWKT prefixes the value with `SRID=<n>;`.
+    session
+        .query("ALTER SESSION SET GEOGRAPHY_OUTPUT_FORMAT='WKT'")
+        .await?;
+    session
+        .query("ALTER SESSION SET GEOMETRY_OUTPUT_FORMAT='EWKT'")
+        .await?;
+    let table = session
+        .query_as::<(String, String), _>(
+            "SELECT
+                TO_GEOGRAPHY('POINT(-122.35 37.55)') AS geog,
+                ST_GEOMFROMWKT('LINESTRING(0 0, 10 10)', 3857) AS geom",
+        )
+        .await?
+        .collect_table()
+        .await?;
+    let columns = table.schema().columns();
+    assert!(matches!(columns[0].ty(), ColumnType::Text { .. }));
+    assert!(matches!(columns[1].ty(), ColumnType::Text { .. }));
+    let (wkt, ewkt) = table.rows().next().unwrap()?;
+    assert_eq!(wkt, "POINT(-122.35 37.55)");
+    assert_eq!(ewkt, "SRID=3857;LINESTRING(0 0,10 10)");
+
+    // WKB / EWKB: reported as `Binary`, decodes as `BinaryValue`; EWKB carries the SRID flag bit and SRID bytes.
+    session
+        .query("ALTER SESSION SET GEOGRAPHY_OUTPUT_FORMAT='WKB'")
+        .await?;
+    session
+        .query("ALTER SESSION SET GEOMETRY_OUTPUT_FORMAT='EWKB'")
+        .await?;
+    let table = session
+        .query_as::<(BinaryValue, BinaryValue), _>(
+            "SELECT
+                TO_GEOGRAPHY('POINT(-122.35 37.55)') AS geog,
+                ST_GEOMFROMWKT('LINESTRING(0 0, 10 10)', 3857) AS geom",
+        )
+        .await?
+        .collect_table()
+        .await?;
+    let columns = table.schema().columns();
+    assert!(matches!(columns[0].ty(), ColumnType::Binary { .. }));
+    assert!(matches!(columns[1].ty(), ColumnType::Binary { .. }));
+    let (wkb, ewkb) = table.rows().next().unwrap()?;
+    // WKB: little-endian byte order marker, then geometry type 1 (Point) with no SRID flag.
+    let wkb = wkb.as_bytes();
+    assert_eq!(wkb[0], 0x01);
+    assert_eq!(&wkb[1..5], &[0x01, 0x00, 0x00, 0x00]);
+    // EWKB: little-endian marker, geometry type 2 (LineString) with the SRID flag bit (0x20000000) set,
+    // followed by the SRID as a 4-byte little-endian integer (3857 = 0x0F11).
+    let ewkb = ewkb.as_bytes();
+    assert_eq!(ewkb[0], 0x01);
+    assert_eq!(&ewkb[1..5], &[0x02, 0x00, 0x00, 0x20]);
+    assert_eq!(
+        u32::from_le_bytes([ewkb[5], ewkb[6], ewkb[7], ewkb[8]]),
+        3857
+    );
+
+    // A geo cell that is SQL NULL decodes to `None`.
+    let table = session
+        .query_as::<(Option<BinaryValue>,), _>(
+            "SELECT IFF(1 = 0, TO_GEOGRAPHY('POINT(0 0)'), NULL) AS geog",
+        )
+        .await?
+        .collect_table()
+        .await?;
+    let (geog_null,) = table.rows().next().unwrap()?;
+    assert!(geog_null.is_none());
 
     Ok(())
 }
