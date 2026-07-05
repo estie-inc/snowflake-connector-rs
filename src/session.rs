@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::{fmt, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use crate::{
     ClientShared, IntoStatement, Result,
@@ -10,6 +10,41 @@ use crate::{
 pub struct Session {
     pub(crate) shared: Arc<ClientShared>,
     pub(crate) auth: Arc<SessionAuth>,
+}
+
+/// Per-query overrides for a single [`Session::query_with_options`] /
+/// [`Session::query_as_with_options`] call.
+///
+/// Unset options inherit the defaults from [`QueryConfig`](crate::QueryConfig). These options sit between the
+/// client-wide query defaults and per-collect [`CollectOptions`](crate::CollectOptions).
+#[derive(Clone, Debug, Default)]
+pub struct QueryOptions {
+    pub(crate) query_response_timeout: Option<Duration>,
+    pub(crate) collect_prefetch_concurrency: Option<NonZeroUsize>,
+}
+
+impl QueryOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Overrides [`QueryConfig::with_query_response_timeout`](crate::QueryConfig::with_query_response_timeout) for
+    /// this query.
+    pub fn with_query_response_timeout(mut self, timeout: Duration) -> Self {
+        self.query_response_timeout = Some(timeout);
+        self
+    }
+
+    /// Overrides [`QueryConfig::with_collect_prefetch_concurrency`](crate::QueryConfig::with_collect_prefetch_concurrency)
+    /// for the cursor returned by this query.
+    ///
+    /// This sets the default collect policy embedded in the returned [`ResultCursor`]; a later
+    /// [`CollectOptions::with_prefetch_concurrency`](crate::CollectOptions::with_prefetch_concurrency) still has the
+    /// final say for a specific collection call.
+    pub fn with_collect_prefetch_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
+        self.collect_prefetch_concurrency = Some(concurrency);
+        self
+    }
 }
 
 /// Per-session authentication state.
@@ -46,7 +81,27 @@ impl Session {
     /// Returns `ErrorKind::BindEncode`, `ErrorKind::Network`, `ErrorKind::Server`, `ErrorKind::SessionExpired`,
     /// `ErrorKind::Timeout`, or `ErrorKind::Protocol`.
     pub async fn query<S: IntoStatement>(&self, statement: S) -> Result<ResultCursor> {
-        let executor = StatementExecutor::new(self);
+        self.query_with_options(statement, QueryOptions::default())
+            .await
+    }
+
+    /// Submit a statement with per-query [`QueryOptions`] and return a `ResultCursor` for streaming partition access.
+    ///
+    /// Unset options inherit the configured [`QueryConfig`](crate::QueryConfig) defaults.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Session::query`].
+    pub async fn query_with_options<S>(
+        &self,
+        statement: S,
+        options: QueryOptions,
+    ) -> Result<ResultCursor>
+    where
+        S: IntoStatement,
+    {
+        let settings = self.shared.query.resolve_options(options);
+        let executor = StatementExecutor::new(self, settings);
         executor.execute(into_statement_parts(statement)).await
     }
 
@@ -65,7 +120,27 @@ impl Session {
         T: FromRow,
         S: IntoStatement,
     {
-        let result = self.query(statement).await?;
+        self.query_as_with_options(statement, QueryOptions::default())
+            .await
+    }
+
+    /// Submit a statement with per-query [`QueryOptions`] and return a typed `ResultCursor`.
+    ///
+    /// Unset options inherit the configured [`QueryConfig`](crate::QueryConfig) defaults.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Session::query_as`].
+    pub async fn query_as_with_options<T, S>(
+        &self,
+        statement: S,
+        options: QueryOptions,
+    ) -> Result<TypedResultCursor<T>>
+    where
+        T: FromRow,
+        S: IntoStatement,
+    {
+        let result = self.query_with_options(statement, options).await?;
         let plan = T::build_plan(RowPlanContext::new(result.shared_schema()))?;
         Ok(TypedResultCursor::new(result, plan))
     }
