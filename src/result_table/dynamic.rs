@@ -125,6 +125,9 @@ pub enum CellValue {
     /// `TIMESTAMP_TZ`, with the wire-reported offset preserved.
     TimestampTz(DateTime<FixedOffset>),
     /// `VARIANT` / `OBJECT` / `ARRAY` payloads represented as JSON.
+    ///
+    /// Snowflake non-finite float tokens (`Infinity`, `-Infinity`, `NaN`) are rejected during decoding because JSON has
+    /// no representation for them.
     Json(serde_json::Value),
     /// `BINARY`, decoded from Snowflake's hex representation.
     Binary(BinaryValue),
