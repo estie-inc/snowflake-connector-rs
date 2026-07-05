@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt, num::NonZeroUsize, time::Duration};
 
 use url::Url;
 
-use crate::{AuthConfig, Result, error::ConfigError};
+use crate::{AuthConfig, Result, error::ConfigError, session::QueryOptions};
 
 /// Top-level configuration for a [`Client`](crate::Client).
 #[derive(Clone, Debug)]
@@ -320,13 +320,24 @@ pub(crate) struct QueryExecutionPolicy {
 }
 
 impl QueryExecutionPolicy {
-    pub(crate) fn query_response_timeout(&self) -> Duration {
-        self.query_response_timeout
+    /// Resolve per-query overrides against these prepared defaults into the concrete settings for one execution.
+    pub(crate) fn resolve_options(&self, options: QueryOptions) -> QueryExecutionSettings {
+        QueryExecutionSettings {
+            query_response_timeout: options
+                .query_response_timeout
+                .unwrap_or(self.query_response_timeout),
+            collect_prefetch_concurrency: options
+                .collect_prefetch_concurrency
+                .unwrap_or(self.collect_prefetch_concurrency),
+        }
     }
+}
 
-    pub(crate) fn collect_prefetch_concurrency(&self) -> NonZeroUsize {
-        self.collect_prefetch_concurrency
-    }
+/// Internal concrete settings for a single statement execution, produced by [`QueryExecutionPolicy::resolve_options`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct QueryExecutionSettings {
+    pub(crate) query_response_timeout: Duration,
+    pub(crate) collect_prefetch_concurrency: NonZeroUsize,
 }
 
 impl From<QueryConfig> for QueryExecutionPolicy {
@@ -473,7 +484,8 @@ mod tests {
     #[test]
     fn query_config_defaults_to_300s_query_response_timeout() {
         let policy: QueryExecutionPolicy = QueryConfig::default().into();
-        assert_eq!(policy.query_response_timeout(), Duration::from_secs(300));
+        let settings = policy.resolve_options(QueryOptions::default());
+        assert_eq!(settings.query_response_timeout, Duration::from_secs(300));
     }
 
     #[test]
@@ -481,7 +493,59 @@ mod tests {
         let policy: QueryExecutionPolicy = QueryConfig::default()
             .with_query_response_timeout(Duration::from_secs(60))
             .into();
-        assert_eq!(policy.query_response_timeout(), Duration::from_secs(60));
+        let settings = policy.resolve_options(QueryOptions::default());
+        assert_eq!(settings.query_response_timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn query_options_default_inherits_query_config_defaults() {
+        let policy: QueryExecutionPolicy = QueryConfig::default()
+            .with_query_response_timeout(Duration::from_secs(120))
+            .with_collect_prefetch_concurrency(NonZeroUsize::new(4).unwrap())
+            .into();
+
+        let settings = policy.resolve_options(QueryOptions::default());
+
+        assert_eq!(settings.query_response_timeout, Duration::from_secs(120));
+        assert_eq!(
+            settings.collect_prefetch_concurrency,
+            NonZeroUsize::new(4).unwrap()
+        );
+    }
+
+    #[test]
+    fn query_options_with_query_response_timeout_overrides_only_timeout() {
+        let policy: QueryExecutionPolicy = QueryConfig::default()
+            .with_collect_prefetch_concurrency(NonZeroUsize::new(4).unwrap())
+            .into();
+
+        let settings = policy.resolve_options(
+            QueryOptions::default().with_query_response_timeout(Duration::from_secs(90)),
+        );
+
+        assert_eq!(settings.query_response_timeout, Duration::from_secs(90));
+        assert_eq!(
+            settings.collect_prefetch_concurrency,
+            NonZeroUsize::new(4).unwrap()
+        );
+    }
+
+    #[test]
+    fn query_options_with_collect_prefetch_concurrency_overrides_only_concurrency() {
+        let policy: QueryExecutionPolicy = QueryConfig::default()
+            .with_query_response_timeout(Duration::from_secs(120))
+            .into();
+
+        let settings = policy.resolve_options(
+            QueryOptions::default()
+                .with_collect_prefetch_concurrency(NonZeroUsize::new(2).unwrap()),
+        );
+
+        assert_eq!(settings.query_response_timeout, Duration::from_secs(120));
+        assert_eq!(
+            settings.collect_prefetch_concurrency,
+            NonZeroUsize::new(2).unwrap()
+        );
     }
 
     #[test]

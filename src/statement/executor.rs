@@ -1,6 +1,7 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use crate::{
+    QueryExecutionSettings,
     error::{ProtocolError, QueryScopedError, QueryScopedResult, ServerError, SessionExpiredError},
     result_cursor::{CollectPolicy, RemotePartitionSource, ResultCursor},
     runtime::QueryRuntime,
@@ -53,11 +54,11 @@ impl QueryScopedResponse {
 }
 
 impl StatementExecutor {
-    pub(crate) fn new(session: &Session) -> Self {
+    pub(crate) fn new(session: &Session, settings: QueryExecutionSettings) -> Self {
         Self {
             api: StatementApiClient::new(Arc::clone(&session.shared), Arc::clone(&session.auth)),
-            query_response_timeout: session.shared.query.query_response_timeout(),
-            default_collect_concurrency: session.shared.query.collect_prefetch_concurrency(),
+            query_response_timeout: settings.query_response_timeout,
+            default_collect_concurrency: settings.collect_prefetch_concurrency,
             runtime: session.shared.runtime.clone(),
         }
     }
@@ -171,7 +172,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ClientShared, ErrorKind, QueryConfig, Statement,
+        ClientShared, ErrorKind, QueryConfig, QueryOptions, Statement,
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
         session::SessionAuth,
@@ -182,6 +183,13 @@ mod tests {
             wire::response::{RawQueryResponse, RawQueryResponseRowType},
         },
     };
+
+    fn default_settings(session: &Session) -> QueryExecutionSettings {
+        session
+            .shared
+            .query
+            .resolve_options(QueryOptions::default())
+    }
 
     fn test_statement_api(base_url: Url) -> StatementApiClient {
         StatementApiClient::new(
@@ -327,7 +335,7 @@ mod tests {
     async fn execute_single_response_err(body: &'static str) -> crate::Error {
         let session = test_session(spawn_single_response_server(body));
 
-        match StatementExecutor::new(&session)
+        match StatementExecutor::new(&session, default_settings(&session))
             .execute(select_1_parts())
             .await
         {
@@ -349,7 +357,7 @@ mod tests {
             auth: SessionAuth::for_test("test-token"),
         };
 
-        let executor = StatementExecutor::new(&session);
+        let executor = StatementExecutor::new(&session, default_settings(&session));
         assert!(
             executor
                 .runtime
@@ -534,7 +542,7 @@ mod tests {
             r#"{"success":true,"data":{"queryId":"query-id","queryResultFormat":"arrow"}}"#,
         ));
 
-        let err = match StatementExecutor::new(&session)
+        let err = match StatementExecutor::new(&session, default_settings(&session))
             .execute(select_1_parts())
             .await
         {
@@ -553,7 +561,7 @@ mod tests {
             r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":{"queryId":"query-id"}}"#,
         ));
 
-        let err = match StatementExecutor::new(&session)
+        let err = match StatementExecutor::new(&session, default_settings(&session))
             .execute(select_1_parts())
             .await
         {
@@ -577,7 +585,7 @@ mod tests {
             r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":null}"#,
         ));
 
-        let err = match StatementExecutor::new(&session)
+        let err = match StatementExecutor::new(&session, default_settings(&session))
             .execute(select_1_parts())
             .await
         {
@@ -601,7 +609,7 @@ mod tests {
             r#"{"code":"123456","message":"statement failed","success":false,"data":{"queryId":"query-id"}}"#,
         ));
 
-        let err = match StatementExecutor::new(&session)
+        let err = match StatementExecutor::new(&session, default_settings(&session))
             .execute(select_1_parts())
             .await
         {
@@ -619,7 +627,7 @@ mod tests {
     async fn execute_network_failure_has_no_query_id() {
         let session = test_session(spawn_disconnect_server());
 
-        let err = match StatementExecutor::new(&session)
+        let err = match StatementExecutor::new(&session, default_settings(&session))
             .execute(select_1_parts())
             .await
         {

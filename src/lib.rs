@@ -82,7 +82,9 @@ pub use auth::external_browser::{BrowserLaunchMode, ExternalBrowserConfig};
 pub use config::{
     ClientConfig, EndpointConfig, ProxyConfig, QueryConfig, SessionConfig, TransportConfig,
 };
-pub(crate) use config::{ClientLoginConfig, InitialSessionConfig, QueryExecutionPolicy};
+pub(crate) use config::{
+    ClientLoginConfig, InitialSessionConfig, QueryExecutionPolicy, QueryExecutionSettings,
+};
 pub use error::{
     AmbiguousColumnError, CellConversionError, CellConversionErrorBuilder, CellDecodeError,
     CellDecodeResult, ColumnCountMismatchError, DuplicateColumnNameError, Error, ErrorKind,
@@ -95,7 +97,7 @@ pub use result_table::{
     TimePlan, TimestampPlan, TypedResultTable, UtcTimestampPlan, Vector, VectorValue,
 };
 use runtime::QueryRuntime;
-pub use session::Session;
+pub use session::{QueryOptions, Session};
 pub use statement::builder::{IntoStatement, NamedBinds, PositionalBinds, Statement, UnboundBinds};
 
 #[cfg(feature = "derive")]
