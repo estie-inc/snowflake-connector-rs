@@ -92,7 +92,7 @@ pub use result_cursor::{CollectOptions, ResultCursor, TypedResultCursor};
 pub use result_table::{
     BinaryValue, CellPlan, CellRef, CellValue, Column, ColumnIndex, ColumnType, DecimalValue,
     DynamicRow, FromCell, FromRow, Json, ResultTable, RowPlanContext, RowRef, Rows, Schema,
-    TimePlan, TimestampPlan, TypedResultTable, UtcTimestampPlan,
+    TimePlan, TimestampPlan, TypedResultTable, UtcTimestampPlan, Vector, VectorValue,
 };
 use runtime::QueryRuntime;
 pub use session::Session;

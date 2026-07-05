@@ -598,6 +598,183 @@ impl FromCell for BinaryValue {
     }
 }
 
+/// Decoded value of a Snowflake `VECTOR` cell.
+///
+/// [`ColumnType::Vector`](crate::ColumnType::Vector) is the only column this wrapper accepts. Snowflake result metadata
+/// reports neither the element type nor the dimension, so the element type is verified from the cell payload at decode
+/// time and the dimension is left to the caller to check via [`len`](Vector::len).
+///
+/// Two element types are supported, matching Snowflake's `VECTOR(INT, n)` / `VECTOR(FLOAT, n)`:
+///
+/// - `Vector<i32>` decodes a `VECTOR(INT)` cell. Elements are 32-bit signed integers.
+/// - `Vector<f32>` decodes a `VECTOR(FLOAT)` cell. Elements are 32-bit IEEE 754 floats.
+///
+/// `Vector<f32>` restores Snowflake's lowercase `inf` / `-inf` / `nan` tokens to the corresponding `f32` non-finite
+/// values, and rejects integer-only tokens (`[1,2,3]`) because a `VECTOR(FLOAT)` cell always renders finite elements
+/// with a decimal point. Snowflake renders `VECTOR(FLOAT)` elements as fixed 6-digit decimals over an already
+/// single-precision value, so a decoded `Vector<f32>` reconstructs the wire value rather than round-tripping the
+/// original SQL literal exactly.
+///
+/// Only `Vector<i32>` and `Vector<f32>` implement [`FromCell`]; wider element types such as `Vector<i64>` /
+/// `Vector<f64>`, and bare `Vec<T>`, are intentionally left out. Use `Option<Vector<_>>` for a nullable `VECTOR` column.
+///
+/// The wrapper does not implement `Deref<Target = [T]>`; borrow the elements through [`as_slice`](Vector::as_slice),
+/// [`AsRef<[T]>`](AsRef), or by iterating.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Vector<T>(Vec<T>);
+
+impl<T> Vector<T> {
+    pub(crate) fn from_vec(values: Vec<T>) -> Self {
+        Self(values)
+    }
+
+    /// Borrow the decoded elements as a slice.
+    pub fn as_slice(&self) -> &[T] {
+        &self.0
+    }
+
+    /// Consume the wrapper, returning the decoded elements.
+    pub fn into_vec(self) -> Vec<T> {
+        self.0
+    }
+
+    /// Number of elements (the vector's dimension).
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the vector has no elements.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<T> AsRef<[T]> for Vector<T> {
+    fn as_ref(&self) -> &[T] {
+        &self.0
+    }
+}
+
+impl<T> IntoIterator for Vector<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Vector<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl FromCell for Vector<i32> {
+    type Plan = ();
+
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::Vector => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        parse_vector_i32_payload(raw)
+            .map(Vector::from_vec)
+            .map_err(|m| CellConversionError::builder(m).build())
+    }
+}
+
+impl FromCell for Vector<f32> {
+    type Plan = ();
+
+    fn build_plan(column: &Column) -> Result<Self::Plan> {
+        match column.ty() {
+            ColumnType::Vector => Ok(()),
+            _ => Err(incompatible_column::<Self>(column, None)),
+        }
+    }
+
+    fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+        let raw = required_raw(raw)?;
+        parse_vector_f32_payload(raw)
+            .map(Vector::from_vec)
+            .map_err(|m| CellConversionError::builder(m).build())
+    }
+}
+
+/// Parse a Snowflake `VECTOR(INT)` payload into a `Vec<i32>`.
+pub(crate) fn parse_vector_i32_payload(raw: &str) -> StdResult<Vec<i32>, String> {
+    parse_vector_payload(raw, |token| {
+        token
+            .parse::<i32>()
+            .map_err(|_| format!("invalid VECTOR(INT) element: {token}"))
+    })
+}
+
+/// Parse a Snowflake `VECTOR(FLOAT)` payload into a `Vec<f32>`.
+///
+/// Restores the lowercase non-finite tokens `inf` / `-inf` / `nan`, and rejects integer-only tokens so a
+/// `VECTOR(INT)` payload is not silently accepted as float.
+pub(crate) fn parse_vector_f32_payload(raw: &str) -> StdResult<Vec<f32>, String> {
+    parse_vector_payload(raw, parse_vector_f32_element)
+}
+
+fn parse_vector_f32_element(token: &str) -> StdResult<f32, String> {
+    match token {
+        "inf" => Ok(f32::INFINITY),
+        "-inf" => Ok(f32::NEG_INFINITY),
+        "nan" => Ok(f32::NAN),
+        // A finite `VECTOR(FLOAT)` element always carries a decimal point on the wire. Requiring one keeps
+        // integer-only tokens (a `VECTOR(INT)` payload) and alternate non-finite spellings out.
+        _ if token.contains('.') => token
+            .parse::<f32>()
+            .map_err(|_| format!("invalid VECTOR(FLOAT) element: {token}")),
+        _ => Err(format!("invalid VECTOR(FLOAT) element: {token}")),
+    }
+}
+
+/// Parse a Snowflake `VECTOR` payload (`[e0,e1,...]`) into elements via `parse_element`.
+///
+/// The wire form is a compact, comma-separated bracketed list. This deliberately avoids `serde_json`: `VECTOR(FLOAT)`
+/// emits bare `inf` / `-inf` / `nan` tokens that are not valid JSON, and the element rules differ from the
+/// `VARIANT` / `OBJECT` / `ARRAY` JSON path. Snowflake never produces an empty `VECTOR`, so an empty body is rejected.
+fn parse_vector_payload<T>(
+    raw: &str,
+    mut parse_element: impl FnMut(&str) -> StdResult<T, String>,
+) -> StdResult<Vec<T>, String> {
+    let trimmed = raw.trim();
+    let body = trimmed
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .ok_or_else(|| format!("invalid vector payload: {raw}"))?
+        .trim();
+    if body.is_empty() {
+        return Err(format!("invalid vector payload: {raw}"));
+    }
+
+    // Element count equals comma count + 1; preallocate to avoid reallocating a high-dimension vector.
+    let mut out = Vec::with_capacity(body.bytes().filter(|&b| b == b',').count() + 1);
+    for token in body.split(',') {
+        let token = token.trim();
+        if token.is_empty()
+            || token
+                .bytes()
+                .any(|b| matches!(b, b'"' | b'\'' | b'[' | b']' | b'{' | b'}'))
+        {
+            return Err(format!("invalid vector payload: {raw}"));
+        }
+        out.push(parse_element(token)?);
+    }
+    Ok(out)
+}
+
 /// Decode a `VARIANT`, `OBJECT`, or `ARRAY` payload into a [`serde_json::Value`] after handling Snowflake-specific tokens.
 pub(crate) fn decode_json_payload(raw: &str) -> CellDecodeResult<serde_json::Value> {
     let normalized = prepare_snowflake_json_payload(raw)?;
@@ -2019,5 +2196,165 @@ mod tests {
             .0;
         assert_eq!(dt.timestamp(), 1_718_429_445);
         assert_eq!(dt.timestamp_subsec_nanos(), 123_456_789);
+    }
+
+    fn decode_vector<T: FromCell>(raw: &str) -> CellDecodeResult<T> {
+        let plan = T::build_plan(&Column::new("X", 0, true, ColumnType::Vector)).unwrap();
+        T::from_cell_with_plan(Some(raw), &plan)
+    }
+
+    #[test]
+    fn vector_i32_decodes_integer_payload() {
+        let value = decode_vector::<Vector<i32>>("[1,2,3]").unwrap();
+        assert_eq!(value.as_slice(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn vector_i32_decodes_i32_bounds() {
+        let value = decode_vector::<Vector<i32>>("[-2147483648,2147483647]").unwrap();
+        assert_eq!(value.as_slice(), &[i32::MIN, i32::MAX]);
+    }
+
+    #[test]
+    fn vector_i32_rejects_out_of_range_element() {
+        let err = decode_vector::<Vector<i32>>("[2147483648]").unwrap_err();
+        assert!(
+            err.reason().contains("invalid VECTOR(INT) element"),
+            "actual: {}",
+            err.reason()
+        );
+    }
+
+    #[test]
+    fn vector_i32_rejects_decimal_token() {
+        let err = decode_vector::<Vector<i32>>("[1.000000]").unwrap_err();
+        assert!(
+            err.reason().contains("invalid VECTOR(INT) element"),
+            "actual: {}",
+            err.reason()
+        );
+    }
+
+    #[test]
+    fn vector_i32_rejects_non_finite_token() {
+        for raw in ["[inf]", "[nan]"] {
+            let err = decode_vector::<Vector<i32>>(raw).unwrap_err();
+            assert!(
+                err.reason().contains("invalid VECTOR(INT) element"),
+                "raw {raw} actual: {}",
+                err.reason()
+            );
+        }
+    }
+
+    #[test]
+    fn vector_f32_decodes_finite_payload() {
+        let value = decode_vector::<Vector<f32>>("[1.500000,-2.250000,0.000000]").unwrap();
+        assert_eq!(value.as_slice(), &[1.5f32, -2.25, 0.0]);
+    }
+
+    #[test]
+    fn vector_f32_decodes_non_finite_tokens() {
+        let value = decode_vector::<Vector<f32>>("[inf,-inf,nan]").unwrap();
+        let slice = value.as_slice();
+        assert!(slice[0].is_infinite() && slice[0].is_sign_positive());
+        assert!(slice[1].is_infinite() && slice[1].is_sign_negative());
+        assert!(slice[2].is_nan());
+    }
+
+    #[test]
+    fn vector_f32_rejects_integer_only_token() {
+        let err = decode_vector::<Vector<f32>>("[1,2,3]").unwrap_err();
+        assert!(
+            err.reason().contains("invalid VECTOR(FLOAT) element"),
+            "actual: {}",
+            err.reason()
+        );
+    }
+
+    #[test]
+    fn vector_f32_rejects_uppercase_semistructured_tokens() {
+        for raw in ["[Infinity]", "[NaN]", "[-Infinity]"] {
+            let err = decode_vector::<Vector<f32>>(raw).unwrap_err();
+            assert!(
+                err.reason().contains("invalid VECTOR(FLOAT) element"),
+                "raw {raw} actual: {}",
+                err.reason()
+            );
+        }
+    }
+
+    #[test]
+    fn vector_rejects_empty_payload() {
+        let int_err = decode_vector::<Vector<i32>>("[]").unwrap_err();
+        assert!(
+            int_err.reason().contains("invalid vector payload"),
+            "actual: {}",
+            int_err.reason()
+        );
+        let float_err = decode_vector::<Vector<f32>>("[]").unwrap_err();
+        assert!(
+            float_err.reason().contains("invalid vector payload"),
+            "actual: {}",
+            float_err.reason()
+        );
+    }
+
+    #[test]
+    fn vector_rejects_quoted_and_structural_tokens() {
+        for raw in [r#"["1"]"#, "[[1]]", "[{}]"] {
+            assert!(
+                decode_vector::<Vector<i32>>(raw).is_err(),
+                "expected {raw} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn option_vector_handles_sql_null() {
+        let value = one_nullable_cell_table(ColumnType::Vector, None)
+            .rows::<(Option<Vector<i32>>,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn vector_rejects_non_vector_column() {
+        let err = match one_cell_table(ColumnType::Array, "[1,2,3]").rows::<(Vector<i32>,)>() {
+            Ok(_) => panic!("expected plan build to reject ARRAY column for Vector"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.as_schema_error(),
+            Some(SchemaError::IncompatibleColumnType(_))
+        ));
+    }
+
+    /// A caller can still read the raw `VECTOR` payload as text; `String` accepts any column type.
+    #[test]
+    fn string_reads_raw_vector_payload() {
+        let value = one_cell_table(ColumnType::Vector, "[1,2,3]")
+            .rows::<(String,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(value, "[1,2,3]");
+    }
+
+    #[test]
+    fn vector_supports_into_iterator() {
+        let value = decode_vector::<Vector<i32>>("[1,2,3]").unwrap();
+        let owned: Vec<i32> = value.into_iter().collect();
+        assert_eq!(owned, vec![1, 2, 3]);
+
+        let value = decode_vector::<Vector<i32>>("[4,5]").unwrap();
+        let borrowed: Vec<i32> = (&value).into_iter().copied().collect();
+        assert_eq!(borrowed, vec![4, 5]);
     }
 }

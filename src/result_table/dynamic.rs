@@ -8,8 +8,9 @@ use crate::result_table::{
     CellConversionError, CellDecodeResult, FromRow, RowPlanContext,
     cell::CellRef,
     decode::{
-        decode_hex, decode_json_payload, parse_time_seconds_and_nanos, parse_timestamp_epoch,
-        parse_timestamp_tz_with_offset,
+        Vector, decode_hex, decode_json_payload, parse_time_seconds_and_nanos,
+        parse_timestamp_epoch, parse_timestamp_tz_with_offset, parse_vector_f32_payload,
+        parse_vector_i32_payload,
     },
     row::RowRef,
     schema::{ColumnIndex, ColumnType, Schema},
@@ -83,6 +84,60 @@ impl AsRef<[u8]> for BinaryValue {
     }
 }
 
+/// Decoded Snowflake `VECTOR` value on the dynamic-typing path.
+///
+/// Snowflake result metadata does not report a `VECTOR`'s element type, so the payload determines the variant:
+/// an integer-only payload decodes as [`Int`](VectorValue::Int), and a payload carrying a decimal point or a
+/// lowercase `inf` / `-inf` / `nan` token decodes as [`Float`](VectorValue::Float). Snowflake cannot produce an empty
+/// `VECTOR`, so an empty payload is rejected rather than being treated as an ambiguous element type.
+#[derive(Clone, Debug, PartialEq)]
+pub enum VectorValue {
+    /// `VECTOR(INT)` — 32-bit signed integer elements.
+    Int(Vector<i32>),
+    /// `VECTOR(FLOAT)` — 32-bit IEEE 754 float elements.
+    Float(Vector<f32>),
+}
+
+impl VectorValue {
+    /// Convert this vector into a [`serde_json::Value`] array.
+    ///
+    /// `Int` elements become JSON numbers. Finite `Float` elements become JSON numbers; the non-finite `f32` values
+    /// have no JSON representation and fall back to the strings `"inf"`, `"-inf"`, and `"nan"`, matching Snowflake's
+    /// lowercase `VECTOR` wire token spelling.
+    fn into_json_value(self) -> serde_json::Value {
+        match self {
+            VectorValue::Int(vector) => {
+                serde_json::Value::Array(vector.into_vec().into_iter().map(Into::into).collect())
+            }
+            VectorValue::Float(vector) => serde_json::Value::Array(
+                vector
+                    .into_vec()
+                    .into_iter()
+                    .map(f32_element_to_json_value)
+                    .collect(),
+            ),
+        }
+    }
+}
+
+fn f32_element_to_json_value(value: f32) -> serde_json::Value {
+    if value.is_nan() {
+        serde_json::Value::String("nan".to_string())
+    } else if value.is_infinite() {
+        let token = if value.is_sign_positive() {
+            "inf"
+        } else {
+            "-inf"
+        };
+        serde_json::Value::String(token.to_string())
+    } else {
+        match serde_json::Number::from_f64(f64::from(value)) {
+            Some(number) => serde_json::Value::Number(number),
+            None => serde_json::Value::String(value.to_string()),
+        }
+    }
+}
+
 /// Decoded value of a single cell on the dynamic-typing path.
 ///
 /// Each variant corresponds to a Snowflake result type.
@@ -131,6 +186,8 @@ pub enum CellValue {
     Json(serde_json::Value),
     /// `BINARY`, decoded from Snowflake's hex representation.
     Binary(BinaryValue),
+    /// `VECTOR`, with the element type inferred from the payload.
+    Vector(VectorValue),
 }
 
 impl CellValue {
@@ -279,6 +336,7 @@ impl CellValue {
             CellValue::Binary(bytes) => serde_json::Value::String(
                 base64::engine::general_purpose::STANDARD.encode(bytes.as_bytes()),
             ),
+            CellValue::Vector(vector) => vector.into_json_value(),
         }
     }
 }
@@ -403,11 +461,24 @@ fn decode_dynamic(cell: CellRef<'_>) -> CellDecodeResult<CellValue> {
             let bytes = decode_hex(raw).map_err(|m| CellConversionError::builder(m).build())?;
             Ok(CellValue::Binary(BinaryValue::new(bytes)))
         }
-        ColumnType::Geography
-        | ColumnType::Geometry
-        | ColumnType::Vector
-        | ColumnType::Unknown { .. } => Ok(CellValue::String(raw.to_string())),
+        ColumnType::Vector => decode_vector_dynamic(raw).map(CellValue::Vector),
+        ColumnType::Geography | ColumnType::Geometry | ColumnType::Unknown { .. } => {
+            Ok(CellValue::String(raw.to_string()))
+        }
     }
+}
+
+/// Decode a `VECTOR` payload, inferring the element type.
+///
+/// A `VECTOR(INT)` payload parses as [`VectorValue::Int`]. If integer parsing fails, the float parser handles decimal
+/// and lowercase non-finite tokens and returns [`VectorValue::Float`].
+fn decode_vector_dynamic(raw: &str) -> CellDecodeResult<VectorValue> {
+    if let Ok(ints) = parse_vector_i32_payload(raw) {
+        return Ok(VectorValue::Int(Vector::from_vec(ints)));
+    }
+    parse_vector_f32_payload(raw)
+        .map(|floats| VectorValue::Float(Vector::from_vec(floats)))
+        .map_err(|m| CellConversionError::builder(m).build())
 }
 
 #[cfg(test)]
@@ -463,6 +534,83 @@ mod tests {
         assert_eq!(decode.conversion_error().reason(), "'maybe' is not bool");
         assert!(decode.target_type_name().ends_with("CellValue"));
         assert_eq!(decode.raw_value_preview(), Some("maybe"));
+    }
+
+    #[test]
+    fn dynamic_row_decodes_integer_vector() {
+        let row = one_cell_row(ColumnType::Vector, "[1,2,3]");
+        match row.value("PAYLOAD").unwrap() {
+            CellValue::Vector(VectorValue::Int(vector)) => {
+                assert_eq!(vector.as_slice(), &[1, 2, 3]);
+            }
+            other => panic!("expected Vector(Int), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dynamic_row_decodes_float_vector_from_decimal_payload() {
+        let row = one_cell_row(ColumnType::Vector, "[1.500000,-2.250000,0.000000]");
+        match row.value("PAYLOAD").unwrap() {
+            CellValue::Vector(VectorValue::Float(vector)) => {
+                assert_eq!(vector.as_slice(), &[1.5f32, -2.25, 0.0]);
+            }
+            other => panic!("expected Vector(Float), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dynamic_row_decodes_float_vector_from_non_finite_payload() {
+        let row = one_cell_row(ColumnType::Vector, "[1.000000,nan,-inf]");
+        match row.value("PAYLOAD").unwrap() {
+            CellValue::Vector(VectorValue::Float(vector)) => {
+                let slice = vector.as_slice();
+                assert_eq!(slice[0], 1.0f32);
+                assert!(slice[1].is_nan());
+                assert!(slice[2].is_infinite() && slice[2].is_sign_negative());
+            }
+            other => panic!("expected Vector(Float), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dynamic_row_malformed_vector_reports_contextual_error() {
+        let schema = make_schema(vec![("PAYLOAD".to_string(), ColumnType::Vector, true)]);
+        let table =
+            make_result_table_from_rows(schema, vec![vec![Some("[abc]".to_string())]]).unwrap();
+
+        let err = table.dynamic_rows().unwrap().next().unwrap().unwrap_err();
+        let decode = err
+            .as_cell_decode_error()
+            .expect("malformed vector should yield CellDecodeError");
+        assert_eq!(decode.column_name(), "PAYLOAD");
+        assert!(
+            decode
+                .conversion_error()
+                .reason()
+                .contains("invalid VECTOR(FLOAT) element"),
+            "actual: {}",
+            decode.conversion_error().reason()
+        );
+    }
+
+    #[test]
+    fn float_vector_into_json_value_stringifies_non_finite_elements() {
+        let value = CellValue::Vector(VectorValue::Float(Vector::from_vec(vec![
+            1.5,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+        ])));
+        assert_eq!(
+            value.into_json_value(),
+            serde_json::json!([1.5, "inf", "-inf", "nan"])
+        );
+    }
+
+    #[test]
+    fn integer_vector_into_json_value_is_number_array() {
+        let value = CellValue::Vector(VectorValue::Int(Vector::from_vec(vec![1, -2, 3])));
+        assert_eq!(value.into_json_value(), serde_json::json!([1, -2, 3]));
     }
 
     #[test]
