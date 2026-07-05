@@ -321,6 +321,29 @@ async fn test_decode() -> Result<()> {
     let (geog_null,) = table.rows().next().unwrap()?;
     assert!(geog_null.is_none());
 
+    // Snowflake serializes non-finite floats in VARIANT / OBJECT / ARRAY payloads as bare `Infinity` / `-Infinity` /
+    // `NaN`, which are not valid JSON. The decode error should call out the Snowflake token.
+    let err = session
+        .query_as::<(serde_json::Value,), _>("SELECT TO_VARIANT('inf'::DOUBLE) AS v")
+        .await?
+        .collect_table()
+        .await?
+        .rows()
+        .next()
+        .unwrap()
+        .expect_err("non-finite float must not decode as JSON");
+    match err.as_cell_decode_error() {
+        Some(decode) => assert!(
+            decode
+                .conversion_error()
+                .reason()
+                .contains("non-finite float token `Infinity`"),
+            "actual: {}",
+            decode.conversion_error().reason()
+        ),
+        other => panic!("expected Decode error, got: {other:?}"),
+    }
+
     Ok(())
 }
 
@@ -360,16 +383,14 @@ async fn test_dynamic_row_value_resolves_escaped_identifiers() -> Result<()> {
     Ok(())
 }
 
-/// Verify TIMESTAMP_TZ decoding into `DateTime<FixedOffset>` and
-/// `DateTime<Utc>` for both eastern (UTC+09:00) and western (UTC-05:00)
-/// offsets.
+/// Verify TIMESTAMP_TZ decoding into `DateTime<FixedOffset>` and `DateTime<Utc>` for both eastern (UTC+09:00) and
+/// western (UTC-05:00) offsets.
 #[tokio::test]
 async fn test_decode_timestamp_tz_offsets() -> Result<()> {
     let client = common::connect()?;
     let session = client.create_session().await?;
 
-    // Use a session timezone that is not UTC so any accidental
-    // session-default leakage shows up in the failure mode.
+    // Use a session timezone that is not UTC so any accidental session-default leakage shows up in the failure mode.
     session
         .query("ALTER SESSION SET TIMEZONE = 'America/New_York'")
         .await?;

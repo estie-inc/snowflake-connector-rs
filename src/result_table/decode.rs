@@ -535,6 +535,8 @@ impl FromCell for serde_json::Value {
 /// types are not available for plan-time checking. Decoding succeeds when the cell payload can be interpreted as `T`
 /// after normalizing Snowflake's array-element `undefined` values to JSON `null`.
 ///
+/// Snowflake non-finite float tokens (`Infinity`, `-Infinity`, `NaN`) are rejected because JSON has no representation for them.
+///
 /// Use `Option<_>` for array element positions that may contain SQL `NULL`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Json<T>(T);
@@ -567,7 +569,7 @@ where
 
     fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
         let raw = required_raw(raw)?;
-        let normalized = normalize_json_undefined(raw);
+        let normalized = prepare_snowflake_json_payload(raw)?;
         serde_json::from_str::<T>(&normalized)
             .map(Json)
             .map_err(|e| {
@@ -596,9 +598,9 @@ impl FromCell for BinaryValue {
     }
 }
 
-/// Decode a `VARIANT`, `OBJECT`, or `ARRAY` payload into a [`serde_json::Value`], normalizing bare `undefined` tokens first.
+/// Decode a `VARIANT`, `OBJECT`, or `ARRAY` payload into a [`serde_json::Value`] after handling Snowflake-specific tokens.
 pub(crate) fn decode_json_payload(raw: &str) -> CellDecodeResult<serde_json::Value> {
-    let normalized = normalize_json_undefined(raw);
+    let normalized = prepare_snowflake_json_payload(raw)?;
     serde_json::from_str(&normalized).map_err(|e| {
         CellConversionError::builder(format!("invalid json payload: {e}"))
             .source(e)
@@ -606,19 +608,24 @@ pub(crate) fn decode_json_payload(raw: &str) -> CellDecodeResult<serde_json::Val
     })
 }
 
-/// Replace bare `undefined` tokens with JSON `null`.
+/// Prepare a Snowflake `VARIANT` / `OBJECT` / `ARRAY` payload for JSON parsing.
 ///
-/// Snowflake emits a NULL array element as a bare `undefined`, which is not valid JSON.
-/// Returns [`Cow::Borrowed`] and allocates nothing when no replacement is needed.
-pub(crate) fn normalize_json_undefined(raw: &str) -> Cow<'_, str> {
-    const TOKEN: &[u8] = b"undefined";
-
-    // Cheap reject: without the substring anywhere there is nothing to rewrite.
-    if !raw.as_bytes().windows(TOKEN.len()).any(|w| w == TOKEN) {
-        return Cow::Borrowed(raw);
-    }
+/// Snowflake can emit token kinds that are not valid JSON outside of string literals:
+///
+/// - `undefined` marks a NULL array element and is rewritten to JSON `null`.
+/// - `Infinity`, `-Infinity`, and `NaN` are non-finite floats that JSON cannot represent; they are rejected
+///   with a [`CellConversionError`] rather than lowered to `null`, which would erase the distinction from null values.
+///
+/// Returns [`Cow::Borrowed`] and allocates nothing when no rewrite is needed. Tokens inside string literals are left untouched.
+/// VECTOR(FLOAT)'s lowercase `inf` / `-inf` / `nan` are a separate convention that this JSON path does not handle.
+pub(crate) fn prepare_snowflake_json_payload(raw: &str) -> CellDecodeResult<Cow<'_, str>> {
+    const UNDEFINED: &[u8] = b"undefined";
+    const INFINITY: &[u8] = b"Infinity";
+    const NAN: &[u8] = b"NaN";
 
     let bytes = raw.as_bytes();
+
+    // Single pass over the payload; clean input returns `Cow::Borrowed`.
     let mut out: Option<String> = None;
     let mut copied = 0usize;
     let mut in_string = false;
@@ -637,17 +644,12 @@ pub(crate) fn normalize_json_undefined(raw: &str) -> Cow<'_, str> {
             i += 1;
             continue;
         }
-        if b == b'"' {
-            in_string = true;
-            i += 1;
-            continue;
-        }
-        if b == b'u' && bytes[i..].starts_with(TOKEN) {
-            let after = i + TOKEN.len();
-            // Guard against an unquoted word that merely contains the token (`undefinedX`, `_undefined`).
-            let prev_ok = i == 0 || !is_bare_word_byte(bytes[i - 1]);
-            let next_ok = after >= bytes.len() || !is_bare_word_byte(bytes[after]);
-            if prev_ok && next_ok {
+        match b {
+            b'"' => {
+                in_string = true;
+            }
+            b'u' if is_bare_token_at(bytes, i, UNDEFINED) => {
+                let after = i + UNDEFINED.len();
                 let buf = out.get_or_insert_with(|| String::with_capacity(raw.len()));
                 buf.push_str(&raw[copied..i]);
                 buf.push_str("null");
@@ -655,17 +657,55 @@ pub(crate) fn normalize_json_undefined(raw: &str) -> Cow<'_, str> {
                 i = after;
                 continue;
             }
+            b'I' if is_bare_token_at(bytes, i, INFINITY) => {
+                // Snowflake emits `-Infinity` as a single token; report it with the sign. `+Infinity` is not a Snowflake token,
+                // so leave it for `serde_json` to reject.
+                if i > 0 && bytes[i - 1] == b'+' {
+                    i += 1;
+                    continue;
+                }
+                let token = if i > 0 && bytes[i - 1] == b'-' {
+                    "-Infinity"
+                } else {
+                    "Infinity"
+                };
+                return Err(non_finite_float_error(token));
+            }
+            b'N' if is_bare_token_at(bytes, i, NAN) => {
+                return Err(non_finite_float_error("NaN"));
+            }
+            _ => {}
         }
         i += 1;
     }
 
-    match out {
+    Ok(match out {
         Some(mut buf) => {
             buf.push_str(&raw[copied..]);
             Cow::Owned(buf)
         }
         None => Cow::Borrowed(raw),
+    })
+}
+
+/// Whether `token` starts at `bytes[i]` and is delimited by non-word bytes on both sides.
+///
+/// The boundary check guards against an unquoted word that merely contains the token (`undefinedX`, `_NaN`).
+fn is_bare_token_at(bytes: &[u8], i: usize, token: &[u8]) -> bool {
+    if !bytes[i..].starts_with(token) {
+        return false;
     }
+    let after = i + token.len();
+    let prev_ok = i == 0 || !is_bare_word_byte(bytes[i - 1]);
+    let next_ok = after >= bytes.len() || !is_bare_word_byte(bytes[after]);
+    prev_ok && next_ok
+}
+
+fn non_finite_float_error(token: &str) -> CellConversionError {
+    CellConversionError::builder(format!(
+        "Snowflake non-finite float token `{token}` is not representable as JSON"
+    ))
+    .build()
 }
 
 fn is_bare_word_byte(b: u8) -> bool {
@@ -1810,30 +1850,131 @@ mod tests {
     }
 
     #[test]
-    fn normalize_json_undefined_leaves_clean_json_borrowed() {
+    fn prepare_snowflake_json_payload_leaves_clean_json_borrowed() {
         let raw = r#"{"a":1,"b":[1,2,3]}"#;
-        assert!(matches!(normalize_json_undefined(raw), Cow::Borrowed(_)));
+        assert!(matches!(
+            prepare_snowflake_json_payload(raw).unwrap(),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]
-    fn normalize_json_undefined_preserves_string_literals() {
+    fn prepare_snowflake_json_payload_preserves_string_literals() {
         // `undefined` inside a quoted value, plus escaped quotes and backslashes, must not be rewritten.
         let raw = r#"["undefined","a \" undefined","c\\undefined"]"#;
-        assert!(matches!(normalize_json_undefined(raw), Cow::Borrowed(_)));
+        assert!(matches!(
+            prepare_snowflake_json_payload(raw).unwrap(),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]
-    fn normalize_json_undefined_rewrites_bare_tokens_outside_strings() {
+    fn prepare_snowflake_json_payload_rewrites_bare_undefined_outside_strings() {
         let raw = r#"[undefined,"undefined",undefined]"#;
-        assert_eq!(normalize_json_undefined(raw), r#"[null,"undefined",null]"#);
+        assert_eq!(
+            prepare_snowflake_json_payload(raw).unwrap(),
+            r#"[null,"undefined",null]"#
+        );
     }
 
     #[test]
-    fn normalize_json_undefined_keeps_object_null_values() {
+    fn prepare_snowflake_json_payload_keeps_object_null_values() {
         let raw = "{\n  \"k1\": null,\n  \"k2\": undefined\n}";
         assert_eq!(
-            normalize_json_undefined(raw),
+            prepare_snowflake_json_payload(raw).unwrap(),
             "{\n  \"k1\": null,\n  \"k2\": null\n}"
+        );
+    }
+
+    fn assert_non_finite_rejected(raw: &str, token: &str) {
+        let err = prepare_snowflake_json_payload(raw)
+            .expect_err("non-finite float token must be rejected");
+        let expected =
+            format!("Snowflake non-finite float token `{token}` is not representable as JSON");
+        assert_eq!(err.reason(), expected);
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_preserves_non_finite_inside_strings() {
+        for raw in [r#""Infinity""#, r#""-Infinity""#, r#""NaN""#] {
+            assert!(matches!(
+                prepare_snowflake_json_payload(raw).unwrap(),
+                Cow::Borrowed(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_scalar_infinity() {
+        assert_non_finite_rejected("Infinity", "Infinity");
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_scalar_nan() {
+        assert_non_finite_rejected("NaN", "NaN");
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_signed_infinity_in_array() {
+        assert_non_finite_rejected("[\n  Infinity,\n  -Infinity,\n  NaN\n]", "Infinity");
+        assert_non_finite_rejected("[\n  -Infinity\n]", "-Infinity");
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_non_finite_in_object() {
+        assert_non_finite_rejected("{\n  \"a\": Infinity\n}", "Infinity");
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_nested_non_finite() {
+        assert_non_finite_rejected("{\n  \"arr\": [\n    NaN\n  ]\n}", "NaN");
+    }
+
+    /// `+Infinity` is not a Snowflake token: it is left untouched for `serde_json` to reject as invalid JSON.
+    #[test]
+    fn prepare_snowflake_json_payload_leaves_plus_infinity_for_serde() {
+        let raw = "[+Infinity]";
+        assert!(matches!(
+            prepare_snowflake_json_payload(raw).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        assert!(serde_json::from_str::<serde_json::Value>(raw).is_err());
+    }
+
+    #[test]
+    fn prepare_snowflake_json_payload_accepts_finite_float() {
+        let raw = "[\n  1.500000000000000e+00\n]";
+        assert!(matches!(
+            prepare_snowflake_json_payload(raw).unwrap(),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    /// A non-finite token must win even when a rewritable `undefined` precedes it: the payload must never silently succeed.
+    #[test]
+    fn prepare_snowflake_json_payload_rejects_non_finite_alongside_undefined() {
+        assert_non_finite_rejected("[undefined, NaN]", "NaN");
+    }
+
+    #[test]
+    fn serde_json_value_rejects_scalar_infinity() {
+        let t = one_cell_table(ColumnType::Variant, "Infinity");
+        let err = t
+            .rows::<(serde_json::Value,)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap_err();
+        let decode = err
+            .as_cell_decode_error()
+            .expect("non-finite token should fail cell decode");
+        assert!(
+            decode
+                .conversion_error()
+                .reason()
+                .contains("non-finite float token `Infinity`"),
+            "actual: {}",
+            decode.conversion_error().reason()
         );
     }
 
