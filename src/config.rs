@@ -30,24 +30,25 @@ pub struct SessionConfig {
     session_parameters: HashMap<String, serde_json::Value>,
 }
 
-const DEFAULT_COLLECT_PREFETCH_CONCURRENCY: usize = 8;
+pub(crate) const DEFAULT_QUERY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
+const DEFAULT_COLLECT_PREFETCH_CONCURRENCY: NonZeroUsize =
+    NonZeroUsize::new(8).expect("default concurrency is non-zero");
 
 /// Client-side query execution policy.
 ///
-/// Controls how this connector behaves while executing queries — for example, how long to poll for the completion
-/// of an async query. These settings are enforced entirely on the client side and are never sent to Snowflake.
+/// Controls how this connector behaves while executing queries — for example, how long to wait for Snowflake to
+/// return a query response. These settings are enforced entirely on the client side and are never sent to Snowflake.
 #[derive(Clone, Debug)]
 pub struct QueryConfig {
-    async_query_completion_timeout: Option<Duration>,
+    query_response_timeout: Duration,
     collect_prefetch_concurrency: NonZeroUsize,
 }
 
 impl Default for QueryConfig {
     fn default() -> Self {
         Self {
-            async_query_completion_timeout: None,
-            collect_prefetch_concurrency: NonZeroUsize::new(DEFAULT_COLLECT_PREFETCH_CONCURRENCY)
-                .expect("default concurrency is non-zero"),
+            query_response_timeout: DEFAULT_QUERY_RESPONSE_TIMEOUT,
+            collect_prefetch_concurrency: DEFAULT_COLLECT_PREFETCH_CONCURRENCY,
         }
     }
 }
@@ -199,8 +200,24 @@ impl SessionConfig {
 }
 
 impl QueryConfig {
-    pub fn with_async_query_completion_timeout(mut self, timeout: Duration) -> Self {
-        self.async_query_completion_timeout = Some(timeout);
+    /// Sets the client-side timeout for obtaining a query response from Snowflake.
+    ///
+    /// This bounds how long [`Session::query()`](crate::Session::query) /
+    /// [`Session::query_as()`](crate::Session::query_as) wait for Snowflake to return a query response and for this
+    /// connector to build a [`ResultCursor`](crate::ResultCursor). It is not specific to async queries: it spans the
+    /// initial statement submit and, when Snowflake responds asynchronously, the subsequent result polling as a single
+    /// budget that is never reset once polling begins. Defaults to `300s`.
+    ///
+    /// This is a client-side timeout only. It does not cancel the query on Snowflake, so the statement may keep
+    /// running server-side after the deadline elapses. It also does not cover chunk download or row collection
+    /// performed through the returned `ResultCursor`.
+    ///
+    /// Snowflake can block the initial submit request for up to roughly 45 seconds before responding. Until that
+    /// response arrives the connector does not know the query id, so a timeout during submit yields an error whose
+    /// [`Error::query_id()`](crate::Error::query_id) is `None`. To reliably recover the query id from a timeout error,
+    /// set this to more than `45s` plus network/server buffer.
+    pub fn with_query_response_timeout(mut self, timeout: Duration) -> Self {
+        self.query_response_timeout = timeout;
         self
     }
 
@@ -298,13 +315,13 @@ impl From<SessionConfig> for InitialSessionConfig {
 /// Internal query execution policy, the runtime form of [`QueryConfig`].
 #[derive(Debug)]
 pub(crate) struct QueryExecutionPolicy {
-    async_query_completion_timeout: Option<Duration>,
+    query_response_timeout: Duration,
     collect_prefetch_concurrency: NonZeroUsize,
 }
 
 impl QueryExecutionPolicy {
-    pub(crate) fn async_query_completion_timeout(&self) -> Option<Duration> {
-        self.async_query_completion_timeout
+    pub(crate) fn query_response_timeout(&self) -> Duration {
+        self.query_response_timeout
     }
 
     pub(crate) fn collect_prefetch_concurrency(&self) -> NonZeroUsize {
@@ -315,7 +332,7 @@ impl QueryExecutionPolicy {
 impl From<QueryConfig> for QueryExecutionPolicy {
     fn from(config: QueryConfig) -> Self {
         Self {
-            async_query_completion_timeout: config.async_query_completion_timeout,
+            query_response_timeout: config.query_response_timeout,
             collect_prefetch_concurrency: config.collect_prefetch_concurrency,
         }
     }
@@ -452,6 +469,20 @@ fn validate_proxy_url(url: Url) -> Result<Url> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_config_defaults_to_300s_query_response_timeout() {
+        let policy: QueryExecutionPolicy = QueryConfig::default().into();
+        assert_eq!(policy.query_response_timeout(), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn with_query_response_timeout_overrides_the_default() {
+        let policy: QueryExecutionPolicy = QueryConfig::default()
+            .with_query_response_timeout(Duration::from_secs(60))
+            .into();
+        assert_eq!(policy.query_response_timeout(), Duration::from_secs(60));
+    }
 
     #[test]
     fn proxy_debug_redacts_basic_auth_password() {

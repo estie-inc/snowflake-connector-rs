@@ -21,7 +21,8 @@ let session_config = SessionConfig::default()
     .with_schema("SCHEMA");
 
 let query_config = QueryConfig::default()
-    .with_async_query_completion_timeout(std::time::Duration::from_secs(30));
+    // Client-side timeout for obtaining a query response.
+    .with_query_response_timeout(std::time::Duration::from_secs(60));
 
 let client = Client::new(
     ClientConfig::new(
