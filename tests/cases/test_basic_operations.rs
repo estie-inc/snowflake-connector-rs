@@ -7,26 +7,32 @@ use snowflake_connector_rs::{
 
 #[tokio::test]
 async fn test_basic_operations() -> Result<()> {
-    let client = common::connect()?;
-    let session = client.create_session().await?;
+    let session = common::default_session().await?;
+    let table_name = common::unique_temp_table_name("example");
 
-    let query = "CREATE TEMPORARY TABLE example (
+    let query = format!(
+        "CREATE TEMPORARY TABLE {table_name} (
         id NUMBER,
         value STRING,
         price DECIMAL(10,2),
         is_active BOOLEAN,
         created_date DATE,
         updated_at TIMESTAMP_NTZ
-    )";
+    )"
+    );
     let table = session.query(query).await?.collect_table().await?;
     assert_eq!(table.row_count(), 1);
 
     let value = table.rows::<(String,)>()?.next().unwrap()?.0;
-    assert_eq!(value, "Table EXAMPLE successfully created.");
+    assert_eq!(
+        value,
+        format!("Table {} successfully created.", table_name.to_uppercase())
+    );
 
-    let query = "
+    let query = format!(
+        "
     INSERT INTO
-        example (
+        {table_name} (
             id,
             value,
             price,
@@ -50,14 +56,15 @@ async fn test_basic_operations() -> Result<()> {
             false,
             '2023-01-02',
             '2023-01-02 15:30:00'
-        )";
+        )"
+    );
     let table = session.query(query).await?.collect_table().await?;
     assert_eq!(table.row_count(), 1);
     let value = table.rows::<(i64,)>()?.next().unwrap()?.0;
     assert_eq!(value, 2);
 
     let table = session
-        .query("SELECT * FROM example ORDER BY id")
+        .query(format!("SELECT * FROM {table_name} ORDER BY id"))
         .await?
         .collect_table()
         .await?;
@@ -136,7 +143,7 @@ async fn test_basic_operations() -> Result<()> {
     ));
 
     let price_rows = session
-        .query_as("SELECT id, price FROM example ORDER BY id")
+        .query_as(format!("SELECT id, price FROM {table_name} ORDER BY id"))
         .await?
         .collect::<Vec<(i64, DecimalValue)>>()
         .await?;
