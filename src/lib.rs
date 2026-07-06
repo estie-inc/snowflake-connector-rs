@@ -66,7 +66,8 @@
 mod auth;
 pub mod bind;
 mod config;
-mod error;
+pub mod decode;
+pub mod error;
 mod result_cursor;
 mod result_table;
 mod rowset;
@@ -85,16 +86,12 @@ pub use config::{
 pub(crate) use config::{
     ClientLoginConfig, InitialSessionConfig, QueryExecutionPolicy, QueryExecutionSettings,
 };
-pub use error::{
-    AmbiguousColumnError, CellConversionError, CellConversionErrorBuilder, CellDecodeError,
-    CellDecodeResult, ColumnCountMismatchError, DuplicateColumnNameError, Error, ErrorKind,
-    IncompatibleColumnTypeError, InvalidColumnIndexError, MissingColumnError, Result, SchemaError,
-};
+pub use decode::{CellPlan, CellPlanContext, FromCell, FromRow, RowPlanContext};
+pub use error::{Error, ErrorKind, Result};
 pub use result_cursor::{CollectOptions, ResultCursor, TypedResultCursor};
 pub use result_table::{
-    BinaryValue, CellPlan, CellPlanContext, CellRef, CellValue, Column, ColumnIndex, ColumnType,
-    DecimalValue, DynamicRow, FromCell, FromRow, Json, ResultTable, RowPlanContext, RowRef, Rows,
-    Schema, TimePlan, TimestampPlan, TypedResultTable, UtcTimestampPlan, Vector, VectorValue,
+    BinaryValue, CellRef, CellValue, Column, ColumnIndex, ColumnType, DecimalValue, DynamicRow,
+    ResultTable, RowRef, Rows, Schema, TypedResultTable, VectorValue,
 };
 use runtime::QueryRuntime;
 pub use session::{QueryOptions, Session};

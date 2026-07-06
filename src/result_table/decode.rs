@@ -10,7 +10,10 @@ use crate::result_table::{
     row::RowRef,
     schema::{Column, ColumnIndex, ColumnType},
 };
-use crate::{ColumnCountMismatchError, Error, IncompatibleColumnTypeError, Result, SchemaError};
+use crate::{
+    Error, Result,
+    error::{ColumnCountMismatchError, IncompatibleColumnTypeError, SchemaError},
+};
 
 const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 
@@ -25,29 +28,22 @@ const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 ///
 /// # Example
 ///
-/// A custom decoder that wraps `f64` for type safety and does not care about the column type:
+/// A newtype over `f64` for type safety. It reuses `f64`'s plan, inheriting its column-type validation and parsing:
 ///
 /// ```
-/// use snowflake_connector_rs::{
-///     CellConversionError, CellDecodeResult, CellPlanContext, FromCell, Result,
-/// };
+/// use snowflake_connector_rs::{decode::CellDecodeResult, CellPlanContext, FromCell, Result};
 ///
 /// struct CelsiusTemp(f64);
 ///
 /// impl FromCell for CelsiusTemp {
-///     type Plan = ();
+///     type Plan = <f64 as FromCell>::Plan;
 ///
-///     fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
-///         Ok(())
+///     fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+///         f64::build_plan(ctx)
 ///     }
 ///
-///     fn from_cell_with_plan(raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
-///         let raw = raw.ok_or_else(|| CellConversionError::builder("value is NULL").build())?;
-///         raw.parse::<f64>().map(CelsiusTemp).map_err(|e| {
-///             CellConversionError::builder("not a valid temperature")
-///                 .source(e)
-///                 .build()
-///         })
+///     fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+///         f64::from_cell_with_plan(raw, plan).map(CelsiusTemp)
 ///     }
 /// }
 /// ```
@@ -61,7 +57,7 @@ pub trait FromCell: Sized {
     ///
     /// # Errors
     ///
-    /// Return [`SchemaError::IncompatibleColumnType`](crate::SchemaError::IncompatibleColumnType) when the column
+    /// Return [`SchemaError::IncompatibleColumnType`](crate::error::SchemaError::IncompatibleColumnType) when the column
     /// cannot be decoded into `Self`. This runs before any row is read, so a mismatch fails the whole
     /// [`rows`](crate::ResultTable::rows) call rather than surfacing per cell.
     fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan>;
@@ -106,7 +102,7 @@ impl<T: FromCell> CellPlan<T> {
     ///
     /// # Errors
     ///
-    /// - [`SchemaError::MissingColumn`](crate::SchemaError::MissingColumn) / [`SchemaError::AmbiguousColumn`](crate::SchemaError::AmbiguousColumn)
+    /// - [`SchemaError::MissingColumn`](crate::error::SchemaError::MissingColumn) / [`SchemaError::AmbiguousColumn`](crate::error::SchemaError::AmbiguousColumn)
     ///   from the label lookup.
     /// - Any [`FromCell::build_plan`] failure for `T`.
     pub fn by_name(ctx: RowPlanContext<'_>, name: &str) -> Result<Self> {
@@ -122,7 +118,7 @@ impl<T: FromCell> CellPlan<T> {
     ///
     /// # Errors
     ///
-    /// - [`SchemaError::ColumnCountMismatch`](crate::SchemaError::ColumnCountMismatch) when `position` is out of range.
+    /// - [`SchemaError::ColumnCountMismatch`](crate::error::SchemaError::ColumnCountMismatch) when `position` is out of range.
     /// - Any [`FromCell::build_plan`] failure for `T`.
     pub fn by_position(ctx: RowPlanContext<'_>, position: usize) -> Result<Self> {
         let schema = ctx.schema();
@@ -189,8 +185,8 @@ pub trait FromRow: Sized {
     /// # Errors
     ///
     /// Implementations may return any [`Error`](crate::Error) appropriate for schema validation or planning.
-    /// Conventional errors include [`SchemaError::MissingColumn`](crate::SchemaError::MissingColumn)
-    /// and [`SchemaError::ColumnCountMismatch`](crate::SchemaError::ColumnCountMismatch).
+    /// Conventional errors include [`SchemaError::MissingColumn`](crate::error::SchemaError::MissingColumn)
+    /// and [`SchemaError::ColumnCountMismatch`](crate::error::SchemaError::ColumnCountMismatch).
     fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan>;
 
     /// Decode a single row using the associated plan.

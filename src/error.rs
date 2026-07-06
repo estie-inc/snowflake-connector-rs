@@ -10,19 +10,21 @@ use std::{error::Error as StdError, fmt, sync::Arc};
 use reqwest::header::InvalidHeaderValue;
 use tokio::task::JoinError;
 
+use repr::Repr;
+
 pub use decode::{
     CellConversionError, CellConversionErrorBuilder, CellDecodeError, CellDecodeResult,
-};
-pub(crate) use parse::RowsetParseError;
-pub(crate) use query_scoped::{QueryScopedError, QueryScopedRepr, QueryScopedResult};
-use repr::Repr;
-pub(crate) use repr::{
-    AuthError, ConfigError, InternalError, NetworkError, ProtocolError, ServerError,
-    SessionExpiredError, TimeoutError,
 };
 pub use schema::{
     AmbiguousColumnError, ColumnCountMismatchError, DuplicateColumnNameError,
     IncompatibleColumnTypeError, InvalidColumnIndexError, MissingColumnError, SchemaError,
+};
+
+pub(crate) use parse::RowsetParseError;
+pub(crate) use query_scoped::{QueryScopedError, QueryScopedRepr, QueryScopedResult};
+pub(crate) use repr::{
+    AuthError, ConfigError, InternalError, NetworkError, ProtocolError, ServerError,
+    SessionExpiredError, TimeoutError,
 };
 
 const VALUE_PREVIEW_MAX_CHARS: usize = 128;

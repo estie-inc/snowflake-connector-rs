@@ -4,19 +4,20 @@ use base64::Engine as _;
 use bytes::Bytes;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
-use crate::result_table::{
-    CellConversionError, CellDecodeResult, FromRow, RowPlanContext,
-    cell::CellRef,
-    decode::{
-        Vector, decode_hex, decode_json_payload, parse_time_seconds_and_nanos,
-        parse_timestamp_epoch, parse_timestamp_tz_with_offset, parse_vector_f32_payload,
-        parse_vector_i32_payload,
-    },
-    row::RowRef,
-    schema::{ColumnIndex, ColumnType, Schema},
-};
 use crate::{
-    CellDecodeError, DuplicateColumnNameError, InvalidColumnIndexError, Result, SchemaError,
+    Result,
+    error::{CellDecodeError, DuplicateColumnNameError, InvalidColumnIndexError, SchemaError},
+    result_table::{
+        CellConversionError, CellDecodeResult, FromRow, RowPlanContext,
+        cell::CellRef,
+        decode::{
+            Vector, decode_hex, decode_json_payload, parse_time_seconds_and_nanos,
+            parse_timestamp_epoch, parse_timestamp_tz_with_offset, parse_vector_f32_payload,
+            parse_vector_i32_payload,
+        },
+        row::RowRef,
+        schema::{ColumnIndex, ColumnType, Schema},
+    },
 };
 
 /// Result-side representation of a Snowflake `NUMBER` / `DECIMAL` cell with non-zero scale.
