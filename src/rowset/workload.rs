@@ -2,7 +2,7 @@ use tokio::task::JoinError;
 
 use crate::runtime::BlockingParseLimiter;
 
-// These thresholds intentionally allow modest inline parsing so callers avoid　paying `spawn_blocking` overhead for
+// These thresholds intentionally allow modest inline parsing so callers avoid paying `spawn_blocking` overhead for
 // medium-sized rowsets, while still offloading work large enough to monopolize an async runtime worker for tens of milliseconds.
 // They are aligned to the current rowset parser and gzip benchmarks rather than a strict byte-for-byte equivalence.
 pub(crate) const BLOCKING_PARSE_BYTES: usize = 16 * 1024 * 1024;
