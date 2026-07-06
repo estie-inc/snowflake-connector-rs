@@ -1,7 +1,8 @@
 use std::{any::type_name, marker::PhantomData, sync::Arc};
 
 use crate::{
-    CellDecodeError, Error, InvalidColumnIndexError, Result, SchemaError,
+    Error, Result,
+    error::{CellDecodeError, InvalidColumnIndexError, SchemaError},
     result_table::{
         cell::{CellBlock, CellRef},
         decode::{CellPlan, FromCell, FromRow},

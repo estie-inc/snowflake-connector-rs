@@ -1,6 +1,6 @@
 use chrono::NaiveDateTime;
 
-use snowflake_connector_rs::{DecimalValue, FromRow, Result, SchemaError};
+use snowflake_connector_rs::{DecimalValue, FromRow, Result, error::SchemaError};
 
 use super::common;
 

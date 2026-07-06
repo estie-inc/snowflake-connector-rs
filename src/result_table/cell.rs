@@ -182,7 +182,7 @@ impl<'a> CellRef<'a> {
 
     /// Returns the raw text when the cell is not SQL `NULL`.
     ///
-    /// `NULL` is reported as a [`CellConversionError`](crate::CellConversionError).
+    /// `NULL` is reported as a [`CellConversionError`](crate::decode::CellConversionError).
     pub fn required_raw(self) -> CellDecodeResult<&'a str> {
         match self.raw {
             Some(s) => Ok(s),

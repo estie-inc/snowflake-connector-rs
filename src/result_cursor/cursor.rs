@@ -384,8 +384,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        ErrorKind, MissingColumnError, SchemaError,
-        error::QueryScopedRepr,
+        ErrorKind,
+        error::{MissingColumnError, QueryScopedRepr, SchemaError},
         result_cursor::{
             TypedResultCursor,
             collect::CollectPolicy,

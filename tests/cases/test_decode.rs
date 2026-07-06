@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
 use snowflake_connector_rs::{
-    BinaryValue, CellValue, ColumnType, Json, Result, SchemaError, Vector, VectorValue,
+    BinaryValue, CellValue, ColumnType, Result, VectorValue,
+    decode::{Json, Vector},
+    error::SchemaError,
 };
 
 #[tokio::test]
