@@ -12,7 +12,7 @@ pub use decode::{
     CellPlan, FromCell, FromRow, Json, TimePlan, TimestampPlan, UtcTimestampPlan, Vector,
 };
 pub use dynamic::{BinaryValue, CellValue, DecimalValue, DynamicRow, VectorValue};
-pub use plan::RowPlanContext;
+pub use plan::{CellPlanContext, RowPlanContext};
 pub use row::{RowRef, Rows};
 pub use schema::{Column, ColumnIndex, ColumnType, Schema};
 pub use table::ResultTable;
@@ -73,13 +73,14 @@ pub mod test_data {
 
 #[cfg(test)]
 mod tests {
-    use super::{DynamicRow, ResultTable, RowPlanContext, Rows, TypedResultTable};
+    use super::{CellPlanContext, DynamicRow, ResultTable, RowPlanContext, Rows, TypedResultTable};
 
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
     fn result_row_types_are_send_sync() {
         assert_send_sync::<RowPlanContext<'static>>();
+        assert_send_sync::<CellPlanContext<'static>>();
         assert_send_sync::<ResultTable>();
         assert_send_sync::<TypedResultTable<(String,)>>();
         assert_send_sync::<DynamicRow>();

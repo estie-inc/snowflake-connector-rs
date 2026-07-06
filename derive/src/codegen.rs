@@ -25,7 +25,6 @@ pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
                 fn build_plan(
                     ctx: #crate_path::RowPlanContext<'_>,
                 ) -> #crate_path::Result<Self::Plan> {
-                    let schema = ctx.schema();
                     ::core::result::Result::Ok(( #(#plan_field_inits,)* ))
                 }
 
@@ -44,12 +43,12 @@ fn plan_field_init(field: &FieldInfo, crate_path: &syn::Path) -> TokenStream2 {
     let ty = &field.ty;
     match &field.lookup {
         FieldLookup::Name(name) => quote! {
-            #crate_path::CellPlan::<#ty>::by_name(schema, #name)?
+            #crate_path::CellPlan::<#ty>::by_name(ctx, #name)?
         },
         FieldLookup::Position(pos) => {
             let pos = *pos;
             quote! {
-                #crate_path::CellPlan::<#ty>::by_position(schema, #pos)?
+                #crate_path::CellPlan::<#ty>::by_position(ctx, #pos)?
             }
         }
     }

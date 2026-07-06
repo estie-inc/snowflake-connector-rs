@@ -393,8 +393,8 @@ mod tests {
             remote::tests::{BlockingFetchProbe, FakePartitionSource, FakeResponse},
         },
         result_table::{
-            CellConversionError, CellDecodeResult, CellPlan, Column, ColumnType, DynamicRow,
-            FromCell, FromRow, RowPlanContext, RowRef, Schema,
+            CellConversionError, CellDecodeResult, CellPlan, CellPlanContext, Column, ColumnType,
+            DynamicRow, FromCell, FromRow, RowPlanContext, RowRef, Schema,
         },
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
@@ -575,7 +575,7 @@ mod tests {
     impl FromCell for DecodeErrorCell {
         type Plan = ();
 
-        fn build_plan(_column: &Column) -> Result<Self::Plan> {
+        fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
             Ok(())
         }
 
@@ -589,7 +589,7 @@ mod tests {
         type Plan = CellPlan<DecodeErrorCell>;
 
         fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
-            CellPlan::by_position(ctx.schema(), 0)
+            CellPlan::by_position(ctx, 0)
         }
 
         fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
