@@ -6,9 +6,9 @@ use serde::de::DeserializeOwned;
 use crate::result_table::{
     CellConversionError, CellDecodeResult,
     dynamic::{BinaryValue, DecimalValue},
-    plan::RowPlanContext,
+    plan::{CellPlanContext, RowPlanContext},
     row::RowRef,
-    schema::{Column, ColumnIndex, ColumnType, Schema},
+    schema::{Column, ColumnIndex, ColumnType},
 };
 use crate::{ColumnCountMismatchError, Error, IncompatibleColumnTypeError, Result, SchemaError};
 
@@ -29,7 +29,7 @@ const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 ///
 /// ```
 /// use snowflake_connector_rs::{
-///     CellConversionError, CellDecodeResult, Column, FromCell, Result,
+///     CellConversionError, CellDecodeResult, CellPlanContext, FromCell, Result,
 /// };
 ///
 /// struct CelsiusTemp(f64);
@@ -37,7 +37,7 @@ const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 /// impl FromCell for CelsiusTemp {
 ///     type Plan = ();
 ///
-///     fn build_plan(_column: &Column) -> Result<Self::Plan> {
+///     fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
 ///         Ok(())
 ///     }
 ///
@@ -64,7 +64,7 @@ pub trait FromCell: Sized {
     /// Return [`SchemaError::IncompatibleColumnType`](crate::SchemaError::IncompatibleColumnType) when the column
     /// cannot be decoded into `Self`. This runs before any row is read, so a mismatch fails the whole
     /// [`rows`](crate::ResultTable::rows) call rather than surfacing per cell.
-    fn build_plan(column: &Column) -> Result<Self::Plan>;
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan>;
 
     /// Decode a single cell's raw text into `Self`.
     ///
@@ -88,16 +88,17 @@ pub struct CellPlan<T: FromCell> {
 }
 
 impl<T: FromCell> CellPlan<T> {
-    /// Build a cell plan for an already-resolved column.
+    /// Build a cell plan for an already-resolved column context.
     ///
     /// # Errors
     ///
     /// Propagates [`FromCell::build_plan`] failures for `T`.
-    pub fn new(column: &Column) -> Result<Self> {
+    pub fn new(ctx: CellPlanContext<'_>) -> Result<Self> {
+        let column = ctx.column();
         Ok(Self {
             column: column.clone(),
             offset: column.index().as_usize(),
-            decode_plan: T::build_plan(column)?,
+            decode_plan: T::build_plan(ctx)?,
         })
     }
 
@@ -108,12 +109,13 @@ impl<T: FromCell> CellPlan<T> {
     /// - [`SchemaError::MissingColumn`](crate::SchemaError::MissingColumn) / [`SchemaError::AmbiguousColumn`](crate::SchemaError::AmbiguousColumn)
     ///   from the label lookup.
     /// - Any [`FromCell::build_plan`] failure for `T`.
-    pub fn by_name(schema: &Schema, name: &str) -> Result<Self> {
+    pub fn by_name(ctx: RowPlanContext<'_>, name: &str) -> Result<Self> {
+        let schema = ctx.schema();
         let index = schema.column_index(name)?;
         let column = schema
             .column_at(index)
             .expect("column_index returns a valid index");
-        Self::new(column)
+        Self::new(CellPlanContext::new(ctx, column))
     }
 
     /// Resolve a column by position and build its cell plan.
@@ -122,7 +124,8 @@ impl<T: FromCell> CellPlan<T> {
     ///
     /// - [`SchemaError::ColumnCountMismatch`](crate::SchemaError::ColumnCountMismatch) when `position` is out of range.
     /// - Any [`FromCell::build_plan`] failure for `T`.
-    pub fn by_position(schema: &Schema, position: usize) -> Result<Self> {
+    pub fn by_position(ctx: RowPlanContext<'_>, position: usize) -> Result<Self> {
+        let schema = ctx.schema();
         let index = ColumnIndex::new(position as u32);
         let column = schema.column_at(index).ok_or_else(|| {
             SchemaError::ColumnCountMismatch(ColumnCountMismatchError::new(
@@ -130,7 +133,7 @@ impl<T: FromCell> CellPlan<T> {
                 schema.len(),
             ))
         })?;
-        Self::new(column)
+        Self::new(CellPlanContext::new(ctx, column))
     }
 }
 
@@ -161,10 +164,9 @@ impl<T: FromCell> CellPlan<T> {
 ///     type Plan = UserRowPlan;
 ///
 ///     fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
-///         let schema = ctx.schema();
 ///         Ok(UserRowPlan {
-///             id: CellPlan::by_name(schema, "ID")?,
-///             name: CellPlan::by_name(schema, "NAME")?,
+///             id: CellPlan::by_name(ctx, "ID")?,
+///             name: CellPlan::by_name(ctx, "NAME")?,
 ///         })
 ///     }
 ///
@@ -221,8 +223,8 @@ impl FromRow for () {
 impl<T: FromCell> FromCell for Option<T> {
     type Plan = T::Plan;
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
-        T::build_plan(column)
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        T::build_plan(ctx)
     }
 
     fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
@@ -255,7 +257,8 @@ macro_rules! impl_int_from_cell {
         impl FromCell for $t {
             type Plan = ();
 
-            fn build_plan(column: &Column) -> Result<Self::Plan> {
+            fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+                let column = ctx.column();
                 // Integers are only valid for `FIXED` with `scale = 0`.
                 match column.ty() {
                     ColumnType::Fixed { scale, .. } if scale.unwrap_or(0) == 0 => Ok(()),
@@ -301,7 +304,8 @@ macro_rules! impl_float_from_cell {
         impl FromCell for $t {
             type Plan = ();
 
-            fn build_plan(column: &Column) -> Result<Self::Plan> {
+            fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+                let column = ctx.column();
                 match column.ty() {
                     ColumnType::Real | ColumnType::Fixed { .. } => Ok(()),
                     _ => Err(incompatible_column::<$t>(column, None)),
@@ -329,7 +333,7 @@ impl_float_from_cell!(f64);
 impl FromCell for String {
     type Plan = ();
 
-    fn build_plan(_column: &Column) -> Result<Self::Plan> {
+    fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
         Ok(())
     }
 
@@ -341,7 +345,8 @@ impl FromCell for String {
 impl FromCell for DecimalValue {
     type Plan = ();
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::Fixed { .. } => Ok(()),
             _ => Err(incompatible_column::<Self>(column, None)),
@@ -356,7 +361,8 @@ impl FromCell for DecimalValue {
 impl FromCell for bool {
     type Plan = ();
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::Boolean => Ok(()),
             _ => Err(incompatible_column::<Self>(column, None)),
@@ -378,7 +384,8 @@ impl FromCell for bool {
 impl FromCell for NaiveDate {
     type Plan = ();
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::Date => Ok(()),
             _ => Err(incompatible_column::<Self>(column, None)),
@@ -413,7 +420,8 @@ impl FromCell for NaiveDate {
 impl FromCell for NaiveTime {
     type Plan = TimePlan;
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::Time { scale } => {
                 let scale = match scale {
@@ -446,7 +454,8 @@ impl FromCell for NaiveTime {
 impl FromCell for NaiveDateTime {
     type Plan = TimestampPlan;
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::TimestampNtz { scale } => TimestampPlan::from_metadata_scale(*scale)
                 .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
@@ -473,7 +482,8 @@ pub enum UtcTimestampPlan {
 impl FromCell for DateTime<Utc> {
     type Plan = UtcTimestampPlan;
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::TimestampLtz { scale } => TimestampPlan::from_metadata_scale(*scale)
                 .map(UtcTimestampPlan::Ltz)
@@ -498,7 +508,8 @@ impl FromCell for DateTime<Utc> {
 impl FromCell for DateTime<FixedOffset> {
     type Plan = TimestampPlan;
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::TimestampTz { scale } => TimestampPlan::from_metadata_scale(*scale)
                 .map_err(|detail| incompatible_column::<Self>(column, Some(detail))),
@@ -516,7 +527,8 @@ impl FromCell for DateTime<FixedOffset> {
 impl FromCell for serde_json::Value {
     type Plan = ();
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::Variant | ColumnType::Object | ColumnType::Array => Ok(()),
             _ => Err(incompatible_column::<Self>(column, None)),
@@ -560,7 +572,8 @@ where
 {
     type Plan = ();
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::Variant | ColumnType::Object | ColumnType::Array => Ok(()),
             _ => Err(incompatible_column::<Self>(column, None)),
@@ -583,7 +596,8 @@ where
 impl FromCell for BinaryValue {
     type Plan = ();
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::Binary { .. } => Ok(()),
             _ => Err(incompatible_column::<Self>(column, None)),
@@ -676,7 +690,8 @@ impl<'a, T> IntoIterator for &'a Vector<T> {
 impl FromCell for Vector<i32> {
     type Plan = ();
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::Vector => Ok(()),
             _ => Err(incompatible_column::<Self>(column, None)),
@@ -694,7 +709,8 @@ impl FromCell for Vector<i32> {
 impl FromCell for Vector<f32> {
     type Plan = ();
 
-    fn build_plan(column: &Column) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        let column = ctx.column();
         match column.ty() {
             ColumnType::Vector => Ok(()),
             _ => Err(incompatible_column::<Self>(column, None)),
@@ -1329,7 +1345,7 @@ macro_rules! impl_tuple_from_row {
                     )
                     .into());
                 }
-                Ok(($(CellPlan::<$t>::by_position(schema, $idx)?,)*))
+                Ok(($(CellPlan::<$t>::by_position(ctx, $idx)?,)*))
             }
 
             fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
@@ -1591,7 +1607,7 @@ mod tests {
     impl FromCell for CelsiusTemp {
         type Plan = ();
 
-        fn build_plan(_column: &Column) -> Result<Self::Plan> {
+        fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
             Ok(())
         }
 
@@ -1611,7 +1627,7 @@ mod tests {
     impl FromCell for AlwaysFails {
         type Plan = ();
 
-        fn build_plan(_column: &Column) -> Result<Self::Plan> {
+        fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
             Ok(())
         }
 
@@ -2199,7 +2215,12 @@ mod tests {
     }
 
     fn decode_vector<T: FromCell>(raw: &str) -> CellDecodeResult<T> {
-        let plan = T::build_plan(&Column::new("X", 0, true, ColumnType::Vector)).unwrap();
+        let schema = make_schema(vec![("X".to_string(), ColumnType::Vector, true)]);
+        let column = schema
+            .column_at(ColumnIndex::new(0))
+            .expect("single-column schema");
+        let ctx = CellPlanContext::new(RowPlanContext::new(&schema), column);
+        let plan = T::build_plan(ctx).unwrap();
         T::from_cell_with_plan(Some(raw), &plan)
     }
 
@@ -2356,5 +2377,66 @@ mod tests {
         let value = decode_vector::<Vector<i32>>("[4,5]").unwrap();
         let borrowed: Vec<i32> = (&value).into_iter().copied().collect();
         assert_eq!(borrowed, vec![4, 5]);
+    }
+
+    /// Captures the schema-wide state a [`CellPlanContext`] exposes at plan build time.
+    #[derive(Debug)]
+    struct SchemaAwareCell {
+        schema_len: usize,
+        column_index: usize,
+    }
+
+    struct SchemaAwarePlan {
+        schema_len: usize,
+        column_index: usize,
+    }
+
+    impl FromCell for SchemaAwareCell {
+        type Plan = SchemaAwarePlan;
+
+        fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+            let column = ctx.column();
+            // The column handed to the cell plan must be the one the schema resolves at that index.
+            let resolved = ctx
+                .schema()
+                .column_at(column.index())
+                .expect("cell column belongs to the schema");
+            assert_eq!(resolved.name(), column.name());
+            Ok(SchemaAwarePlan {
+                schema_len: ctx.schema().len(),
+                column_index: column.index().as_usize(),
+            })
+        }
+
+        fn from_cell_with_plan(raw: Option<&str>, plan: &Self::Plan) -> CellDecodeResult<Self> {
+            let _ = required_raw(raw)?;
+            Ok(SchemaAwareCell {
+                schema_len: plan.schema_len,
+                column_index: plan.column_index,
+            })
+        }
+    }
+
+    #[test]
+    fn from_cell_build_plan_reads_schema_context() {
+        let schema = make_schema(vec![
+            ("A".to_string(), ColumnType::Text { length: None }, true),
+            ("B".to_string(), ColumnType::Text { length: None }, true),
+        ]);
+        let table = make_result_table_from_rows(
+            schema,
+            vec![vec![Some("a".to_string()), Some("b".to_string())]],
+        )
+        .unwrap();
+        let row = table
+            .rows::<(SchemaAwareCell, SchemaAwareCell)>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.0.schema_len, 2);
+        assert_eq!(row.0.column_index, 0);
+        assert_eq!(row.1.schema_len, 2);
+        assert_eq!(row.1.column_index, 1);
     }
 }

@@ -585,7 +585,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use crate::result_table::{
-        CellConversionError, CellDecodeResult, Column, ColumnType, FromCell,
+        CellConversionError, CellDecodeResult, CellPlanContext, ColumnType, FromCell,
         test_data::{make_result_table_from_rows, make_schema},
     };
 
@@ -601,7 +601,7 @@ mod tests {
     impl FromCell for NoSourceDecode {
         type Plan = ();
 
-        fn build_plan(_column: &Column) -> Result<Self::Plan> {
+        fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
             Ok(())
         }
 
@@ -617,7 +617,7 @@ mod tests {
     impl FromCell for WithSourceDecode {
         type Plan = ();
 
-        fn build_plan(_column: &Column) -> Result<Self::Plan> {
+        fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
             Ok(())
         }
 
