@@ -90,8 +90,8 @@ pub use decode::{CellPlan, CellPlanContext, FromCell, FromRow, RowPlanContext};
 pub use error::{Error, ErrorKind, Result};
 pub use result_cursor::{CollectOptions, ResultCursor, TypedResultCursor};
 pub use result_table::{
-    BinaryValue, CellRef, CellValue, Column, ColumnIndex, ColumnType, DecimalValue, DynamicRow,
-    ResultTable, RowRef, Rows, Schema, TypedResultTable, VectorValue,
+    BinaryValue, CellRef, CellValue, Column, ColumnType, DecimalValue, DynamicRow, ResultTable,
+    RowRef, Rows, Schema, TypedResultTable, VectorValue,
 };
 use runtime::QueryRuntime;
 pub use session::{QueryOptions, Session};

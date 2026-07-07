@@ -287,16 +287,9 @@ mod tests {
 
     fn dummy_schema(n: usize) -> Arc<Schema> {
         let cols = (0..n)
-            .map(|i| {
-                Column::new(
-                    format!("C{i}"),
-                    i as u32,
-                    true,
-                    ColumnType::Text { length: None },
-                )
-            })
+            .map(|i| Column::new(format!("C{i}"), i, true, ColumnType::Text { length: None }))
             .collect();
-        Arc::new(Schema::from_columns(cols).unwrap())
+        Arc::new(Schema::from_columns(cols))
     }
 
     #[test]

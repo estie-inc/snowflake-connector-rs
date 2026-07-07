@@ -82,16 +82,10 @@ impl TryFrom<RawQueryResponse> for ResultManifest {
                     row_type.precision,
                     row_type.scale,
                 );
-                Column::new(row_type.name, index as u32, row_type.nullable, ty)
+                Column::new(row_type.name, index, row_type.nullable, ty)
             })
             .collect();
-        let schema = match Schema::from_columns(columns) {
-            Ok(schema) => schema,
-            Err(err) => {
-                return Err(QueryScopedError::new(query_id, err));
-            }
-        };
-        let schema = Arc::new(schema);
+        let schema = Arc::new(Schema::from_columns(columns));
 
         let download_headers = match resolve_download_headers(&qrmk, &chunk_headers) {
             Ok(headers) => headers,

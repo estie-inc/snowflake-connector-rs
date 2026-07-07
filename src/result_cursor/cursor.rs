@@ -419,18 +419,15 @@ mod tests {
     }
 
     fn make_schema() -> Arc<Schema> {
-        Arc::new(
-            Schema::from_columns(vec![Column::new(
-                "X",
-                0,
-                false,
-                ColumnType::Fixed {
-                    precision: None,
-                    scale: Some(0),
-                },
-            )])
-            .unwrap(),
-        )
+        Arc::new(Schema::from_columns(vec![Column::new(
+            "X",
+            0,
+            false,
+            ColumnType::Fixed {
+                precision: None,
+                scale: Some(0),
+            },
+        )]))
     }
 
     fn dummy_snapshot(num_remote: usize) -> Arc<ResultSnapshot> {

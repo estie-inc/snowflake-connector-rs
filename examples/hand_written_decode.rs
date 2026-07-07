@@ -267,10 +267,7 @@ async fn run_plan_time_failure() {
     assert!(plan_err.reason().contains("fixed-point NUMBER"));
     // The reason comes from the implementation; the column context is filled in by the connector.
     assert_eq!(plan_err.column_name(), Some("AMOUNT"));
-    assert_eq!(
-        plan_err.column_index().map(|index| index.as_usize()),
-        Some(2)
-    );
+    assert_eq!(plan_err.column_index(), Some(2));
 
     println!(
         "reason   = {} (column {:?})",

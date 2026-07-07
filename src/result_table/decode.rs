@@ -13,7 +13,7 @@ use crate::{
         dynamic::{BinaryValue, DecimalValue},
         plan::{CellPlanContext, RowPlanContext},
         row::RowRef,
-        schema::{Column, ColumnIndex, ColumnType},
+        schema::{Column, ColumnType},
     },
 };
 
@@ -117,7 +117,7 @@ impl<T: FromCell> CellPlan<T> {
         })?;
         Ok(Self {
             column: column.clone(),
-            offset: column.index().as_usize(),
+            offset: column.index(),
             decode_plan,
         })
     }
@@ -146,8 +146,7 @@ impl<T: FromCell> CellPlan<T> {
     /// - Any [`FromCell::build_plan`] failure for `T`.
     pub fn by_position(ctx: RowPlanContext<'_>, position: usize) -> PlanBuildResult<Self> {
         let schema = ctx.schema();
-        let index = ColumnIndex::new(position as u32);
-        let column = schema.column_at(index).ok_or_else(|| {
+        let column = schema.column_at(position).ok_or_else(|| {
             SchemaError::ColumnCountMismatch(ColumnCountMismatchError::new(
                 position + 1,
                 schema.len(),
@@ -1726,7 +1725,7 @@ mod tests {
             .expect("custom decode failure should be contextualized");
 
         assert_eq!(decode.row_index(), 0);
-        assert_eq!(decode.column_index(), ColumnIndex::new(0));
+        assert_eq!(decode.column_index(), 0);
         assert_eq!(decode.column_name(), "X");
         assert_eq!(
             decode.conversion_error().reason(),
@@ -2253,9 +2252,7 @@ mod tests {
 
     fn decode_vector<T: FromCell>(raw: &str) -> CellDecodeResult<T> {
         let schema = make_schema(vec![("X".to_string(), ColumnType::Vector, true)]);
-        let column = schema
-            .column_at(ColumnIndex::new(0))
-            .expect("single-column schema");
+        let column = schema.column_at(0).expect("single-column schema");
         let ctx = CellPlanContext::new(RowPlanContext::new(&schema), column);
         let plan = T::build_plan(ctx).unwrap();
         T::from_cell_with_plan(Some(raw), &plan)
@@ -2441,7 +2438,7 @@ mod tests {
             assert_eq!(resolved.name(), column.name());
             Ok(SchemaAwarePlan {
                 schema_len: ctx.schema().len(),
-                column_index: column.index().as_usize(),
+                column_index: column.index(),
             })
         }
 
@@ -2523,7 +2520,7 @@ mod tests {
             .as_custom_plan_error()
             .expect("build_plan failure should surface as a CustomPlanError");
         assert_eq!(plan.reason(), "cell plan rejected");
-        assert_eq!(plan.column_index(), Some(ColumnIndex::new(0)));
+        assert_eq!(plan.column_index(), Some(0));
         assert_eq!(plan.column_name(), Some("X"));
     }
 
@@ -2539,7 +2536,7 @@ mod tests {
         let plan = err
             .as_custom_plan_error()
             .expect("build_plan failure should surface as a CustomPlanError");
-        assert_eq!(plan.column_index(), Some(ColumnIndex::new(0)));
+        assert_eq!(plan.column_index(), Some(0));
         assert_eq!(plan.column_name(), Some("X"));
     }
 
