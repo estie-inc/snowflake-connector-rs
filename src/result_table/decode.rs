@@ -3,16 +3,18 @@ use std::{any::type_name, borrow::Cow, result::Result as StdResult};
 use chrono::{DateTime, Days, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use serde::de::DeserializeOwned;
 
-use crate::result_table::{
-    CellConversionError, CellDecodeResult,
-    dynamic::{BinaryValue, DecimalValue},
-    plan::{CellPlanContext, RowPlanContext},
-    row::RowRef,
-    schema::{Column, ColumnIndex, ColumnType},
-};
 use crate::{
-    Error, Result,
-    error::{ColumnCountMismatchError, IncompatibleColumnTypeError, SchemaError},
+    error::{
+        ColumnCountMismatchError, IncompatibleColumnTypeError, PlanBuildError, PlanBuildResult,
+        RowDecodeResult, SchemaError,
+    },
+    result_table::{
+        CellConversionError, CellDecodeResult,
+        dynamic::{BinaryValue, DecimalValue},
+        plan::{CellPlanContext, RowPlanContext},
+        row::RowRef,
+        schema::{Column, ColumnIndex, ColumnType},
+    },
 };
 
 const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
@@ -31,14 +33,17 @@ const LEGACY_TIMESTAMP_TZ_SHIFT: i128 = 16_384;
 /// A newtype over `f64` for type safety. It reuses `f64`'s plan, inheriting its column-type validation and parsing:
 ///
 /// ```
-/// use snowflake_connector_rs::{decode::CellDecodeResult, CellPlanContext, FromCell, Result};
+/// use snowflake_connector_rs::{
+///     CellPlanContext, FromCell,
+///     decode::{CellDecodeResult, PlanBuildResult},
+/// };
 ///
 /// struct CelsiusTemp(f64);
 ///
 /// impl FromCell for CelsiusTemp {
 ///     type Plan = <f64 as FromCell>::Plan;
 ///
-///     fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+///     fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
 ///         f64::build_plan(ctx)
 ///     }
 ///
@@ -55,12 +60,24 @@ pub trait FromCell: Sized {
 
     /// Validate the column and precompute schema-dependent state.
     ///
+    /// This runs before any row is read, so a failure fails the whole [`rows`](crate::ResultTable::rows) call rather
+    /// than surfacing per cell.
+    ///
     /// # Errors
     ///
-    /// Return [`SchemaError::IncompatibleColumnType`](crate::error::SchemaError::IncompatibleColumnType) when the column
-    /// cannot be decoded into `Self`. This runs before any row is read, so a mismatch fails the whole
-    /// [`rows`](crate::ResultTable::rows) call rather than surfacing per cell.
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan>;
+    /// Returns a [`PlanBuildError`](crate::error::PlanBuildError):
+    ///
+    /// - [`PlanBuildError::Schema`](crate::error::PlanBuildError::Schema), typically
+    ///   [`SchemaError::IncompatibleColumnType`](crate::error::SchemaError::IncompatibleColumnType), when the column
+    ///   cannot be decoded into `Self`.
+    /// - [`PlanBuildError::Custom`](crate::error::PlanBuildError::Custom) for custom validation with no
+    ///   matching [`SchemaError`](crate::error::SchemaError) variant, built from a
+    ///   [`CustomPlanError`](crate::error::CustomPlanError). The connector fills in the column context, so the
+    ///   implementation writes only the reason (and an optional source).
+    ///
+    /// [`SchemaError`](crate::error::SchemaError) and [`CustomPlanError`](crate::error::CustomPlanError) both convert
+    /// into `PlanBuildError` through `?`.
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan>;
 
     /// Decode a single cell's raw text into `Self`.
     ///
@@ -89,12 +106,19 @@ impl<T: FromCell> CellPlan<T> {
     /// # Errors
     ///
     /// Propagates [`FromCell::build_plan`] failures for `T`.
-    pub fn new(ctx: CellPlanContext<'_>) -> Result<Self> {
+    pub fn new(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self> {
         let column = ctx.column();
+        // Add column context to custom plan failures. Schema failures already carry their own context.
+        let decode_plan = T::build_plan(ctx).map_err(|mut error| {
+            if let PlanBuildError::Custom(custom) = &mut error {
+                custom.set_column_context(column.index(), column.name());
+            }
+            error
+        })?;
         Ok(Self {
             column: column.clone(),
             offset: column.index().as_usize(),
-            decode_plan: T::build_plan(ctx)?,
+            decode_plan,
         })
     }
 
@@ -105,7 +129,7 @@ impl<T: FromCell> CellPlan<T> {
     /// - [`SchemaError::MissingColumn`](crate::error::SchemaError::MissingColumn) / [`SchemaError::AmbiguousColumn`](crate::error::SchemaError::AmbiguousColumn)
     ///   from the label lookup.
     /// - Any [`FromCell::build_plan`] failure for `T`.
-    pub fn by_name(ctx: RowPlanContext<'_>, name: &str) -> Result<Self> {
+    pub fn by_name(ctx: RowPlanContext<'_>, name: &str) -> PlanBuildResult<Self> {
         let schema = ctx.schema();
         let index = schema.column_index(name)?;
         let column = schema
@@ -120,7 +144,7 @@ impl<T: FromCell> CellPlan<T> {
     ///
     /// - [`SchemaError::ColumnCountMismatch`](crate::error::SchemaError::ColumnCountMismatch) when `position` is out of range.
     /// - Any [`FromCell::build_plan`] failure for `T`.
-    pub fn by_position(ctx: RowPlanContext<'_>, position: usize) -> Result<Self> {
+    pub fn by_position(ctx: RowPlanContext<'_>, position: usize) -> PlanBuildResult<Self> {
         let schema = ctx.schema();
         let index = ColumnIndex::new(position as u32);
         let column = schema.column_at(index).ok_or_else(|| {
@@ -143,7 +167,8 @@ impl<T: FromCell> CellPlan<T> {
 ///
 /// ```
 /// use snowflake_connector_rs::{
-///     CellPlan, FromRow, Result, RowPlanContext, RowRef,
+///     CellPlan, FromRow, RowPlanContext, RowRef,
+///     decode::{PlanBuildResult, RowDecodeResult},
 /// };
 ///
 /// struct UserRow {
@@ -159,14 +184,14 @@ impl<T: FromCell> CellPlan<T> {
 /// impl FromRow for UserRow {
 ///     type Plan = UserRowPlan;
 ///
-///     fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
+///     fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
 ///         Ok(UserRowPlan {
 ///             id: CellPlan::by_name(ctx, "ID")?,
 ///             name: CellPlan::by_name(ctx, "NAME")?,
 ///         })
 ///     }
 ///
-///     fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
+///     fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self> {
 ///         Ok(UserRow {
 ///             id: row.get_with_plan(&plan.id)?,
 ///             name: row.get_with_plan(&plan.name)?,
@@ -184,23 +209,38 @@ pub trait FromRow: Sized {
     ///
     /// # Errors
     ///
-    /// Implementations may return any [`Error`](crate::Error) appropriate for schema validation or planning.
-    /// Conventional errors include [`SchemaError::MissingColumn`](crate::error::SchemaError::MissingColumn)
-    /// and [`SchemaError::ColumnCountMismatch`](crate::error::SchemaError::ColumnCountMismatch).
-    fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan>;
+    /// Returns a [`PlanBuildError`](crate::error::PlanBuildError):
+    ///
+    /// - [`PlanBuildError::Schema`](crate::error::PlanBuildError::Schema) for schema validation, conventionally
+    ///   [`SchemaError::MissingColumn`](crate::error::SchemaError::MissingColumn) or
+    ///   [`SchemaError::ColumnCountMismatch`](crate::error::SchemaError::ColumnCountMismatch). Delegating to
+    ///   [`CellPlan::by_name`] / [`CellPlan::by_position`] propagates these through `?`.
+    /// - [`PlanBuildError::Custom`](crate::error::PlanBuildError::Custom) for a custom row-shape check with no
+    ///   matching [`SchemaError`](crate::error::SchemaError) variant, built from a
+    ///   [`CustomPlanError`](crate::error::CustomPlanError). No single column is in scope here, so its column context
+    ///   stays `None`.
+    fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan>;
 
     /// Decode a single row using the associated plan.
     ///
     /// # Errors
     ///
-    /// Implementations may return any [`Error`](crate::Error) appropriate for row conversion.
-    fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self>;
+    /// Returns a [`RowDecodeError`](crate::error::RowDecodeError):
+    ///
+    /// - [`RowDecodeError::Cell`](crate::error::RowDecodeError::Cell) for a cell-local failure, surfaced through
+    ///   [`RowRef::get_with_plan`] and propagated with `?`.
+    /// - [`RowDecodeError::Schema`](crate::error::RowDecodeError::Schema) for a dynamic
+    ///   [`RowRef::cell_at`](crate::RowRef::cell_at) lookup that fails, propagated with `?`.
+    /// - [`RowDecodeError::Conversion`](crate::error::RowDecodeError::Conversion) for a row-level domain rule failure,
+    ///   built from a
+    ///   [`RowConversionError`](crate::error::RowConversionError); the connector fills in the failing row's index.
+    fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self>;
 }
 
 impl FromRow for () {
     type Plan = ();
 
-    fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let schema = ctx.schema();
         if !schema.is_empty() {
             return Err(
@@ -211,7 +251,7 @@ impl FromRow for () {
         Ok(())
     }
 
-    fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> Result<Self> {
+    fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> RowDecodeResult<Self> {
         Ok(())
     }
 }
@@ -219,7 +259,7 @@ impl FromRow for () {
 impl<T: FromCell> FromCell for Option<T> {
     type Plan = T::Plan;
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         T::build_plan(ctx)
     }
 
@@ -237,7 +277,7 @@ fn required_raw(raw: Option<&str>) -> CellDecodeResult<&str> {
 }
 
 /// Build the plan-time error for a column that cannot be decoded as `T`.
-fn incompatible_column<T>(column: &Column, detail: Option<String>) -> Error {
+fn incompatible_column<T>(column: &Column, detail: Option<String>) -> PlanBuildError {
     SchemaError::IncompatibleColumnType(IncompatibleColumnTypeError::new(
         column.index(),
         column.name(),
@@ -253,7 +293,7 @@ macro_rules! impl_int_from_cell {
         impl FromCell for $t {
             type Plan = ();
 
-            fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+            fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
                 let column = ctx.column();
                 // Integers are only valid for `FIXED` with `scale = 0`.
                 match column.ty() {
@@ -300,7 +340,7 @@ macro_rules! impl_float_from_cell {
         impl FromCell for $t {
             type Plan = ();
 
-            fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+            fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
                 let column = ctx.column();
                 match column.ty() {
                     ColumnType::Real | ColumnType::Fixed { .. } => Ok(()),
@@ -329,7 +369,7 @@ impl_float_from_cell!(f64);
 impl FromCell for String {
     type Plan = ();
 
-    fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(_ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         Ok(())
     }
 
@@ -341,7 +381,7 @@ impl FromCell for String {
 impl FromCell for DecimalValue {
     type Plan = ();
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::Fixed { .. } => Ok(()),
@@ -357,7 +397,7 @@ impl FromCell for DecimalValue {
 impl FromCell for bool {
     type Plan = ();
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::Boolean => Ok(()),
@@ -380,7 +420,7 @@ impl FromCell for bool {
 impl FromCell for NaiveDate {
     type Plan = ();
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::Date => Ok(()),
@@ -416,7 +456,7 @@ impl FromCell for NaiveDate {
 impl FromCell for NaiveTime {
     type Plan = TimePlan;
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::Time { scale } => {
@@ -450,7 +490,7 @@ impl FromCell for NaiveTime {
 impl FromCell for NaiveDateTime {
     type Plan = TimestampPlan;
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::TimestampNtz { scale } => TimestampPlan::from_metadata_scale(*scale)
@@ -478,7 +518,7 @@ pub enum UtcTimestampPlan {
 impl FromCell for DateTime<Utc> {
     type Plan = UtcTimestampPlan;
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::TimestampLtz { scale } => TimestampPlan::from_metadata_scale(*scale)
@@ -504,7 +544,7 @@ impl FromCell for DateTime<Utc> {
 impl FromCell for DateTime<FixedOffset> {
     type Plan = TimestampPlan;
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::TimestampTz { scale } => TimestampPlan::from_metadata_scale(*scale)
@@ -523,7 +563,7 @@ impl FromCell for DateTime<FixedOffset> {
 impl FromCell for serde_json::Value {
     type Plan = ();
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::Variant | ColumnType::Object | ColumnType::Array => Ok(()),
@@ -568,7 +608,7 @@ where
 {
     type Plan = ();
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::Variant | ColumnType::Object | ColumnType::Array => Ok(()),
@@ -592,7 +632,7 @@ where
 impl FromCell for BinaryValue {
     type Plan = ();
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::Binary { .. } => Ok(()),
@@ -686,7 +726,7 @@ impl<'a, T> IntoIterator for &'a Vector<T> {
 impl FromCell for Vector<i32> {
     type Plan = ();
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::Vector => Ok(()),
@@ -705,7 +745,7 @@ impl FromCell for Vector<i32> {
 impl FromCell for Vector<f32> {
     type Plan = ();
 
-    fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         let column = ctx.column();
         match column.ty() {
             ColumnType::Vector => Ok(()),
@@ -1333,7 +1373,7 @@ macro_rules! impl_tuple_from_row {
         impl<$($t: FromCell),*> FromRow for ($($t,)*) {
             type Plan = ($(CellPlan<$t>,)*);
 
-            fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
+            fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
                 let schema = ctx.schema();
                 if schema.len() != $len {
                     return Err(SchemaError::ColumnCountMismatch(
@@ -1344,7 +1384,7 @@ macro_rules! impl_tuple_from_row {
                 Ok(($(CellPlan::<$t>::by_position(ctx, $idx)?,)*))
             }
 
-            fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
+            fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self> {
                 Ok(($(row.get_with_plan(&plan.$idx)?,)*))
             }
         }
@@ -1376,7 +1416,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        ResultTable,
+        ErrorKind, Result, ResultTable,
+        error::{CustomPlanError, RowConversionError},
         result_table::test_data::{make_result_table_from_rows, make_schema},
         rowset::parser::parse_inline_result_table,
     };
@@ -1603,7 +1644,7 @@ mod tests {
     impl FromCell for CelsiusTemp {
         type Plan = ();
 
-        fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        fn build_plan(_ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
             Ok(())
         }
 
@@ -1623,7 +1664,7 @@ mod tests {
     impl FromCell for AlwaysFails {
         type Plan = ();
 
-        fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        fn build_plan(_ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
             Ok(())
         }
 
@@ -2390,7 +2431,7 @@ mod tests {
     impl FromCell for SchemaAwareCell {
         type Plan = SchemaAwarePlan;
 
-        fn build_plan(ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        fn build_plan(ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
             let column = ctx.column();
             // The column handed to the cell plan must be the one the schema resolves at that index.
             let resolved = ctx
@@ -2434,5 +2475,195 @@ mod tests {
         assert_eq!(row.0.column_index, 0);
         assert_eq!(row.1.schema_len, 2);
         assert_eq!(row.1.column_index, 1);
+    }
+
+    /// A cell decoder whose `build_plan` always fails with a custom plan-time error.
+    #[derive(Debug)]
+    struct RejectingCell;
+
+    impl FromCell for RejectingCell {
+        type Plan = ();
+
+        fn build_plan(_ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            Err(CustomPlanError::new("cell plan rejected").into())
+        }
+
+        fn from_cell_with_plan(_raw: Option<&str>, _plan: &Self::Plan) -> CellDecodeResult<Self> {
+            Ok(RejectingCell)
+        }
+    }
+
+    /// Resolves the rejecting cell by name to exercise that enrichment path.
+    struct ByNameRejectingRow;
+
+    impl FromRow for ByNameRejectingRow {
+        type Plan = CellPlan<RejectingCell>;
+
+        fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            CellPlan::by_name(ctx, "X")
+        }
+
+        fn from_row_with_plan(_row: RowRef<'_>, _plan: &Self::Plan) -> RowDecodeResult<Self> {
+            Ok(ByNameRejectingRow)
+        }
+    }
+
+    #[test]
+    fn from_cell_build_plan_decode_plan_error_gets_column_context_by_position() {
+        // Tuple plans resolve columns by position through `CellPlan::new`.
+        let err = match one_cell_table(ColumnType::Text { length: None }, "x")
+            .rows::<(RejectingCell,)>()
+        {
+            Ok(_) => panic!("expected build_plan to reject the column"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        let plan = err
+            .as_custom_plan_error()
+            .expect("build_plan failure should surface as a CustomPlanError");
+        assert_eq!(plan.reason(), "cell plan rejected");
+        assert_eq!(plan.column_index(), Some(ColumnIndex::new(0)));
+        assert_eq!(plan.column_name(), Some("X"));
+    }
+
+    #[test]
+    fn from_cell_build_plan_decode_plan_error_gets_column_context_by_name() {
+        let err = match one_cell_table(ColumnType::Text { length: None }, "x")
+            .rows::<ByNameRejectingRow>()
+        {
+            Ok(_) => panic!("expected build_plan to reject the column"),
+            Err(err) => err,
+        };
+
+        let plan = err
+            .as_custom_plan_error()
+            .expect("build_plan failure should surface as a CustomPlanError");
+        assert_eq!(plan.column_index(), Some(ColumnIndex::new(0)));
+        assert_eq!(plan.column_name(), Some("X"));
+    }
+
+    /// A row decoder whose `build_plan` fails before any column is in scope.
+    struct RejectingRow;
+
+    impl FromRow for RejectingRow {
+        type Plan = ();
+
+        fn build_plan(_ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            Err(CustomPlanError::new("row plan rejected").into())
+        }
+
+        fn from_row_with_plan(_row: RowRef<'_>, _plan: &Self::Plan) -> RowDecodeResult<Self> {
+            Ok(RejectingRow)
+        }
+    }
+
+    #[test]
+    fn from_row_build_plan_decode_plan_error_has_no_column_context() {
+        let err =
+            match one_cell_table(ColumnType::Text { length: None }, "x").rows::<RejectingRow>() {
+                Ok(_) => panic!("expected build_plan to reject the row shape"),
+                Err(err) => err,
+            };
+
+        let plan = err
+            .as_custom_plan_error()
+            .expect("build_plan failure should surface as a CustomPlanError");
+        assert_eq!(plan.reason(), "row plan rejected");
+        assert_eq!(plan.column_index(), None);
+        assert_eq!(plan.column_name(), None);
+    }
+
+    /// A row decoder that rejects a specific decoded value with a row-level conversion error.
+    #[derive(Debug)]
+    struct DomainRow;
+
+    impl FromRow for DomainRow {
+        type Plan = CellPlan<String>;
+
+        fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            CellPlan::by_position(ctx, 0)
+        }
+
+        fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self> {
+            let value: String = row.get_with_plan(plan)?;
+            if value == "bad" {
+                return Err(RowConversionError::new("value is not allowed").into());
+            }
+            Ok(DomainRow)
+        }
+    }
+
+    #[test]
+    fn from_row_conversion_error_gets_failing_row_index() {
+        let schema = make_schema(vec![(
+            "X".to_string(),
+            ColumnType::Text { length: None },
+            true,
+        )]);
+        let table = make_result_table_from_rows(
+            schema,
+            vec![vec![Some("ok".to_string())], vec![Some("bad".to_string())]],
+        )
+        .unwrap();
+
+        let mut rows = table.rows::<DomainRow>().unwrap();
+        rows.next().unwrap().expect("row 0 is allowed");
+        let err = rows.next().unwrap().expect_err("row 1 should be rejected");
+
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        let conv = err
+            .as_row_conversion_error()
+            .expect("from_row_with_plan failure should surface as a RowConversionError");
+        assert_eq!(conv.reason(), "value is not allowed");
+        assert_eq!(conv.row_index(), Some(1));
+    }
+
+    /// A row decoder that propagates a cell-local failure out of `from_row_with_plan`.
+    #[derive(Debug)]
+    struct CellFailingRow;
+
+    impl FromRow for CellFailingRow {
+        type Plan = CellPlan<i64>;
+
+        fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
+            CellPlan::by_position(ctx, 0)
+        }
+
+        fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self> {
+            let _value: i64 = row.get_with_plan(plan)?;
+            Ok(CellFailingRow)
+        }
+    }
+
+    #[test]
+    fn propagated_cell_decode_error_keeps_own_context_and_stays_distinct() {
+        let schema = make_schema(vec![(
+            "X".to_string(),
+            ColumnType::Fixed {
+                precision: None,
+                scale: Some(0),
+            },
+            true,
+        )]);
+        let table =
+            make_result_table_from_rows(schema, vec![vec![Some("not-a-number".to_string())]])
+                .unwrap();
+
+        let err = table
+            .rows::<CellFailingRow>()
+            .unwrap()
+            .next()
+            .unwrap()
+            .expect_err("cell decode should fail");
+
+        // A propagated cell failure is a CellDecodeError, distinct from a RowConversionError.
+        assert!(err.as_row_conversion_error().is_none());
+        let cell = err
+            .as_cell_decode_error()
+            .expect("cell failure should surface as a CellDecodeError");
+        // The row-index enrichment is a no-op here, so the cell error keeps its own context.
+        assert_eq!(cell.row_index(), 0);
+        assert_eq!(cell.column_name(), "X");
     }
 }

@@ -385,7 +385,9 @@ mod tests {
     use super::*;
     use crate::{
         ErrorKind,
-        error::{MissingColumnError, QueryScopedRepr, SchemaError},
+        error::{
+            MissingColumnError, PlanBuildResult, QueryScopedRepr, RowDecodeResult, SchemaError,
+        },
         result_cursor::{
             TypedResultCursor,
             collect::CollectPolicy,
@@ -541,11 +543,11 @@ mod tests {
     impl FromRow for PlanErrorRow {
         type Plan = ();
 
-        fn build_plan(_: RowPlanContext<'_>) -> Result<Self::Plan> {
+        fn build_plan(_: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
             Err(SchemaError::MissingColumn(MissingColumnError::new("MISSING")).into())
         }
 
-        fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> Result<Self> {
+        fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> RowDecodeResult<Self> {
             unreachable!("plan build should fail before any row is decoded")
         }
     }
@@ -556,12 +558,12 @@ mod tests {
     impl FromRow for CountingRow {
         type Plan = ();
 
-        fn build_plan(_: RowPlanContext<'_>) -> Result<Self::Plan> {
+        fn build_plan(_: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
             record_build_plan_call();
             Ok(())
         }
 
-        fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> Result<Self> {
+        fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> RowDecodeResult<Self> {
             Ok(Self)
         }
     }
@@ -575,7 +577,7 @@ mod tests {
     impl FromCell for DecodeErrorCell {
         type Plan = ();
 
-        fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        fn build_plan(_ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
             Ok(())
         }
 
@@ -588,11 +590,11 @@ mod tests {
     impl FromRow for DecodeErrorRow {
         type Plan = CellPlan<DecodeErrorCell>;
 
-        fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
+        fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
             CellPlan::by_position(ctx, 0)
         }
 
-        fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
+        fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self> {
             row.get_with_plan(plan)?;
             unreachable!("decode failure should bubble out before constructing DecodeErrorRow")
         }

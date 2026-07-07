@@ -1,8 +1,8 @@
-use std::{any::type_name, marker::PhantomData, sync::Arc};
+use std::{any::type_name, marker::PhantomData, result::Result as StdResult, sync::Arc};
 
 use crate::{
     Error, Result,
-    error::{CellDecodeError, InvalidColumnIndexError, SchemaError},
+    error::{CellDecodeError, InvalidColumnIndexError, RowDecodeError, SchemaError},
     result_table::{
         cell::{CellBlock, CellRef},
         decode::{CellPlan, FromCell, FromRow},
@@ -33,11 +33,13 @@ impl<'a> RowRef<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when `index` is out of bounds for this row's schema.
-    pub fn cell_at(self, index: ColumnIndex) -> Result<CellRef<'a>> {
+    /// Returns [`SchemaError::InvalidColumnIndex`](crate::error::SchemaError::InvalidColumnIndex) when `index` is out
+    /// of bounds for this row's schema.
+    pub fn cell_at(self, index: ColumnIndex) -> StdResult<CellRef<'a>, SchemaError> {
         let column = self.table.schema().column_at(index).ok_or_else(|| {
-            Error::from(SchemaError::InvalidColumnIndex(
-                InvalidColumnIndexError::new(index, self.table.schema().len()),
+            SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(
+                index,
+                self.table.schema().len(),
             ))
         })?;
 
@@ -70,8 +72,8 @@ impl<'a> RowRef<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::Decode`](crate::ErrorKind::Decode) when the cell cannot be decoded as `T`.
-    pub fn get_with_plan<T: FromCell>(self, plan: &CellPlan<T>) -> Result<T> {
+    /// Returns a [`CellDecodeError`] when the cell cannot be decoded as `T`.
+    pub fn get_with_plan<T: FromCell>(self, plan: &CellPlan<T>) -> StdResult<T, CellDecodeError> {
         let cell = self.block.cell(self.local_row, plan.offset);
         let raw = self.block.cell_text(cell);
 
@@ -85,7 +87,6 @@ impl<'a> RowRef<'a> {
                 raw,
                 issue,
             )
-            .into()
         })
     }
 
@@ -161,7 +162,17 @@ impl<'a, T: FromRow> Iterator for Rows<'a, T> {
             self.chunk_local += 1;
         }
 
-        Some(T::from_row_with_plan(row_ref, self.plan.as_ref()))
+        // Add the row index to row-level conversion failures, then convert the decode error into `Error`.
+        // Cell failures already carry row/column context; schema failures need no row enrichment.
+        let global_row = row_ref.global_row;
+        Some(
+            T::from_row_with_plan(row_ref, self.plan.as_ref()).map_err(|mut error| {
+                if let RowDecodeError::Conversion(conversion) = &mut error {
+                    conversion.set_row_index(global_row);
+                }
+                Error::from(error)
+            }),
+        )
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

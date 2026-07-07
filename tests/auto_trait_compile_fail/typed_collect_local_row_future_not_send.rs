@@ -2,7 +2,10 @@
 
 use std::rc::Rc;
 
-use snowflake_connector_rs::{FromRow, Result, RowPlanContext, RowRef, TypedResultCursor};
+use snowflake_connector_rs::{
+    FromRow, RowPlanContext, RowRef, TypedResultCursor,
+    decode::{PlanBuildResult, RowDecodeResult},
+};
 
 fn typed_cursor<T: FromRow>() -> TypedResultCursor<T> {
     unreachable!()
@@ -15,11 +18,11 @@ struct LocalRow(Rc<()>);
 impl FromRow for LocalRow {
     type Plan = ();
 
-    fn build_plan(_: RowPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(_: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         Ok(())
     }
 
-    fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> Result<Self> {
+    fn from_row_with_plan(_: RowRef<'_>, _: &Self::Plan) -> RowDecodeResult<Self> {
         Ok(Self(Rc::new(())))
     }
 }

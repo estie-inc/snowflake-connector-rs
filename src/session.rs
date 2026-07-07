@@ -114,7 +114,8 @@ impl Session {
     /// [`FromRow::build_plan`] for `T`.
     ///
     /// Built-in and derive-based row types typically use `ErrorKind::Decode` when the result schema does not match `T`;
-    /// inspect the detail via [`Error::as_schema_error`](crate::Error::as_schema_error).
+    /// inspect the detail via [`Error::as_schema_error`](crate::Error::as_schema_error). For custom plan-time validation
+    /// from hand-written decoders, inspect [`Error::as_custom_plan_error`](crate::Error::as_custom_plan_error).
     pub async fn query_as<T, S>(&self, statement: S) -> Result<TypedResultCursor<T>>
     where
         T: FromRow,
@@ -130,7 +131,10 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Session::query_as`].
+    /// Returns the same errors as [`Session::query`]. After the statement succeeds, this also propagates plan-time
+    /// decode failures from [`FromRow::build_plan`] for `T`: use [`Error::as_schema_error`](crate::Error::as_schema_error)
+    /// for schema mismatches and [`Error::as_custom_plan_error`](crate::Error::as_custom_plan_error) for custom
+    /// hand-written decoder validation.
     pub async fn query_as_with_options<T, S>(
         &self,
         statement: S,
