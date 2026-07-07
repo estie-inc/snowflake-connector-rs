@@ -3,7 +3,6 @@ pub(crate) mod builder;
 mod client;
 mod executor;
 mod manifest;
-pub(crate) mod raw;
 pub(crate) mod wire;
 
 pub(crate) use builder::StatementParts;
