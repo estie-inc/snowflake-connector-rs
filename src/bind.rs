@@ -23,7 +23,6 @@
 //! ```
 
 pub use crate::statement::bind::{
-    Binary, BindName, BindType, Integer, IntoBind, IntoBindNullable, Time, TimestampLtz,
+    Binary, BindName, BindType, Integer, IntoBind, IntoBindNullable, RawBind, Time, TimestampLtz,
     TimestampNtz, TimestampTz,
 };
-pub use crate::statement::raw::RawBind;
