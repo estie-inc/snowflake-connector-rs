@@ -23,19 +23,19 @@ pub(crate) enum Repr {
         error: ProtocolError,
         query_id: Option<Arc<str>>,
     },
-    Internal {
-        error: InternalError,
-        query_id: Option<Arc<str>>,
-    },
     BindEncode {
         message: Box<str>,
         source: Option<Box<dyn StdError + Send + Sync>>,
     },
-    Other(Box<str>),
     Schema(SchemaError),
     CellDecode(CellDecodeError),
-    CustomPlan(CustomPlanError),
     RowConversion(RowConversionError),
+    CustomPlan(CustomPlanError),
+    Internal {
+        error: InternalError,
+        query_id: Option<Arc<str>>,
+    },
+    Other(Box<str>),
 }
 
 #[derive(Debug)]

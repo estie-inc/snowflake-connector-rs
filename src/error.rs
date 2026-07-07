@@ -128,17 +128,17 @@ pub enum ErrorKind {
     /// Includes the connector's internal `RowsetParseError` failures (chunk parser limits, malformed payload tokens).
     /// These are surfaced as `Protocol` rather than a separate kind because callers cannot recover from them.
     Protocol,
-    /// Connector-internal runtime work failed, such as a cancelled or panicked task join.
-    Internal,
     /// Client-side bind encoding or validation failed before the request was sent.
     BindEncode,
-    /// Caller-supplied fallback error created via [`Error::other`].
-    Other,
     /// The result schema, a cell value, or a hand-written decoder validation did not match the requested Rust type.
     /// Use [`Error::as_schema_error`] for structured schema mismatches, [`Error::as_cell_decode_error`] for cell
     /// decoding failures, [`Error::as_custom_plan_error`] for custom plan-time failures, and
     /// [`Error::as_row_conversion_error`] for custom row-level conversion failures.
     Decode,
+    /// Connector-internal runtime work failed, such as a cancelled or panicked task join.
+    Internal,
+    /// Caller-supplied fallback error created via [`Error::other`].
+    Other,
 }
 
 /// A `Result` alias where the `Err` case is [`Error`].
@@ -160,13 +160,13 @@ impl Error {
             Repr::SessionExpired(_) => ErrorKind::SessionExpired,
             Repr::Timeout { .. } => ErrorKind::Timeout,
             Repr::Protocol { .. } => ErrorKind::Protocol,
-            Repr::Internal { .. } => ErrorKind::Internal,
             Repr::BindEncode { .. } => ErrorKind::BindEncode,
-            Repr::Other(_) => ErrorKind::Other,
             Repr::Schema(_)
             | Repr::CellDecode(_)
             | Repr::CustomPlan(_)
             | Repr::RowConversion(_) => ErrorKind::Decode,
+            Repr::Internal { .. } => ErrorKind::Internal,
+            Repr::Other(_) => ErrorKind::Other,
         }
     }
 
