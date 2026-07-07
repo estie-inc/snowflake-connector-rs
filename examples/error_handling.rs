@@ -1,8 +1,7 @@
-//! Inspecting [`snowflake_connector_rs::Error`] without a live Snowflake account.
+//! The recommended way to handle [`snowflake_connector_rs::Error`]: branch on `kind()`, then read the structured fields
+//! through the accessors.
 //!
-//! A minimal mock server stands in for Snowflake: it accepts the login request, then answers the statement request with a
-//! canned failure. Each scenario drives the public client API to produce a real `Error`, and `describe` shows the recommended
-//! way to read it — branch on `kind()`, then use the accessors.
+//! Each scenario produces a real `Error` through the public client API, and `describe` shows the extraction pattern.
 
 use std::{
     io::{Read, Write},
@@ -71,7 +70,7 @@ fn describe(err: &Error) {
     println!("display   = {err}");
 }
 
-/// Point a client at the mock server, run a query, and return the resulting error.
+/// Run a query against a server that fails it with `query_response`, and return the resulting error.
 async fn provoke_error(query_response: &'static str) -> Error {
     let base_url = spawn_mock_snowflake(vec![LOGIN_OK, query_response]);
 
@@ -96,9 +95,6 @@ async fn provoke_error(query_response: &'static str) -> Error {
     }
 }
 
-/// Serve `responses` in order, one per incoming connection, then stop.
-///
-/// This is deliberately just enough HTTP to satisfy the connector; a real test harness would use a proper mock-server crate.
 fn spawn_mock_snowflake(responses: Vec<&'static str>) -> String {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock server");
     let addr = listener.local_addr().expect("mock server address");
@@ -106,7 +102,6 @@ fn spawn_mock_snowflake(responses: Vec<&'static str>) -> String {
     thread::spawn(move || {
         for body in responses {
             let (mut stream, _) = listener.accept().expect("accept connection");
-            // Read the request so the client can finish sending before we reply.
             let mut buf = [0_u8; 8192];
             let _ = stream.read(&mut buf);
 
