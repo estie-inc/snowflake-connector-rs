@@ -14,6 +14,8 @@ use repr::Repr;
 
 pub use decode::{
     CellConversionError, CellConversionErrorBuilder, CellDecodeError, CellDecodeResult,
+    CustomPlanError, CustomPlanErrorBuilder, PlanBuildError, PlanBuildResult, RowConversionError,
+    RowConversionErrorBuilder, RowDecodeError, RowDecodeResult,
 };
 pub use schema::{
     AmbiguousColumnError, ColumnCountMismatchError, DuplicateColumnNameError,
@@ -42,8 +44,11 @@ const JSON_BODY_PREVIEW_MAX_BYTES: usize = 1024;
 ///
 /// - Snowflake-provided fields: [`snowflake_code`](Error::snowflake_code),
 ///   [`snowflake_message`](Error::snowflake_message), [`query_id`](Error::query_id)
-/// - Decode failures: [`as_schema_error`](Error::as_schema_error) for
-///   schema validation failures, [`as_cell_decode_error`](Error::as_cell_decode_error) for cell conversion failures
+/// - Decode failures: [`as_schema_error`](Error::as_schema_error) for schema validation failures,
+///   [`as_cell_decode_error`](Error::as_cell_decode_error) for cell conversion failures,
+///   [`as_custom_plan_error`](Error::as_custom_plan_error) for plan-time failures raised by a hand-written decoder,
+///   [`as_row_conversion_error`](Error::as_row_conversion_error) for row-level conversion failures raised by a
+///   hand-written `FromRow`
 ///
 /// ```
 /// use snowflake_connector_rs::{Error, ErrorKind};
@@ -129,8 +134,10 @@ pub enum ErrorKind {
     BindEncode,
     /// Caller-supplied fallback error created via [`Error::other`].
     Other,
-    /// The result schema or a cell value did not match the caller's expectations. Use [`Error::as_schema_error`] for
-    /// schema validation failures and [`Error::as_cell_decode_error`] for cell decoding failures.
+    /// The result schema, a cell value, or a hand-written decoder validation did not match the requested Rust type.
+    /// Use [`Error::as_schema_error`] for structured schema mismatches, [`Error::as_cell_decode_error`] for cell
+    /// decoding failures, [`Error::as_custom_plan_error`] for custom plan-time failures, and
+    /// [`Error::as_row_conversion_error`] for custom row-level conversion failures.
     Decode,
 }
 
@@ -156,7 +163,10 @@ impl Error {
             Repr::Internal { .. } => ErrorKind::Internal,
             Repr::BindEncode { .. } => ErrorKind::BindEncode,
             Repr::Other(_) => ErrorKind::Other,
-            Repr::Schema(_) | Repr::CellDecode(_) => ErrorKind::Decode,
+            Repr::Schema(_)
+            | Repr::CellDecode(_)
+            | Repr::CustomPlan(_)
+            | Repr::RowConversion(_) => ErrorKind::Decode,
         }
     }
 
@@ -221,6 +231,30 @@ impl Error {
     pub fn as_schema_error(&self) -> Option<&SchemaError> {
         match &*self.repr {
             Repr::Schema(error) => Some(error),
+            _ => None,
+        }
+    }
+
+    /// Returns the plan-time decode failure raised by a hand-written
+    /// [`FromCell::build_plan`](crate::FromCell::build_plan) or [`FromRow::build_plan`](crate::FromRow::build_plan).
+    ///
+    /// Column context, when the connector filled it in, is available through
+    /// [`CustomPlanError::column_index`] / [`CustomPlanError::column_name`].
+    pub fn as_custom_plan_error(&self) -> Option<&CustomPlanError> {
+        match &*self.repr {
+            Repr::CustomPlan(error) => Some(error),
+            _ => None,
+        }
+    }
+
+    /// Returns the row-level conversion failure raised by a hand-written
+    /// [`FromRow::from_row_with_plan`](crate::FromRow::from_row_with_plan).
+    ///
+    /// The failing row's index, filled in by the connector, is available through
+    /// [`RowConversionError::row_index`].
+    pub fn as_row_conversion_error(&self) -> Option<&RowConversionError> {
+        match &*self.repr {
+            Repr::RowConversion(error) => Some(error),
             _ => None,
         }
     }
@@ -336,6 +370,37 @@ impl From<CellDecodeError> for Error {
 impl From<SchemaError> for Error {
     fn from(error: SchemaError) -> Self {
         Self::new(Repr::Schema(error))
+    }
+}
+
+impl From<CustomPlanError> for Error {
+    fn from(error: CustomPlanError) -> Self {
+        Self::new(Repr::CustomPlan(error))
+    }
+}
+
+impl From<RowConversionError> for Error {
+    fn from(error: RowConversionError) -> Self {
+        Self::new(Repr::RowConversion(error))
+    }
+}
+
+impl From<PlanBuildError> for Error {
+    fn from(error: PlanBuildError) -> Self {
+        match error {
+            PlanBuildError::Schema(error) => error.into(),
+            PlanBuildError::Custom(error) => error.into(),
+        }
+    }
+}
+
+impl From<RowDecodeError> for Error {
+    fn from(error: RowDecodeError) -> Self {
+        match error {
+            RowDecodeError::Schema(error) => error.into(),
+            RowDecodeError::Cell(error) => error.into(),
+            RowDecodeError::Conversion(error) => error.into(),
+        }
     }
 }
 
@@ -578,16 +643,20 @@ const _: fn() = || {
     assert_send_sync::<Error>();
     assert_send_sync::<CellDecodeError>();
     assert_send_sync::<SchemaError>();
+    assert_send_sync::<CustomPlanError>();
+    assert_send_sync::<RowConversionError>();
+    assert_send_sync::<PlanBuildError>();
+    assert_send_sync::<RowDecodeError>();
 };
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{mem::size_of, time::Duration};
 
     use tokio::net::TcpListener;
 
     use crate::result_table::{
-        CellConversionError, CellDecodeResult, CellPlanContext, ColumnType, FromCell,
+        CellConversionError, CellDecodeResult, CellPlanContext, ColumnIndex, ColumnType, FromCell,
         test_data::{make_result_table_from_rows, make_schema},
     };
 
@@ -603,7 +672,7 @@ mod tests {
     impl FromCell for NoSourceDecode {
         type Plan = ();
 
-        fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        fn build_plan(_ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
             Ok(())
         }
 
@@ -619,7 +688,7 @@ mod tests {
     impl FromCell for WithSourceDecode {
         type Plan = ();
 
-        fn build_plan(_ctx: CellPlanContext<'_>) -> Result<Self::Plan> {
+        fn build_plan(_ctx: CellPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
             Ok(())
         }
 
@@ -950,5 +1019,232 @@ mod tests {
 
         server.abort();
         let _ = server.await;
+    }
+
+    #[test]
+    fn decode_plan_error_builder_exposes_reason_display_and_source() {
+        let err = CustomPlanError::builder("nullable not supported")
+            .source(std::io::Error::other("boom"))
+            .build();
+
+        assert_eq!(err.reason(), "nullable not supported");
+        assert_eq!(err.to_string(), "decode plan error: nullable not supported");
+        assert_eq!(err.column_index(), None);
+        assert_eq!(err.column_name(), None);
+        assert_eq!(
+            StdError::source(&err).map(|source| source.to_string()),
+            Some("boom".to_string())
+        );
+    }
+
+    #[test]
+    fn row_conversion_error_builder_exposes_reason_display_and_source() {
+        let err = RowConversionError::builder("start after end")
+            .source(std::io::Error::other("boom"))
+            .build();
+
+        assert_eq!(err.reason(), "start after end");
+        assert_eq!(err.to_string(), "row conversion error: start after end");
+        assert_eq!(err.row_index(), None);
+        assert_eq!(
+            StdError::source(&err).map(|source| source.to_string()),
+            Some("boom".to_string())
+        );
+    }
+
+    #[test]
+    fn decode_error_new_shorthands_match_builder_build() {
+        assert_eq!(
+            CellConversionError::new("bad cell").to_string(),
+            CellConversionError::builder("bad cell").build().to_string()
+        );
+        assert_eq!(
+            CustomPlanError::new("bad plan").to_string(),
+            CustomPlanError::builder("bad plan").build().to_string()
+        );
+        assert_eq!(
+            RowConversionError::new("bad row").to_string(),
+            RowConversionError::builder("bad row").build().to_string()
+        );
+    }
+
+    #[test]
+    fn decode_plan_and_row_conversion_errors_use_decode_kind() {
+        let plan_err: Error = CustomPlanError::new("bad plan").into();
+        assert_eq!(plan_err.kind(), ErrorKind::Decode);
+
+        let row_err: Error = RowConversionError::new("bad row").into();
+        assert_eq!(row_err.kind(), ErrorKind::Decode);
+    }
+
+    #[test]
+    fn decode_accessors_return_only_their_own_variant() {
+        let plan_err: Error = CustomPlanError::new("bad plan").into();
+        assert!(plan_err.as_custom_plan_error().is_some());
+        assert!(plan_err.as_row_conversion_error().is_none());
+        assert!(plan_err.as_schema_error().is_none());
+        assert!(plan_err.as_cell_decode_error().is_none());
+
+        let row_err: Error = RowConversionError::new("bad row").into();
+        assert!(row_err.as_row_conversion_error().is_some());
+        assert!(row_err.as_custom_plan_error().is_none());
+        assert!(row_err.as_schema_error().is_none());
+        assert!(row_err.as_cell_decode_error().is_none());
+    }
+
+    #[test]
+    fn decode_plan_error_reason_does_not_repeat_in_source_chain() {
+        let err: Error = CustomPlanError::builder("bad plan")
+            .source(std::io::Error::other("underlying"))
+            .build()
+            .into();
+
+        // The reason renders only in Display; the source chain exposes only the builder source.
+        assert_eq!(err.to_string(), "decode plan error: bad plan");
+        let source = StdError::source(&err).expect("builder source should surface on the chain");
+        assert_eq!(source.to_string(), "underlying");
+        assert!(!source.to_string().contains("bad plan"));
+        assert!(StdError::source(source).is_none());
+    }
+
+    #[test]
+    fn row_conversion_error_reason_does_not_repeat_in_source_chain() {
+        let err: Error = RowConversionError::builder("bad row")
+            .source(std::io::Error::other("underlying"))
+            .build()
+            .into();
+
+        assert_eq!(err.to_string(), "row conversion error: bad row");
+        let source = StdError::source(&err).expect("builder source should surface on the chain");
+        assert_eq!(source.to_string(), "underlying");
+        assert!(!source.to_string().contains("bad row"));
+    }
+
+    #[test]
+    fn decode_plan_error_display_includes_column_context_when_set() {
+        let mut err = CustomPlanError::new("nullable not supported");
+        err.set_column_context(ColumnIndex::new(2), "START");
+
+        assert_eq!(err.column_index(), Some(ColumnIndex::new(2)));
+        assert_eq!(err.column_name(), Some("START"));
+        assert_eq!(
+            err.to_string(),
+            "decode plan error at column_index 2 (START): nullable not supported"
+        );
+    }
+
+    #[test]
+    fn row_conversion_error_display_includes_row_index_when_set() {
+        let mut err = RowConversionError::new("start after end");
+        err.set_row_index(41);
+
+        assert_eq!(err.row_index(), Some(41));
+        assert_eq!(
+            err.to_string(),
+            "row conversion error at row_index 41: start after end"
+        );
+    }
+
+    #[test]
+    fn custom_plan_error_column_context_is_first_set_wins() {
+        let mut err = CustomPlanError::new("bad plan");
+        err.set_column_context(ColumnIndex::new(1), "A");
+        assert_eq!(err.column_index(), Some(ColumnIndex::new(1)));
+        assert_eq!(err.column_name(), Some("A"));
+
+        // A later write, as from an enclosing CellPlan::new, does not overwrite the inner column.
+        err.set_column_context(ColumnIndex::new(9), "Z");
+        assert_eq!(err.column_index(), Some(ColumnIndex::new(1)));
+        assert_eq!(err.column_name(), Some("A"));
+    }
+
+    #[test]
+    fn row_conversion_error_row_index_is_first_set_wins() {
+        let mut err = RowConversionError::new("bad row");
+        err.set_row_index(7);
+        assert_eq!(err.row_index(), Some(7));
+
+        err.set_row_index(99);
+        assert_eq!(err.row_index(), Some(7));
+    }
+
+    #[test]
+    fn plan_build_error_from_leaves_maps_to_variants_and_error_reprs() {
+        let schema: PlanBuildError =
+            SchemaError::MissingColumn(MissingColumnError::new("col")).into();
+        assert!(matches!(schema, PlanBuildError::Schema(_)));
+        let err = Error::from(schema);
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        assert!(err.as_schema_error().is_some());
+
+        let custom: PlanBuildError = CustomPlanError::new("bad plan").into();
+        assert!(matches!(custom, PlanBuildError::Custom(_)));
+        let err = Error::from(custom);
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        assert!(err.as_custom_plan_error().is_some());
+    }
+
+    #[test]
+    fn row_decode_error_from_leaves_maps_to_variants_and_error_reprs() {
+        let schema: RowDecodeError =
+            SchemaError::MissingColumn(MissingColumnError::new("col")).into();
+        assert!(matches!(schema, RowDecodeError::Schema(_)));
+        let err = Error::from(schema);
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        assert!(err.as_schema_error().is_some());
+
+        let cell: RowDecodeError = CellDecodeError::new(
+            0,
+            ColumnIndex::new(0),
+            "COL",
+            "T",
+            ColumnType::Text { length: None },
+            Some("x"),
+            CellConversionError::new("bad value"),
+        )
+        .into();
+        assert!(matches!(cell, RowDecodeError::Cell(_)));
+        let err = Error::from(cell);
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        assert!(err.as_cell_decode_error().is_some());
+
+        let conversion: RowDecodeError = RowConversionError::new("bad row").into();
+        assert!(matches!(conversion, RowDecodeError::Conversion(_)));
+        let err = Error::from(conversion);
+        assert_eq!(err.kind(), ErrorKind::Decode);
+        assert!(err.as_row_conversion_error().is_some());
+    }
+
+    // RowDecodeError and PlanBuildError are returned by the public FromRow::from_row_with_plan / build_plan methods,
+    // and CellDecodeError is returned by RowRef::get_with_plan,
+    // so clippy::result_large_err fires in downstream crates if they grow past it.
+    #[test]
+    fn decode_error_types_stay_below_result_large_err_threshold() {
+        assert_eq!(size_of::<CellDecodeError>(), 8);
+        assert!(size_of::<RowDecodeError>() < 128);
+        assert!(size_of::<PlanBuildError>() < 128);
+    }
+
+    #[test]
+    fn union_display_and_source_delegate_to_leaf_without_duplicating_reason() {
+        let plan = PlanBuildError::Custom(
+            CustomPlanError::builder("bad plan")
+                .source(std::io::Error::other("underlying"))
+                .build(),
+        );
+        assert_eq!(plan.to_string(), "decode plan error: bad plan");
+        let source = StdError::source(&plan).expect("leaf builder source should surface");
+        assert_eq!(source.to_string(), "underlying");
+        assert!(!source.to_string().contains("bad plan"));
+
+        let row = RowDecodeError::Conversion(
+            RowConversionError::builder("bad row")
+                .source(std::io::Error::other("underlying"))
+                .build(),
+        );
+        assert_eq!(row.to_string(), "row conversion error: bad row");
+        let source = StdError::source(&row).expect("leaf builder source should surface");
+        assert_eq!(source.to_string(), "underlying");
+        assert!(!source.to_string().contains("bad row"));
     }
 }

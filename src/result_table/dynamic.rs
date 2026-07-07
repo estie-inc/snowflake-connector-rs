@@ -5,8 +5,10 @@ use bytes::Bytes;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
 use crate::{
-    Result,
-    error::{CellDecodeError, DuplicateColumnNameError, InvalidColumnIndexError, SchemaError},
+    error::{
+        CellDecodeError, DuplicateColumnNameError, InvalidColumnIndexError, PlanBuildResult,
+        RowDecodeResult, SchemaError,
+    },
     result_table::{
         CellConversionError, CellDecodeResult, FromRow, RowPlanContext,
         cell::CellRef,
@@ -345,11 +347,11 @@ impl CellValue {
 impl FromRow for DynamicRow {
     type Plan = Arc<Schema>;
 
-    fn build_plan(ctx: RowPlanContext<'_>) -> Result<Self::Plan> {
+    fn build_plan(ctx: RowPlanContext<'_>) -> PlanBuildResult<Self::Plan> {
         Ok(ctx.shared_schema())
     }
 
-    fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> Result<Self> {
+    fn from_row_with_plan(row: RowRef<'_>, plan: &Self::Plan) -> RowDecodeResult<Self> {
         let mut values = Vec::with_capacity(plan.len());
         for (offset, col) in plan.columns().iter().enumerate() {
             let cell = row.cell_at_offset(col, offset);

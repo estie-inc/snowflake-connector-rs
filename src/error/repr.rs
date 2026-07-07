@@ -3,7 +3,7 @@ use std::{error::Error as StdError, sync::Arc};
 use reqwest::header::InvalidHeaderValue;
 use tokio::task::JoinError;
 
-use super::{CellDecodeError, RowsetParseError, SchemaError};
+use super::{CellDecodeError, CustomPlanError, RowConversionError, RowsetParseError, SchemaError};
 
 #[derive(Debug)]
 pub(crate) enum Repr {
@@ -34,6 +34,8 @@ pub(crate) enum Repr {
     Other(Box<str>),
     Schema(SchemaError),
     CellDecode(CellDecodeError),
+    CustomPlan(CustomPlanError),
+    RowConversion(RowConversionError),
 }
 
 #[derive(Debug)]

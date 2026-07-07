@@ -24,14 +24,14 @@ pub(crate) fn expand(model: &FromRowDerive) -> TokenStream2 {
 
                 fn build_plan(
                     ctx: #crate_path::RowPlanContext<'_>,
-                ) -> #crate_path::Result<Self::Plan> {
+                ) -> #crate_path::decode::PlanBuildResult<Self::Plan> {
                     ::core::result::Result::Ok(( #(#plan_field_inits,)* ))
                 }
 
                 fn from_row_with_plan(
                     row: #crate_path::RowRef<'_>,
                     plan: &Self::Plan,
-                ) -> #crate_path::Result<Self> {
+                ) -> #crate_path::decode::RowDecodeResult<Self> {
                     #row_body
                 }
             }

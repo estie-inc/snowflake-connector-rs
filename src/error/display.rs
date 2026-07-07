@@ -175,6 +175,8 @@ impl Display for Error {
             Repr::Other(message) => write!(f, "snowflake connector error: {message}"),
             Repr::Schema(error) => Display::fmt(error, f),
             Repr::CellDecode(error) => Display::fmt(error, f),
+            Repr::CustomPlan(error) => Display::fmt(error, f),
+            Repr::RowConversion(error) => Display::fmt(error, f),
         }
     }
 }
@@ -240,6 +242,8 @@ impl StdError for Error {
             } => None,
             Repr::Schema(_) => None,
             Repr::CellDecode(error) => StdError::source(error),
+            Repr::CustomPlan(error) => StdError::source(error),
+            Repr::RowConversion(error) => StdError::source(error),
             _ => None,
         }
     }

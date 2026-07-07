@@ -82,8 +82,9 @@ impl<T: FromRow> TypedResultCursor<T> {
     /// Returns the same errors as [`TypedResultCursor::collect_table`].
     /// Decoding rows then propagates any error returned by [`FromRow::from_row_with_plan`] for `T`.
     ///
-    /// Built-in and derive-based row types typically use `ErrorKind::Decode` for per-row conversion failures; inspect the
-    /// detail via [`crate::Error::as_cell_decode_error`].
+    /// Built-in and derive-based row types typically use `ErrorKind::Decode` for per-cell conversion failures; inspect
+    /// the detail via [`crate::Error::as_cell_decode_error`]. For row-level conversion failures from hand-written row
+    /// decoders, inspect [`crate::Error::as_row_conversion_error`].
     pub async fn collect<C: FromIterator<T>>(self) -> Result<C> {
         let Self { inner, plan, .. } = self;
         let policy = inner.collect_policy();
@@ -96,7 +97,9 @@ impl<T: FromRow> TypedResultCursor<T> {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`collect`](Self::collect).
+    /// Returns the same errors as [`collect`](Self::collect): use [`crate::Error::as_cell_decode_error`] for per-cell
+    /// decode failures and [`crate::Error::as_row_conversion_error`] for row-level conversion failures from hand-written
+    /// row decoders.
     pub async fn collect_with_options<C: FromIterator<T>>(
         self,
         options: CollectOptions,

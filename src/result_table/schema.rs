@@ -1,4 +1,4 @@
-use std::{collections::HashMap, result::Result as StdResult, sync::Arc};
+use std::{collections::HashMap, fmt, result::Result as StdResult, sync::Arc};
 
 use crate::error::{AmbiguousColumnError, MissingColumnError, RowsetParseError, SchemaError};
 
@@ -15,6 +15,12 @@ impl ColumnIndex {
     /// Returns the index as `usize` for slice-style access.
     pub fn as_usize(self) -> usize {
         self.0 as usize
+    }
+}
+
+impl fmt::Display for ColumnIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -213,6 +219,33 @@ impl ColumnType {
         match self {
             ColumnType::Text { length } => *length,
             _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ColumnType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())?;
+        match self {
+            ColumnType::Fixed {
+                precision: Some(precision),
+                scale: Some(scale),
+            } => write!(f, "({precision},{scale})"),
+            ColumnType::Fixed {
+                precision: Some(precision),
+                scale: None,
+            } => write!(f, "({precision})"),
+            ColumnType::Text {
+                length: Some(length),
+            }
+            | ColumnType::Binary {
+                length: Some(length),
+            } => write!(f, "({length})"),
+            ColumnType::Time { scale: Some(scale) }
+            | ColumnType::TimestampNtz { scale: Some(scale) }
+            | ColumnType::TimestampLtz { scale: Some(scale) }
+            | ColumnType::TimestampTz { scale: Some(scale) } => write!(f, "({scale})"),
+            _ => Ok(()),
         }
     }
 }

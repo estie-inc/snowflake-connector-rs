@@ -101,7 +101,7 @@ impl Display for InvalidColumnIndexError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "invalid column index {:?} for schema with {} columns",
+            "invalid column index {} for schema with {} columns",
             self.index, self.column_count
         )
     }
@@ -221,7 +221,7 @@ impl Display for IncompatibleColumnTypeError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "column {:?} ({}) of type {:?} cannot be decoded as {}",
+            "column {} ({}) of type {} cannot be decoded as {}",
             self.column_index, self.column_name, self.actual_column_type, self.target_type_name
         )?;
         if let Some(detail) = &self.detail {
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(
             SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(ColumnIndex::new(7), 3))
                 .to_string(),
-            "invalid column index ColumnIndex(7) for schema with 3 columns"
+            "invalid column index 7 for schema with 3 columns"
         );
         assert_eq!(
             SchemaError::DuplicateColumnName(DuplicateColumnNameError::new("id")).to_string(),
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(without_detail.detail(), None);
         assert_eq!(
             without_detail.to_string(),
-            "column ColumnIndex(2) (TS) of type Boolean cannot be decoded as chrono::NaiveDateTime"
+            "column 2 (TS) of type boolean cannot be decoded as chrono::NaiveDateTime"
         );
 
         let with_detail = IncompatibleColumnTypeError::new(
