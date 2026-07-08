@@ -1,7 +1,7 @@
 [package]
 name = "snowflake-connector-rs-derive"
 repository = "https://github.com/estie-inc/snowflake-connector-rs"
-version = "0.9.0"
+version = "1.0.0"
 
 authors = [
     "estie-inc",
