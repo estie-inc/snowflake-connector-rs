@@ -4,7 +4,7 @@ use std::{
     fmt::{self, Display, Formatter},
 };
 
-use crate::result_table::{ColumnIndex, ColumnType};
+use crate::result_table::ColumnType;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -43,14 +43,11 @@ impl StdError for MissingColumnError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AmbiguousColumnError {
     name: Box<str>,
-    candidates: Box<[ColumnIndex]>,
+    candidates: Box<[usize]>,
 }
 
 impl AmbiguousColumnError {
-    pub(crate) fn new(
-        name: impl Into<Box<str>>,
-        candidates: impl Into<Box<[ColumnIndex]>>,
-    ) -> Self {
+    pub(crate) fn new(name: impl Into<Box<str>>, candidates: impl Into<Box<[usize]>>) -> Self {
         Self {
             name: name.into(),
             candidates: candidates.into(),
@@ -61,7 +58,8 @@ impl AmbiguousColumnError {
         &self.name
     }
 
-    pub fn candidates(&self) -> &[ColumnIndex] {
+    /// Zero-based indices of the columns sharing the ambiguous name.
+    pub fn candidates(&self) -> &[usize] {
         &self.candidates
     }
 }
@@ -76,19 +74,19 @@ impl StdError for AmbiguousColumnError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidColumnIndexError {
-    index: ColumnIndex,
+    index: usize,
     column_count: usize,
 }
 
 impl InvalidColumnIndexError {
-    pub(crate) fn new(index: ColumnIndex, column_count: usize) -> Self {
+    pub(crate) fn new(index: usize, column_count: usize) -> Self {
         Self {
             index,
             column_count,
         }
     }
 
-    pub fn index(&self) -> ColumnIndex {
+    pub fn index(&self) -> usize {
         self.index
     }
 
@@ -171,7 +169,7 @@ impl StdError for ColumnCountMismatchError {}
 /// [`rows`](crate::ResultTable::rows) call rather than surfacing per cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncompatibleColumnTypeError {
-    column_index: ColumnIndex,
+    column_index: usize,
     column_name: Box<str>,
     target_type_name: Cow<'static, str>,
     actual_column_type: ColumnType,
@@ -180,7 +178,7 @@ pub struct IncompatibleColumnTypeError {
 
 impl IncompatibleColumnTypeError {
     pub(crate) fn new(
-        column_index: ColumnIndex,
+        column_index: usize,
         column_name: impl Into<Box<str>>,
         target_type_name: impl Into<Cow<'static, str>>,
         actual_column_type: ColumnType,
@@ -195,7 +193,7 @@ impl IncompatibleColumnTypeError {
         }
     }
 
-    pub fn column_index(&self) -> ColumnIndex {
+    pub fn column_index(&self) -> usize {
         self.column_index
     }
 
@@ -261,7 +259,7 @@ mod tests {
         assert_eq!(
             SchemaError::AmbiguousColumn(AmbiguousColumnError::new(
                 "value",
-                vec![ColumnIndex::new(0), ColumnIndex::new(1)].into_boxed_slice(),
+                vec![0, 1].into_boxed_slice(),
             ))
             .to_string(),
             "ambiguous column: value"
@@ -270,18 +268,12 @@ mod tests {
 
     #[test]
     fn schema_error_accessors_expose_structured_fields() {
-        let ambiguous = AmbiguousColumnError::new(
-            "value",
-            vec![ColumnIndex::new(0), ColumnIndex::new(1)].into_boxed_slice(),
-        );
+        let ambiguous = AmbiguousColumnError::new("value", vec![0, 1].into_boxed_slice());
         assert_eq!(ambiguous.name(), "value");
-        assert_eq!(
-            ambiguous.candidates(),
-            &[ColumnIndex::new(0), ColumnIndex::new(1)]
-        );
+        assert_eq!(ambiguous.candidates(), &[0, 1]);
 
-        let invalid = InvalidColumnIndexError::new(ColumnIndex::new(7), 3);
-        assert_eq!(invalid.index(), ColumnIndex::new(7));
+        let invalid = InvalidColumnIndexError::new(7, 3);
+        assert_eq!(invalid.index(), 7);
         assert_eq!(invalid.column_count(), 3);
 
         let duplicate = DuplicateColumnNameError::new("id");
@@ -295,8 +287,7 @@ mod tests {
     #[test]
     fn schema_error_display_formats_remaining_variants() {
         assert_eq!(
-            SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(ColumnIndex::new(7), 3))
-                .to_string(),
+            SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(7, 3)).to_string(),
             "invalid column index 7 for schema with 3 columns"
         );
         assert_eq!(
@@ -312,13 +303,13 @@ mod tests {
     #[test]
     fn incompatible_column_type_exposes_fields_and_appends_detail() {
         let without_detail = IncompatibleColumnTypeError::new(
-            ColumnIndex::new(2),
+            2,
             "TS",
             "chrono::NaiveDateTime",
             ColumnType::Boolean,
             None,
         );
-        assert_eq!(without_detail.column_index(), ColumnIndex::new(2));
+        assert_eq!(without_detail.column_index(), 2);
         assert_eq!(without_detail.column_name(), "TS");
         assert_eq!(without_detail.target_type_name(), "chrono::NaiveDateTime");
         assert_eq!(without_detail.actual_column_type(), &ColumnType::Boolean);
@@ -329,7 +320,7 @@ mod tests {
         );
 
         let with_detail = IncompatibleColumnTypeError::new(
-            ColumnIndex::new(0),
+            0,
             "T",
             "chrono::NaiveTime",
             ColumnType::Time { scale: Some(12) },

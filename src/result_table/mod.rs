@@ -14,7 +14,7 @@ pub use decode::{
 pub use dynamic::{BinaryValue, CellValue, DecimalValue, DynamicRow, VectorValue};
 pub use plan::{CellPlanContext, RowPlanContext};
 pub use row::{RowRef, Rows};
-pub use schema::{Column, ColumnIndex, ColumnType, Schema};
+pub use schema::{Column, ColumnType, Schema};
 pub use table::ResultTable;
 pub use typed_table::TypedResultTable;
 
@@ -36,9 +36,9 @@ pub mod test_data {
         let cols = columns
             .into_iter()
             .enumerate()
-            .map(|(i, (name, ty, nullable))| Column::new(name, i as u32, nullable, ty))
+            .map(|(i, (name, ty, nullable))| Column::new(name, i, nullable, ty))
             .collect::<Vec<_>>();
-        Arc::new(Schema::from_columns(cols).expect("schema build"))
+        Arc::new(Schema::from_columns(cols))
     }
 
     #[cfg(feature = "bench-internals")]

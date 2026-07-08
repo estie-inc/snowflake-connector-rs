@@ -4,7 +4,7 @@ use std::{
     fmt::{self, Display},
 };
 
-use crate::result_table::{ColumnIndex, ColumnType};
+use crate::result_table::ColumnType;
 
 use super::{SchemaError, VALUE_PREVIEW_MAX_CHARS, truncate_preview_chars};
 
@@ -86,7 +86,7 @@ impl CellConversionErrorBuilder {
 pub struct CustomPlanError {
     reason: Box<str>,
     source: Option<Box<dyn StdError + Send + Sync + 'static>>,
-    column_index: Option<ColumnIndex>,
+    column_index: Option<usize>,
     column_name: Option<Box<str>>,
 }
 
@@ -113,7 +113,7 @@ impl CustomPlanError {
 
     /// The column this plan was being built for, filled in by the connector for
     /// [`FromCell::build_plan`](crate::FromCell::build_plan) failures.
-    pub fn column_index(&self) -> Option<ColumnIndex> {
+    pub fn column_index(&self) -> Option<usize> {
         self.column_index
     }
 
@@ -126,7 +126,7 @@ impl CustomPlanError {
     /// Nested plan construction resolves the innermost column first, so later enclosing plans do not overwrite it.
     pub(crate) fn set_column_context(
         &mut self,
-        column_index: ColumnIndex,
+        column_index: usize,
         column_name: impl Into<Box<str>>,
     ) {
         if self.column_index.is_some() {
@@ -277,7 +277,7 @@ pub struct CellDecodeError {
 #[derive(Debug)]
 struct CellDecodeErrorInner {
     row_index: usize,
-    column_index: ColumnIndex,
+    column_index: usize,
     column_name: Box<str>,
     target_type_name: Cow<'static, str>,
     actual_column_type: ColumnType,
@@ -288,7 +288,7 @@ struct CellDecodeErrorInner {
 impl CellDecodeError {
     pub(crate) fn new(
         row_index: usize,
-        column_index: ColumnIndex,
+        column_index: usize,
         column_name: impl Into<Box<str>>,
         target_type_name: impl Into<Cow<'static, str>>,
         actual_column_type: ColumnType,
@@ -313,7 +313,7 @@ impl CellDecodeError {
         self.inner.row_index
     }
 
-    pub fn column_index(&self) -> ColumnIndex {
+    pub fn column_index(&self) -> usize {
         self.inner.column_index
     }
 

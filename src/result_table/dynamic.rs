@@ -18,7 +18,7 @@ use crate::{
             parse_vector_i32_payload,
         },
         row::RowRef,
-        schema::{ColumnIndex, ColumnType, Schema},
+        schema::{ColumnType, Schema},
     },
 };
 
@@ -211,7 +211,7 @@ impl CellValue {
 
 /// A row decoded into the dynamic [`CellValue`] vocabulary.
 ///
-/// Values are stored in column order and can be accessed by [`ColumnIndex`] or by raw column name.
+/// Values are stored in column order and can be accessed by zero-based index or by raw column name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DynamicRow {
     schema: Arc<Schema>,
@@ -239,16 +239,15 @@ impl DynamicRow {
         self.value_at(idx)
     }
 
-    /// Borrow the value at a resolved column index.
+    /// Borrow the value at a zero-based column index.
     ///
     /// # Errors
     ///
     /// Returns [`SchemaError::InvalidColumnIndex`] when `index` is out of range for this row's schema.
-    pub fn value_at(&self, index: ColumnIndex) -> StdResult<&CellValue, SchemaError> {
-        self.schema.column_at(index).ok_or_else(|| {
+    pub fn value_at(&self, index: usize) -> StdResult<&CellValue, SchemaError> {
+        self.values.get(index).ok_or_else(|| {
             SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(index, self.schema.len()))
-        })?;
-        Ok(&self.values[index.as_usize()])
+        })
     }
 
     /// Move a value out of the row by raw label, replacing the slot with
@@ -262,21 +261,19 @@ impl DynamicRow {
         self.take_at(idx)
     }
 
-    /// Move a value out of the row by resolved index, replacing the slot
+    /// Move a value out of the row by zero-based column index, replacing the slot
     /// with [`CellValue::Null`].
     ///
     /// # Errors
     ///
     /// Returns [`SchemaError::InvalidColumnIndex`] when `index` is out of range for this row's schema.
-    pub fn take_at(&mut self, index: ColumnIndex) -> StdResult<CellValue, SchemaError> {
-        self.schema.column_at(index).ok_or_else(|| {
-            SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(index, self.schema.len()))
+    pub fn take_at(&mut self, index: usize) -> StdResult<CellValue, SchemaError> {
+        let column_count = self.schema.len();
+        let slot = self.values.get_mut(index).ok_or_else(|| {
+            SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(index, column_count))
         })?;
 
-        Ok(mem::replace(
-            &mut self.values[index.as_usize()],
-            CellValue::Null,
-        ))
+        Ok(mem::replace(slot, CellValue::Null))
     }
 
     /// Consume the row, returning the shared schema and the decoded values in column order.
@@ -619,7 +616,7 @@ mod tests {
     #[test]
     fn dynamic_row_value_at_rejects_invalid_indices() {
         let row = one_cell_row(ColumnType::Text { length: None }, "value");
-        let index = ColumnIndex::new(1);
+        let index = 1;
         assert!(matches!(
             row.value_at(index),
             Err(SchemaError::InvalidColumnIndex(error))
@@ -674,7 +671,7 @@ mod tests {
     #[test]
     fn dynamic_row_take_at_rejects_invalid_indices() {
         let mut row = one_cell_row(ColumnType::Text { length: None }, "value");
-        let index = ColumnIndex::new(1);
+        let index = 1;
         assert!(matches!(
             row.take_at(index),
             Err(SchemaError::InvalidColumnIndex(error))

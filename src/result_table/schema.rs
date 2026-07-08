@@ -1,28 +1,6 @@
 use std::{collections::HashMap, fmt, result::Result as StdResult, sync::Arc};
 
-use crate::error::{AmbiguousColumnError, MissingColumnError, RowsetParseError, SchemaError};
-
-/// Position of a column inside a result-set schema.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ColumnIndex(u32);
-
-impl ColumnIndex {
-    pub(crate) const fn new(index: u32) -> Self {
-        Self(index)
-    }
-
-    /// Returns the index as `usize` for slice-style access.
-    pub fn as_usize(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl fmt::Display for ColumnIndex {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+use crate::error::{AmbiguousColumnError, MissingColumnError, SchemaError};
 
 /// Snowflake column type as reported by the result-set metadata.
 ///
@@ -254,7 +232,7 @@ impl fmt::Display for ColumnType {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Column {
     name: Arc<str>,
-    index: ColumnIndex,
+    index: usize,
     nullable: bool,
     ty: ColumnType,
 }
@@ -262,13 +240,13 @@ pub struct Column {
 impl Column {
     pub(crate) fn new(
         name: impl Into<Arc<str>>,
-        index: u32,
+        index: usize,
         nullable: bool,
         ty: ColumnType,
     ) -> Self {
         Self {
             name: name.into(),
-            index: ColumnIndex(index),
+            index,
             nullable,
             ty,
         }
@@ -279,7 +257,7 @@ impl Column {
         &self.name
     }
     /// Zero-based position of this column within the schema.
-    pub fn index(&self) -> ColumnIndex {
+    pub fn index(&self) -> usize {
         self.index
     }
     /// Whether the column may carry SQL `NULL`.
@@ -294,8 +272,8 @@ impl Column {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LookupEntry {
-    Unique(ColumnIndex),
-    Ambiguous(Box<[ColumnIndex]>),
+    Unique(usize),
+    Ambiguous(Box<[usize]>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -305,7 +283,7 @@ pub(crate) struct ColumnIndexMap {
 
 impl ColumnIndexMap {
     fn build(columns: &[Column]) -> Self {
-        let mut map: HashMap<Arc<str>, Vec<ColumnIndex>> = HashMap::with_capacity(columns.len());
+        let mut map: HashMap<Arc<str>, Vec<usize>> = HashMap::with_capacity(columns.len());
         for col in columns {
             map.entry(Arc::clone(&col.name))
                 .or_default()
@@ -342,16 +320,12 @@ pub struct Schema {
 }
 
 impl Schema {
-    pub(crate) fn from_columns(columns: Vec<Column>) -> StdResult<Self, RowsetParseError> {
-        if columns.len() > u32::MAX as usize {
-            return Err(RowsetParseError::CapacityOverflow);
-        }
-
+    pub(crate) fn from_columns(columns: Vec<Column>) -> Self {
         let indices = ColumnIndexMap::build(&columns);
-        Ok(Self {
+        Self {
             columns: columns.into_boxed_slice(),
             indices,
-        })
+        }
     }
 
     /// Borrows the columns in declaration order.
@@ -370,11 +344,11 @@ impl Schema {
     }
 
     /// Borrow column metadata by index.
-    pub fn column_at(&self, index: ColumnIndex) -> Option<&Column> {
-        self.columns.get(index.as_usize())
+    pub fn column_at(&self, index: usize) -> Option<&Column> {
+        self.columns.get(index)
     }
 
-    /// Resolve a column name to its [`ColumnIndex`].
+    /// Resolve a column name to its zero-based index.
     ///
     /// Matching is case-sensitive against the raw label Snowflake reported, so `Id` and `ID` are treated as distinct names.
     ///
@@ -382,7 +356,7 @@ impl Schema {
     ///
     /// - [`SchemaError::MissingColumn`] when no column carries the name.
     /// - [`SchemaError::AmbiguousColumn`] when several columns share it.
-    pub fn column_index(&self, name: &str) -> StdResult<ColumnIndex, SchemaError> {
+    pub fn column_index(&self, name: &str) -> StdResult<usize, SchemaError> {
         match self.indices.get(name) {
             Some(LookupEntry::Unique(idx)) => Ok(*idx),
             Some(LookupEntry::Ambiguous(candidates)) => Err(SchemaError::AmbiguousColumn(
@@ -418,10 +392,9 @@ mod tests {
                     scale: Some(0),
                 },
             ),
-        ])
-        .unwrap();
-        assert_eq!(schema.column_index("ID").unwrap().as_usize(), 0);
-        assert_eq!(schema.column_index("id").unwrap().as_usize(), 1);
+        ]);
+        assert_eq!(schema.column_index("ID").unwrap(), 0);
+        assert_eq!(schema.column_index("id").unwrap(), 1);
         assert!(matches!(
             schema.column_index("Id"),
             Err(SchemaError::MissingColumn(error)) if error.name() == "Id"
@@ -449,20 +422,12 @@ mod tests {
                     scale: Some(0),
                 },
             ),
-        ])
-        .unwrap();
+        ]);
         let err = schema.column_index("id").unwrap_err();
         match err {
             SchemaError::AmbiguousColumn(error) => {
                 assert_eq!(error.name(), "id");
-                assert_eq!(
-                    error
-                        .candidates()
-                        .iter()
-                        .map(|candidate| candidate.as_usize())
-                        .collect::<Vec<_>>(),
-                    vec![0, 1]
-                );
+                assert_eq!(error.candidates(), &[0, 1]);
             }
             other => panic!("expected label ambiguity, got {other:?}"),
         }

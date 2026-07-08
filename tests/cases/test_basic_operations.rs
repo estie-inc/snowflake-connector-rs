@@ -109,13 +109,13 @@ async fn test_basic_operations() -> Result<()> {
 
     let id_column = &columns[0];
     assert_eq!(id_column.name(), "ID");
-    assert_eq!(id_column.index().as_usize(), 0);
+    assert_eq!(id_column.index(), 0);
     assert!(matches!(id_column.ty(), ColumnType::Fixed { .. }));
     assert!(id_column.is_nullable());
 
     let value_column = &columns[1];
     assert_eq!(value_column.name(), "VALUE");
-    assert_eq!(value_column.index().as_usize(), 1);
+    assert_eq!(value_column.index(), 1);
     assert!(matches!(value_column.ty(), ColumnType::Text { .. }));
     assert!(value_column.is_nullable());
 

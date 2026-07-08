@@ -7,7 +7,7 @@ use crate::{
         cell::{CellBlock, CellRef},
         decode::{CellPlan, FromCell, FromRow},
         plan::RowPlanContext,
-        schema::{Column, ColumnIndex, Schema},
+        schema::{Column, Schema},
         table::{ResultTable, ResultTableStorage},
     },
 };
@@ -29,13 +29,13 @@ impl<'a> RowRef<'a> {
         self.global_row
     }
 
-    /// Borrow a cell by resolved column index.
+    /// Borrow a cell by zero-based column index.
     ///
     /// # Errors
     ///
     /// Returns [`SchemaError::InvalidColumnIndex`](crate::error::SchemaError::InvalidColumnIndex) when `index` is out
     /// of bounds for this row's schema.
-    pub fn cell_at(self, index: ColumnIndex) -> StdResult<CellRef<'a>, SchemaError> {
+    pub fn cell_at(self, index: usize) -> StdResult<CellRef<'a>, SchemaError> {
         let column = self.table.schema().column_at(index).ok_or_else(|| {
             SchemaError::InvalidColumnIndex(InvalidColumnIndexError::new(
                 index,
@@ -43,7 +43,7 @@ impl<'a> RowRef<'a> {
             ))
         })?;
 
-        let cell = self.block.cell(self.local_row, index.as_usize());
+        let cell = self.block.cell(self.local_row, index);
         let raw = self.block.cell_text(cell);
 
         Ok(CellRef {
@@ -56,7 +56,7 @@ impl<'a> RowRef<'a> {
     // A fast path for DynamicRow.
     // DynamicRow has columns in the correct order, so it can skip column lookups in `cell_at()`.
     pub(crate) fn cell_at_offset(self, column: &'a Column, offset: usize) -> CellRef<'a> {
-        debug_assert_eq!(column.index().as_usize(), offset);
+        debug_assert_eq!(column.index(), offset);
 
         let cell = self.block.cell(self.local_row, offset);
         let raw = self.block.cell_text(cell);

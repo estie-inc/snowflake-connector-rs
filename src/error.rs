@@ -656,7 +656,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use crate::result_table::{
-        CellConversionError, CellDecodeResult, CellPlanContext, ColumnIndex, ColumnType, FromCell,
+        CellConversionError, CellDecodeResult, CellPlanContext, ColumnType, FromCell,
         test_data::{make_result_table_from_rows, make_schema},
     };
 
@@ -1123,9 +1123,9 @@ mod tests {
     #[test]
     fn decode_plan_error_display_includes_column_context_when_set() {
         let mut err = CustomPlanError::new("nullable not supported");
-        err.set_column_context(ColumnIndex::new(2), "START");
+        err.set_column_context(2, "START");
 
-        assert_eq!(err.column_index(), Some(ColumnIndex::new(2)));
+        assert_eq!(err.column_index(), Some(2));
         assert_eq!(err.column_name(), Some("START"));
         assert_eq!(
             err.to_string(),
@@ -1148,13 +1148,13 @@ mod tests {
     #[test]
     fn custom_plan_error_column_context_is_first_set_wins() {
         let mut err = CustomPlanError::new("bad plan");
-        err.set_column_context(ColumnIndex::new(1), "A");
-        assert_eq!(err.column_index(), Some(ColumnIndex::new(1)));
+        err.set_column_context(1, "A");
+        assert_eq!(err.column_index(), Some(1));
         assert_eq!(err.column_name(), Some("A"));
 
         // A later write, as from an enclosing CellPlan::new, does not overwrite the inner column.
-        err.set_column_context(ColumnIndex::new(9), "Z");
-        assert_eq!(err.column_index(), Some(ColumnIndex::new(1)));
+        err.set_column_context(9, "Z");
+        assert_eq!(err.column_index(), Some(1));
         assert_eq!(err.column_name(), Some("A"));
     }
 
@@ -1195,7 +1195,7 @@ mod tests {
 
         let cell: RowDecodeError = CellDecodeError::new(
             0,
-            ColumnIndex::new(0),
+            0,
             "COL",
             "T",
             ColumnType::Text { length: None },
