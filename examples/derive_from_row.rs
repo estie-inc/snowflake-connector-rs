@@ -46,7 +46,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn async_main() -> Result<()> {
-    let client = connect_with_configs(session_config(), QueryConfig::default())?;
+    let client = connect_with_configs(session_config(), QueryConfig::new())?;
     let session = client.create_session().await?;
 
     run_default_mapping_example(&session).await?;
@@ -201,7 +201,7 @@ fn session_config() -> SessionConfig {
     let database = env::var("SNOWFLAKE_DATABASE").ok();
     let schema = env::var("SNOWFLAKE_SCHEMA").ok();
 
-    let mut session_config = SessionConfig::default();
+    let mut session_config = SessionConfig::new();
     if let Some(warehouse) = warehouse {
         session_config = session_config.with_warehouse(warehouse);
     }

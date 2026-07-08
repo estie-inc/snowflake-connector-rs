@@ -11,28 +11,20 @@ use crate::{
 use super::{model::ResultSnapshot, remote::PartitionSource};
 
 /// Options for controlling how result-set collection fetches remaining partitions.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct CollectOptions {
     pub(crate) prefetch_concurrency: Option<NonZeroUsize>,
 }
 
 impl CollectOptions {
     pub fn new() -> Self {
-        Self {
-            prefetch_concurrency: None,
-        }
+        Self::default()
     }
 
     /// Overrides the connection's default prefetch concurrency for this collect call.
     pub fn with_prefetch_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
         self.prefetch_concurrency = Some(concurrency);
         self
-    }
-}
-
-impl Default for CollectOptions {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

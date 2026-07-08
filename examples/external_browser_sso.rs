@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = env::var("SNOWFLAKE_DATABASE").ok();
     let schema = env::var("SNOWFLAKE_SCHEMA").ok();
 
-    let mut session_config = SessionConfig::default();
+    let mut session_config = SessionConfig::new();
     if let Some(warehouse) = warehouse {
         session_config = session_config.with_warehouse(warehouse);
     }

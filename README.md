@@ -14,13 +14,13 @@ struct ExampleRow {
     value: String,
 }
 
-let session_config = SessionConfig::default()
+let session_config = SessionConfig::new()
     .with_role("ROLE")
     .with_warehouse("WAREHOUSE")
     .with_database("DATABASE")
     .with_schema("SCHEMA");
 
-let query_config = QueryConfig::default()
+let query_config = QueryConfig::new()
     // Client-side timeout for obtaining a query response.
     .with_query_response_timeout(std::time::Duration::from_secs(60));
 
@@ -221,7 +221,7 @@ let proxy = ProxyConfig::new(
 )
 .with_basic_auth("proxy_user", "proxy_pass");
 
-let transport = TransportConfig::default().with_proxy(proxy);
+let transport = TransportConfig::new().with_proxy(proxy);
 let client = Client::new(
     ClientConfig::new("USERNAME", "ACCOUNT", auth)
         .with_transport(transport),
