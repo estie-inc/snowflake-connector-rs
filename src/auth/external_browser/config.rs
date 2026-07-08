@@ -116,8 +116,7 @@ impl Default for ExternalBrowserConfig {
 impl ExternalBrowserConfig {
     /// Creates a callback-listener external-browser configuration.
     ///
-    /// This mode starts a local HTTP listener and receives the token automatically
-    /// from the redirected callback URL.
+    /// This mode starts a local HTTP listener and receives the token automatically from the redirected callback URL.
     ///
     /// - `browser_launch_mode`: controls whether the auth URL is opened automatically (`Auto`) or only printed for manual open (`Manual`).
     /// - `callback_socket_addr`: bind address for the local callback listener (for example `127.0.0.1` or `0.0.0.0`).

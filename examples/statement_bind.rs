@@ -145,7 +145,7 @@ async fn build_session() -> std::result::Result<Session, Box<dyn std::error::Err
     let database = env::var("SNOWFLAKE_DATABASE").ok();
     let schema = env::var("SNOWFLAKE_SCHEMA").ok();
 
-    let mut session_config = SessionConfig::default();
+    let mut session_config = SessionConfig::new();
     if let Some(value) = warehouse {
         session_config = session_config.with_warehouse(value);
     }

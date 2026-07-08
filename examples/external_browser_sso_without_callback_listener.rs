@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let external_browser =
         ExternalBrowserConfig::manual_redirect(BrowserLaunchMode::Manual, redirect_port);
 
-    let mut session_config = SessionConfig::default();
+    let mut session_config = SessionConfig::new();
     if let Some(warehouse) = warehouse {
         session_config = session_config.with_warehouse(warehouse);
     }

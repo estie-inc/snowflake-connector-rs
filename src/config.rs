@@ -161,6 +161,10 @@ impl ClientConfig {
 }
 
 impl SessionConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn with_warehouse(mut self, warehouse: impl Into<String>) -> Self {
         self.warehouse = Some(warehouse.into());
         self
@@ -200,6 +204,10 @@ impl SessionConfig {
 }
 
 impl QueryConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Sets the client-side timeout for obtaining a query response from Snowflake.
     ///
     /// This bounds how long [`Session::query()`](crate::Session::query) /
@@ -394,6 +402,10 @@ fn validate_custom_base_url(mut url: Url) -> Result<Url> {
 }
 
 impl TransportConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn with_proxy(mut self, proxy: ProxyConfig) -> Self {
         self.proxy = Some(proxy);
         self
