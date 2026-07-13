@@ -172,6 +172,12 @@ impl Display for Error {
                 ..
             } => f.write_str("future join error"),
             Repr::BindEncode { message, .. } => write!(f, "bind encode error: {message}"),
+            Repr::Cancelled {
+                query_id: Some(query_id),
+            } => {
+                write!(f, "query cancelled (query id: {query_id})")
+            }
+            Repr::Cancelled { query_id: None } => f.write_str("query cancelled"),
             Repr::Other(message) => write!(f, "snowflake connector error: {message}"),
             Repr::Schema(error) => Display::fmt(error, f),
             Repr::CellDecode(error) => Display::fmt(error, f),

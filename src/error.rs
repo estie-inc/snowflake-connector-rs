@@ -137,6 +137,9 @@ pub enum ErrorKind {
     Decode,
     /// Connector-internal runtime work failed, such as a cancelled or panicked task join.
     Internal,
+    /// The query was cancelled through a [`CancellationToken`](crate::CancellationToken). The connector stopped
+    /// waiting and sent Snowflake a best-effort abort for the statement.
+    Cancelled,
     /// Caller-supplied fallback error created via [`Error::other`].
     Other,
 }
@@ -166,6 +169,7 @@ impl Error {
             | Repr::CustomPlan(_)
             | Repr::RowConversion(_) => ErrorKind::Decode,
             Repr::Internal { .. } => ErrorKind::Internal,
+            Repr::Cancelled { .. } => ErrorKind::Cancelled,
             Repr::Other(_) => ErrorKind::Other,
         }
     }
@@ -202,7 +206,8 @@ impl Error {
             Repr::Network { query_id, .. }
             | Repr::Timeout { query_id, .. }
             | Repr::Protocol { query_id, .. }
-            | Repr::Internal { query_id, .. } => query_id.as_deref(),
+            | Repr::Internal { query_id, .. }
+            | Repr::Cancelled { query_id } => query_id.as_deref(),
             Repr::Server(ServerError { query_id, .. }) => query_id.as_deref(),
             Repr::SessionExpired(SessionExpiredError { query_id, .. }) => query_id.as_deref(),
             _ => None,
@@ -219,6 +224,11 @@ impl Error {
 
     pub fn is_server(&self) -> bool {
         matches!(&*self.repr, Repr::Server(_))
+    }
+
+    /// Whether the query was cancelled through a [`CancellationToken`](crate::CancellationToken).
+    pub fn is_cancelled(&self) -> bool {
+        matches!(&*self.repr, Repr::Cancelled { .. })
     }
 
     pub fn as_cell_decode_error(&self) -> Option<&CellDecodeError> {
@@ -272,6 +282,11 @@ impl Error {
 
     pub fn other(message: impl Into<String>) -> Self {
         Self::new(Repr::Other(message.into().into_boxed_str()))
+    }
+
+    /// Build a cancellation error, carrying the Snowflake query id when it was known at cancel time.
+    pub(crate) fn cancelled(query_id: Option<Arc<str>>) -> Self {
+        Self::new(Repr::Cancelled { query_id })
     }
 
     pub(crate) fn bind_encode(message: impl Into<String>) -> Self {

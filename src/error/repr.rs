@@ -35,6 +35,9 @@ pub(crate) enum Repr {
         error: InternalError,
         query_id: Option<Arc<str>>,
     },
+    Cancelled {
+        query_id: Option<Arc<str>>,
+    },
     Other(Box<str>),
 }
 

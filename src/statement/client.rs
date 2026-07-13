@@ -5,6 +5,7 @@ use std::{
 
 use http::header::{ACCEPT, AUTHORIZATION};
 use reqwest::{Client, Url};
+use serde::Serialize;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
@@ -83,10 +84,10 @@ impl StatementApiClient {
         &self,
         parts: &StatementParts,
         deadline: QueryResponseDeadline,
+        request_id: Uuid,
     ) -> Result<SnowflakeResponse> {
         validate_statement_parts_for_wire(parts)?;
 
-        let request_id = Uuid::new_v4();
         let mut url = self
             .shared
             .base_url
@@ -211,6 +212,44 @@ impl StatementApiClient {
             }
         }
     }
+
+    /// Ask Snowflake to abort the statement submitted under `request_id`.
+    ///
+    /// This posts to the same `abort-request` endpoint the official Snowflake connectors use to cancel a query. It is
+    /// best-effort: the result is intentionally ignored (the caller is already unwinding a cancellation) and the call
+    /// is bounded by a short timeout so a stuck control-plane cannot hang the cancel path.
+    pub(crate) async fn abort(&self, request_id: Uuid, sql_text: &str) {
+        let Ok(mut url) = self.shared.base_url.join("queries/v1/abort-request") else {
+            return;
+        };
+        // The abort call carries its own fresh request id; the body names the original request to cancel.
+        url.query_pairs_mut()
+            .append_pair("requestId", &Uuid::new_v4().to_string());
+
+        let request = self
+            .shared
+            .http
+            .post(url)
+            .header(ACCEPT, "application/snowflake")
+            .header(
+                AUTHORIZATION,
+                format!(r#"Snowflake Token="{}""#, self.auth.session_token),
+            )
+            .json(&AbortRequestBody {
+                sql_text,
+                request_id: request_id.to_string(),
+            });
+
+        const ABORT_TIMEOUT: Duration = Duration::from_secs(5);
+        let _ = timeout(ABORT_TIMEOUT, request.send()).await;
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AbortRequestBody<'a> {
+    sql_text: &'a str,
+    request_id: String,
 }
 
 /// Client-side backoff between consecutive poll GETs for an async query.
@@ -386,7 +425,10 @@ mod tests {
         let parts = into_statement_parts(Statement::from("select 1"));
         // A generous deadline leaves the reqwest client-wide timeout as the trigger for this case.
         let deadline = QueryResponseDeadline::new(Duration::from_secs(30));
-        let err = client.submit(&parts, deadline).await.unwrap_err();
+        let err = client
+            .submit(&parts, deadline, Uuid::new_v4())
+            .await
+            .unwrap_err();
 
         assert_eq!(err.kind(), ErrorKind::Timeout);
         assert!(err.is_timeout());

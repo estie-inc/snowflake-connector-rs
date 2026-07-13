@@ -1,7 +1,10 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
+use uuid::Uuid;
+
 use crate::{
-    QueryExecutionSettings,
+    CancellationToken, QueryExecutionSettings,
+    cancellation::run_until_cancelled,
     error::{ProtocolError, QueryScopedError, QueryScopedResult, ServerError, SessionExpiredError},
     result_cursor::{CollectPolicy, RemotePartitionSource, ResultCursor},
     runtime::QueryRuntime,
@@ -23,6 +26,7 @@ pub(crate) struct StatementExecutor {
     query_response_timeout: Duration,
     default_collect_concurrency: NonZeroUsize,
     runtime: QueryRuntime,
+    cancellation: Option<CancellationToken>,
 }
 
 struct QueryScopedResponse {
@@ -60,19 +64,57 @@ impl StatementExecutor {
             query_response_timeout: settings.query_response_timeout,
             default_collect_concurrency: settings.collect_prefetch_concurrency,
             runtime: session.shared.runtime.clone(),
+            cancellation: None,
         }
     }
 
-    pub(crate) async fn execute(self, parts: StatementParts) -> Result<ResultCursor> {
+    pub(crate) fn with_cancellation(mut self, token: Option<CancellationToken>) -> Self {
+        self.cancellation = token;
+        self
+    }
+
+    pub(crate) async fn execute(&self, parts: StatementParts) -> Result<ResultCursor> {
+        // A client-generated request id identifies this statement for a later abort. Snowflake's abort endpoint is
+        // keyed by the original request id, so we mint it here (not inside `submit`) to keep it in reach.
+        let request_id = Uuid::new_v4();
+
+        let Some(token) = self.cancellation.clone() else {
+            return self.execute_inner(&parts, request_id).await;
+        };
+
+        // Already cancelled before we started: abort any statement Snowflake may have registered and return.
+        if token.is_cancelled() {
+            self.api.abort(request_id, parts.sql()).await;
+            return Err(Error::cancelled(None));
+        }
+
+        // The abort needs the SQL text, which `parts` owns; capture it before the borrow enters the race.
+        let sql = parts.sql().to_owned();
+        match run_until_cancelled(&token, self.execute_inner(&parts, request_id)).await {
+            Some(result) => result,
+            None => {
+                // Best-effort: stop the warehouse from continuing to run (and bill) the statement.
+                self.api.abort(request_id, &sql).await;
+                Err(Error::cancelled(None))
+            }
+        }
+    }
+
+    async fn execute_inner(
+        &self,
+        parts: &StatementParts,
+        request_id: Uuid,
+    ) -> Result<ResultCursor> {
         let deadline = QueryResponseDeadline::new(self.query_response_timeout);
-        let response = QueryScopedResponse::from_submit(self.api.submit(&parts, deadline).await?)?;
+        let response =
+            QueryScopedResponse::from_submit(self.api.submit(parts, deadline, request_id).await?)?;
         self.execute_query_scoped(response, deadline)
             .await
             .map_err(Error::from)
     }
 
     async fn execute_query_scoped(
-        self,
+        &self,
         response: QueryScopedResponse,
         deadline: QueryResponseDeadline,
     ) -> QueryScopedResult<ResultCursor> {
@@ -140,7 +182,7 @@ impl StatementExecutor {
         self.build_result_set(data)
     }
 
-    fn build_result_set(self, data: RawQueryResponse) -> QueryScopedResult<ResultCursor> {
+    fn build_result_set(&self, data: RawQueryResponse) -> QueryScopedResult<ResultCursor> {
         let manifest = ResultManifest::try_from(data)?;
 
         let source = RemotePartitionSource::new(manifest.lease, self.api.http_client());
@@ -150,7 +192,7 @@ impl StatementExecutor {
             manifest.snapshot,
             manifest.inline_rowset,
             source,
-            self.runtime,
+            self.runtime.clone(),
             default_collect_policy,
         ))
     }
@@ -162,17 +204,18 @@ mod tests {
         io::{Read, Write},
         net::TcpListener as StdTcpListener,
         num::NonZeroUsize,
+        sync::Mutex,
         thread,
         time::{Duration, Instant},
     };
 
     use bytes::Bytes;
     use reqwest::{Client, Url};
-    use tokio::time::timeout;
+    use tokio::time::{sleep, timeout};
 
     use super::*;
     use crate::{
-        ClientShared, ErrorKind, QueryConfig, QueryOptions, Statement,
+        CancellationToken, ClientShared, ErrorKind, QueryConfig, QueryOptions, Statement,
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
         session::SessionAuth,
@@ -183,6 +226,36 @@ mod tests {
             wire::response::{RawQueryResponse, RawQueryResponseRowType},
         },
     };
+
+    /// A scripted server that also records the raw request head+body of each connection it accepts, so a test can
+    /// assert which endpoints were called (e.g. that an abort-request was sent).
+    fn spawn_recording_server(bodies: Vec<&'static str>) -> (Url, Arc<Mutex<Vec<String>>>) {
+        let listener = StdTcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&log);
+
+        thread::spawn(move || {
+            for body in bodies {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0_u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf[..n]).into_owned());
+
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        (Url::parse(&format!("http://{addr}/")).unwrap(), log)
+    }
 
     fn default_settings(session: &Session) -> QueryExecutionSettings {
         session
@@ -211,6 +284,7 @@ mod tests {
             query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime: QueryRuntime::new(),
+            cancellation: None,
         }
     }
 
@@ -220,6 +294,7 @@ mod tests {
             query_response_timeout: timeout,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime: QueryRuntime::new(),
+            cancellation: None,
         }
     }
 
@@ -515,6 +590,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_a_running_query_returns_cancelled_and_sends_an_abort() {
+        // Submit resolves to an async query, the first poll returns in-progress (so the client settles into its
+        // backoff), then the token is cancelled. The executor must stop waiting, POST an abort-request, and surface a
+        // Cancelled error — the abort is what stops the warehouse from continuing to run (and bill) the statement.
+        let (base_url, requests) = spawn_recording_server(vec![
+            ASYNC_SUBMIT_RESPONSE,
+            ASYNC_IN_PROGRESS_RESPONSE,
+            // The abort-request acknowledgement; its contents are ignored by the connector.
+            r#"{"success":true,"data":{}}"#,
+        ]);
+        let session = test_session(base_url);
+        let token = CancellationToken::new();
+        let executor = StatementExecutor::new(&session, default_settings(&session))
+            .with_cancellation(Some(token.clone()));
+
+        let canceller = token.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(80)).await;
+            canceller.cancel();
+        });
+
+        let err = executor
+            .execute(select_1_parts())
+            .await
+            .expect_err("a cancelled query must return an error");
+        assert_eq!(err.kind(), ErrorKind::Cancelled);
+        assert!(err.is_cancelled());
+
+        // execute() awaits the best-effort abort before returning, so the abort-request is already recorded.
+        let recorded = requests.lock().unwrap().clone();
+        assert!(
+            recorded
+                .iter()
+                .any(|req| req.starts_with("POST /queries/v1/abort-request")),
+            "expected an abort-request POST, saw: {recorded:?}"
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|req| req.contains("abort-request") && req.contains("select 1")),
+            "the abort body should name the statement being cancelled"
+        );
+    }
+
+    #[tokio::test]
     async fn execute_async_final_response_within_deadline_succeeds() {
         let executor = executor_with_timeout(
             spawn_scripted_server(vec![
@@ -648,6 +768,7 @@ mod tests {
             query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
+            cancellation: None,
         };
         let response = RawQueryResponse {
             query_id: Arc::from("query-id"),
@@ -691,6 +812,7 @@ mod tests {
             query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
+            cancellation: None,
         };
         let response = RawQueryResponse {
             query_id: Arc::from("query-id"),
@@ -729,6 +851,7 @@ mod tests {
             query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
+            cancellation: None,
         };
         let response = RawQueryResponse {
             query_id: Arc::from("query-id"),

@@ -1,7 +1,7 @@
 use std::{fmt, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use crate::{
-    ClientShared, IntoStatement, Result,
+    CancellationToken, ClientShared, IntoStatement, Result,
     result_cursor::{ResultCursor, TypedResultCursor},
     result_table::{FromRow, RowPlanContext},
     statement::{StatementExecutor, builder::into_statement_parts},
@@ -21,6 +21,7 @@ pub struct Session {
 pub struct QueryOptions {
     pub(crate) query_response_timeout: Option<Duration>,
     pub(crate) collect_prefetch_concurrency: Option<NonZeroUsize>,
+    pub(crate) cancellation_token: Option<CancellationToken>,
 }
 
 impl QueryOptions {
@@ -43,6 +44,15 @@ impl QueryOptions {
     /// final say for a specific collection call.
     pub fn with_collect_prefetch_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
         self.collect_prefetch_concurrency = Some(concurrency);
+        self
+    }
+
+    /// Attach a [`CancellationToken`] so this query can be aborted while it runs.
+    ///
+    /// Cancelling the token stops the client-side wait for the query response and sends Snowflake a best-effort abort
+    /// for the statement, so the warehouse stops executing it. See [`CancellationToken`] for the exact semantics.
+    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
         self
     }
 }
@@ -100,8 +110,9 @@ impl Session {
     where
         S: IntoStatement,
     {
+        let cancellation = options.cancellation_token.clone();
         let settings = self.shared.query.resolve_options(options);
-        let executor = StatementExecutor::new(self, settings);
+        let executor = StatementExecutor::new(self, settings).with_cancellation(cancellation);
         executor.execute(into_statement_parts(statement)).await
     }
 

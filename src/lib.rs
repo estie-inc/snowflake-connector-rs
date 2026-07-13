@@ -65,6 +65,7 @@
 
 mod auth;
 pub mod bind;
+mod cancellation;
 mod config;
 pub mod decode;
 pub mod error;
@@ -80,6 +81,7 @@ pub use auth::config::KeyPairConfig;
 pub use auth::config::{AuthConfig, PasswordConfig};
 #[cfg(feature = "external-browser-sso")]
 pub use auth::external_browser::{BrowserLaunchMode, ExternalBrowserConfig};
+pub use cancellation::CancellationToken;
 pub use config::{
     ClientConfig, EndpointConfig, ProxyConfig, QueryConfig, SessionConfig, TransportConfig,
 };
