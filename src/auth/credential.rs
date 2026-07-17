@@ -59,6 +59,15 @@ impl PreparedLoginCredential {
     }
 
     pub(crate) fn requires_request_id(&self) -> bool {
+        if matches!(
+            self,
+            Self::Password {
+                passcode: Some(_),
+                ..
+            }
+        ) {
+            return true;
+        }
         #[cfg(feature = "external-browser-sso")]
         if matches!(self, Self::ExternalBrowser { .. }) {
             return true;

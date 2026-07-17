@@ -58,7 +58,7 @@ mod tests {
     use reqwest::Url;
 
     use super::*;
-    use crate::SessionConfig;
+    use crate::{SessionConfig, auth::credential::PreparedPasscode};
 
     fn query_string(query: &LoginQuery<'_>) -> Option<String> {
         reqwest::Client::new()
@@ -92,6 +92,31 @@ mod tests {
         assert_eq!(
             query_string(&request.query).as_deref(),
             Some("warehouse=warehouse")
+        );
+    }
+
+    #[test]
+    fn password_mfa_login_request_includes_request_id() {
+        let session =
+            InitialSessionConfig::from(SessionConfig::default().with_warehouse("warehouse"));
+        let credential = PreparedLoginCredential::Password {
+            password: "secret".to_string(),
+            passcode: Some(PreparedPasscode::Separate("123456".to_string())),
+        };
+        let request = build_login_request(
+            LoginContext {
+                username: "user",
+                account: "account",
+            },
+            &session,
+            &credential,
+        );
+
+        assert!(request.query.request_id.is_some());
+        assert!(
+            query_string(&request.query)
+                .as_deref()
+                .is_some_and(|query| query.starts_with("warehouse=warehouse&request_id="))
         );
     }
 
