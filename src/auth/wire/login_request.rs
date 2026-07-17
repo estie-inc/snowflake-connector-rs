@@ -75,17 +75,19 @@ impl Serialize for LoginCredentialWire<'_> {
             Self::Password { password, passcode } => {
                 let len = match passcode {
                     None => 1,
-                    Some(PasscodeWire::InPassword) => 2,
-                    Some(PasscodeWire::Separate(_)) => 3,
+                    Some(PasscodeWire::InPassword) => 3,
+                    Some(PasscodeWire::Separate(_)) => 4,
                 };
                 let mut map = serializer.serialize_map(Some(len))?;
                 map.serialize_entry("PASSWORD", password)?;
                 match passcode {
                     None => {}
                     Some(PasscodeWire::InPassword) => {
+                        map.serialize_entry("AUTHENTICATOR", "USERNAME_PASSWORD_MFA")?;
                         map.serialize_entry("EXT_AUTHN_DUO_METHOD", "passcode")?;
                     }
                     Some(PasscodeWire::Separate(code)) => {
+                        map.serialize_entry("AUTHENTICATOR", "USERNAME_PASSWORD_MFA")?;
                         map.serialize_entry("EXT_AUTHN_DUO_METHOD", "passcode")?;
                         map.serialize_entry("PASSCODE", code)?;
                     }
@@ -176,6 +178,7 @@ mod tests {
                     "ACCOUNT_NAME": "account",
                     "LOGIN_NAME": "username",
                     "PASSWORD": "secret",
+                    "AUTHENTICATOR": "USERNAME_PASSWORD_MFA",
                     "EXT_AUTHN_DUO_METHOD": "passcode",
                     "PASSCODE": "123456",
                 }
@@ -205,6 +208,7 @@ mod tests {
                     "ACCOUNT_NAME": "account",
                     "LOGIN_NAME": "username",
                     "PASSWORD": "secret123456",
+                    "AUTHENTICATOR": "USERNAME_PASSWORD_MFA",
                     "EXT_AUTHN_DUO_METHOD": "passcode",
                 }
             })
