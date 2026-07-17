@@ -52,12 +52,12 @@ serde = { version = "1.0", features = [
 serde_json = { version = "1.0", features = [
     "raw_value",
 ] }
-tokio = { version = "1.52", features = [
+tokio = { version = "1.53", features = [
     "sync",
     "time",
 ] }
 url = "2.5"
-uuid = { version = "1.23", features = [
+uuid = { version = "1.24", features = [
     "serde",
     "v4",
 ] }
