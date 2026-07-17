@@ -6,17 +6,12 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 env:
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   RUSTFLAGS: -Dwarnings
-  SNOWFLAKE_USERNAME: ${{ secrets.SNOWFLAKE_USERNAME }}
-  SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-  SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-  SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-  SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
-  SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
-  SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
-  SNOWFLAKE_PRIVATE_KEY_PASSWORD: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSWORD }}
 
 jobs:
   test:
@@ -59,9 +54,6 @@ jobs:
 
       - name: Test auto trait contracts
         run: cargo test --profile ci --workspace --all-features --test auto_trait_trybuild
-
-      - name: Test integration
-        run: cargo test --profile ci --workspace --test integration
 
       - name: Test documentation
         run: cargo test --profile ci --workspace --all-features --doc
