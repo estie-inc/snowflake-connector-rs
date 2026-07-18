@@ -96,6 +96,7 @@ pub use result_table::{
 use runtime::QueryRuntime;
 pub use session::{QueryOptions, Session};
 pub use statement::builder::{IntoStatement, NamedBinds, PositionalBinds, Statement, UnboundBinds};
+pub use statement::{QueryCancelStatus, QueryCanceller, QueryHandle};
 
 #[cfg(feature = "derive")]
 pub use snowflake_connector_rs_derive::FromRow;

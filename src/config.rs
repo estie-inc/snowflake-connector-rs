@@ -31,6 +31,7 @@ pub struct SessionConfig {
 }
 
 pub(crate) const DEFAULT_QUERY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_COLLECT_PREFETCH_CONCURRENCY: NonZeroUsize =
     NonZeroUsize::new(8).expect("default concurrency is non-zero");
 
@@ -41,6 +42,7 @@ const DEFAULT_COLLECT_PREFETCH_CONCURRENCY: NonZeroUsize =
 #[derive(Clone, Debug)]
 pub struct QueryConfig {
     query_response_timeout: Duration,
+    query_cancel_request_timeout: Duration,
     collect_prefetch_concurrency: NonZeroUsize,
 }
 
@@ -48,6 +50,7 @@ impl Default for QueryConfig {
     fn default() -> Self {
         Self {
             query_response_timeout: DEFAULT_QUERY_RESPONSE_TIMEOUT,
+            query_cancel_request_timeout: DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT,
             collect_prefetch_concurrency: DEFAULT_COLLECT_PREFETCH_CONCURRENCY,
         }
     }
@@ -229,6 +232,15 @@ impl QueryConfig {
         self
     }
 
+    /// Sets the client-side deadline for an explicit query cancellation request. Defaults to `30s`.
+    ///
+    /// The deadline covers abort request transport, response body reading, and bounded transport retries. It is
+    /// independent of [`Self::with_query_response_timeout`].
+    pub fn with_query_cancel_request_timeout(mut self, timeout: Duration) -> Self {
+        self.query_cancel_request_timeout = timeout;
+        self
+    }
+
     /// Sets the default number of partitions fetched concurrently during collection. Defaults to `8`.
     pub fn with_collect_prefetch_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
         self.collect_prefetch_concurrency = concurrency;
@@ -324,6 +336,7 @@ impl From<SessionConfig> for InitialSessionConfig {
 #[derive(Debug)]
 pub(crate) struct QueryExecutionPolicy {
     query_response_timeout: Duration,
+    query_cancel_request_timeout: Duration,
     collect_prefetch_concurrency: NonZeroUsize,
 }
 
@@ -334,6 +347,9 @@ impl QueryExecutionPolicy {
             query_response_timeout: options
                 .query_response_timeout
                 .unwrap_or(self.query_response_timeout),
+            query_cancel_request_timeout: options
+                .query_cancel_request_timeout
+                .unwrap_or(self.query_cancel_request_timeout),
             collect_prefetch_concurrency: options
                 .collect_prefetch_concurrency
                 .unwrap_or(self.collect_prefetch_concurrency),
@@ -345,6 +361,7 @@ impl QueryExecutionPolicy {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QueryExecutionSettings {
     pub(crate) query_response_timeout: Duration,
+    pub(crate) query_cancel_request_timeout: Duration,
     pub(crate) collect_prefetch_concurrency: NonZeroUsize,
 }
 
@@ -352,6 +369,7 @@ impl From<QueryConfig> for QueryExecutionPolicy {
     fn from(config: QueryConfig) -> Self {
         Self {
             query_response_timeout: config.query_response_timeout,
+            query_cancel_request_timeout: config.query_cancel_request_timeout,
             collect_prefetch_concurrency: config.collect_prefetch_concurrency,
         }
     }
@@ -498,6 +516,10 @@ mod tests {
         let policy: QueryExecutionPolicy = QueryConfig::default().into();
         let settings = policy.resolve_options(QueryOptions::default());
         assert_eq!(settings.query_response_timeout, Duration::from_secs(300));
+        assert_eq!(
+            settings.query_cancel_request_timeout,
+            Duration::from_secs(30)
+        );
     }
 
     #[test]
@@ -536,6 +558,27 @@ mod tests {
         );
 
         assert_eq!(settings.query_response_timeout, Duration::from_secs(90));
+        assert_eq!(
+            settings.collect_prefetch_concurrency,
+            NonZeroUsize::new(4).unwrap()
+        );
+    }
+
+    #[test]
+    fn query_options_with_query_cancel_request_timeout_overrides_only_cancel_timeout() {
+        let policy: QueryExecutionPolicy = QueryConfig::default()
+            .with_query_response_timeout(Duration::from_secs(120))
+            .with_collect_prefetch_concurrency(NonZeroUsize::new(4).unwrap())
+            .into();
+        let settings = policy.resolve_options(
+            QueryOptions::default().with_query_cancel_request_timeout(Duration::from_secs(7)),
+        );
+
+        assert_eq!(settings.query_response_timeout, Duration::from_secs(120));
+        assert_eq!(
+            settings.query_cancel_request_timeout,
+            Duration::from_secs(7)
+        );
         assert_eq!(
             settings.collect_prefetch_concurrency,
             NonZeroUsize::new(4).unwrap()

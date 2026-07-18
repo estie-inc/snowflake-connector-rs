@@ -65,6 +65,12 @@ impl Serialize for WireBindings<'_> {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireAbortBody<'a> {
+    pub(crate) request_id: &'a str,
+}
+
 struct PositionalKey(usize);
 
 impl Serialize for PositionalKey {
@@ -231,7 +237,7 @@ mod tests {
     };
 
     fn wire_body(statement: impl IntoStatement) -> serde_json::Value {
-        let parts = into_statement_parts(statement);
+        let parts = into_statement_parts(statement).unwrap();
         serde_json::to_value(WireQueryBody::from_statement_parts(&parts)).unwrap()
     }
 

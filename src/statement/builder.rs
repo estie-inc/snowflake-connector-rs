@@ -6,6 +6,8 @@ use std::borrow::Cow;
 
 use indexmap::IndexMap;
 
+use crate::{Error, Result};
+
 use super::bind::{Bind, BindName, IntoBind, encode_bind};
 
 /// Typestate marker for a [`Statement`] with no binds attached yet.
@@ -125,7 +127,7 @@ impl Statement<UnboundBinds> {
     /// Adds a named bind, transitioning to [`NamedBinds`] mode.
     ///
     /// Pass the bare placeholder name (no leading `:`): `"id"` matches `:id`, `"1"` matches `:1`. The name is sent verbatim.
-    /// Empty names are rejected when the statement is submitted.
+    /// Empty names are rejected when the statement is passed to a query method.
     ///
     /// # Examples
     ///
@@ -300,18 +302,17 @@ pub trait IntoStatement: into_statement_sealed::Sealed {}
 
 mod into_statement_sealed {
     pub trait Sealed {
-        fn into_statement_parts(self) -> super::StatementParts;
+        fn into_statement_parts(self) -> crate::Result<super::StatementParts>;
     }
 }
 
-pub(crate) fn into_statement_parts<S>(statement: S) -> StatementParts
+pub(crate) fn into_statement_parts<S>(statement: S) -> Result<StatementParts>
 where
     S: IntoStatement,
 {
     <S as into_statement_sealed::Sealed>::into_statement_parts(statement)
 }
 
-#[doc(hidden)]
 #[derive(Debug)]
 pub(crate) struct StatementParts(StatementPartsRepr);
 
@@ -347,46 +348,55 @@ impl StatementParts {
 impl IntoStatement for &'static str {}
 
 impl into_statement_sealed::Sealed for &'static str {
-    fn into_statement_parts(self) -> StatementParts {
-        StatementParts(StatementPartsRepr::Unbound { sql: self.into() })
+    fn into_statement_parts(self) -> Result<StatementParts> {
+        Ok(StatementParts(StatementPartsRepr::Unbound {
+            sql: self.into(),
+        }))
     }
 }
 
 impl IntoStatement for String {}
 
 impl into_statement_sealed::Sealed for String {
-    fn into_statement_parts(self) -> StatementParts {
-        StatementParts(StatementPartsRepr::Unbound { sql: self.into() })
+    fn into_statement_parts(self) -> Result<StatementParts> {
+        Ok(StatementParts(StatementPartsRepr::Unbound {
+            sql: self.into(),
+        }))
     }
 }
 
 impl IntoStatement for Statement<UnboundBinds> {}
 
 impl into_statement_sealed::Sealed for Statement<UnboundBinds> {
-    fn into_statement_parts(self) -> StatementParts {
-        StatementParts(StatementPartsRepr::Unbound { sql: self.sql })
+    fn into_statement_parts(self) -> Result<StatementParts> {
+        Ok(StatementParts(StatementPartsRepr::Unbound {
+            sql: self.sql,
+        }))
     }
 }
 
 impl IntoStatement for Statement<PositionalBinds> {}
 
 impl into_statement_sealed::Sealed for Statement<PositionalBinds> {
-    fn into_statement_parts(self) -> StatementParts {
-        StatementParts(StatementPartsRepr::Positional {
+    fn into_statement_parts(self) -> Result<StatementParts> {
+        Ok(StatementParts(StatementPartsRepr::Positional {
             sql: self.sql,
             bindings: self.bindings.0,
-        })
+        }))
     }
 }
 
 impl IntoStatement for Statement<NamedBinds> {}
 
 impl into_statement_sealed::Sealed for Statement<NamedBinds> {
-    fn into_statement_parts(self) -> StatementParts {
-        StatementParts(StatementPartsRepr::Named {
+    fn into_statement_parts(self) -> Result<StatementParts> {
+        if self.bindings.0.keys().any(BindName::is_empty) {
+            return Err(Error::bind_encode("bind name must not be empty"));
+        }
+        Ok(StatementParts(StatementPartsRepr::Named {
             sql: self.sql,
             bindings: self.bindings.0,
-        })
+        }))
     }
 }
 
@@ -411,7 +421,7 @@ mod tests {
         let statement = Statement::from("SELECT 1");
         assert_eq!(statement.sql(), "SELECT 1");
 
-        match into_statement_parts(statement).repr() {
+        match into_statement_parts(statement).unwrap().repr() {
             StatementPartsRepr::Unbound { sql } => {
                 assert!(matches!(sql, Cow::Borrowed("SELECT 1")));
             }
@@ -423,7 +433,7 @@ mod tests {
     fn positional_statement_parts_preserve_bind_order_and_typed_values() {
         let statement = Statement::new("SELECT ?, ?").bind(1_i64).bind("hi");
 
-        match into_statement_parts(statement).repr() {
+        match into_statement_parts(statement).unwrap().repr() {
             StatementPartsRepr::Positional { sql, bindings } => {
                 assert!(matches!(sql, Cow::Borrowed("SELECT ?, ?")));
                 assert_eq!(bindings.len(), 2);
@@ -438,12 +448,24 @@ mod tests {
     }
 
     #[test]
+    fn named_statement_with_empty_bind_name_fails_conversion() {
+        let statement = Statement::new("SELECT :id").bind_named("", 1_i64);
+
+        let err = into_statement_parts(statement).unwrap_err();
+        assert_eq!(err.kind(), crate::ErrorKind::BindEncode);
+        assert_eq!(
+            err.to_string(),
+            "bind encode error: bind name must not be empty"
+        );
+    }
+
+    #[test]
     fn named_statement_last_wins_for_duplicate_keys() {
         let statement = Statement::new("SELECT :id")
             .bind_named("id", 1_i64)
             .bind_named("id", 2_i64);
 
-        match into_statement_parts(statement).repr() {
+        match into_statement_parts(statement).unwrap().repr() {
             StatementPartsRepr::Named { sql, bindings } => {
                 assert!(matches!(sql, Cow::Borrowed("SELECT :id")));
                 assert_eq!(bindings.len(), 1);
@@ -458,8 +480,8 @@ mod tests {
     #[test]
     fn statement_clone_allows_reuse() {
         let statement = Statement::new("SELECT ?").bind(1_i64);
-        let first = into_statement_parts(statement.clone());
-        let second = into_statement_parts(statement);
+        let first = into_statement_parts(statement.clone()).unwrap();
+        let second = into_statement_parts(statement).unwrap();
 
         for parts in [&first, &second] {
             match parts.repr() {

@@ -6,8 +6,8 @@ use std::{
 use super::{
     Error,
     repr::{
-        AuthError, ConfigError, InternalError, NetworkError, ProtocolError, Repr, ServerError,
-        TimeoutError,
+        AuthError, CancelledError, ConfigError, InternalError, NetworkError, ProtocolError, Repr,
+        ServerError, TimeoutError,
     },
 };
 
@@ -79,6 +79,18 @@ impl Display for Error {
                 }
                 Ok(())
             }
+            Repr::Cancelled(CancelledError {
+                message, query_id, ..
+            }) => {
+                f.write_str("query cancelled")?;
+                if let Some(message) = message {
+                    write!(f, ": {message}")?;
+                }
+                if let Some(query_id) = query_id {
+                    write!(f, " (query id: {query_id})")?;
+                }
+                Ok(())
+            }
             Repr::SessionExpired(_) => f.write_str("session expired"),
             Repr::Timeout {
                 error: TimeoutError::Request(_),
@@ -88,6 +100,10 @@ impl Display for Error {
                 error: TimeoutError::Query,
                 ..
             } => f.write_str("timed out waiting for query response"),
+            Repr::Timeout {
+                error: TimeoutError::QueryCancel,
+                ..
+            } => f.write_str("timed out waiting for query cancellation response"),
             #[cfg(feature = "external-browser-sso")]
             Repr::Timeout {
                 error: TimeoutError::BrowserCallback,

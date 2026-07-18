@@ -119,7 +119,7 @@ impl Bind {
 ///
 /// Pass the bare name (without the leading `:`): use `"id"` for `:id` and `"1"` for `:1`. The name is sent to Snowflake
 /// verbatim — leading colons and other characters are not stripped or normalized. Empty names are rejected when the statement
-/// is submitted.
+/// is passed to a query method.
 ///
 /// Built from `&'static str` or `String` via [`From`].
 ///

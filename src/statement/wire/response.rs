@@ -10,6 +10,8 @@ use crate::error::ProtocolError;
 pub(crate) const SESSION_EXPIRED: &str = "390112";
 pub(crate) const QUERY_IN_PROGRESS_CODE: &str = "333333";
 pub(crate) const QUERY_IN_PROGRESS_ASYNC_CODE: &str = "333334";
+const QUERY_CANCELLED_CODE: &str = "000604";
+const QUERY_CANCELLED_SQL_STATE: &str = "57014";
 
 const HEADER_SSE_C_ALGORITHM: &str = "x-amz-server-side-encryption-customer-algorithm";
 const HEADER_SSE_C_KEY: &str = "x-amz-server-side-encryption-customer-key";
@@ -21,6 +23,15 @@ pub(crate) struct SnowflakeResponse {
     pub(crate) message: Option<String>,
     pub(crate) success: bool,
     pub(crate) code: Option<String>,
+    pub(crate) sql_state: Option<String>,
+}
+
+impl SnowflakeResponse {
+    pub(crate) fn is_cancellation_marker(&self) -> bool {
+        !self.success
+            && (self.code.as_deref() == Some(QUERY_CANCELLED_CODE)
+                || self.sql_state.as_deref() == Some(QUERY_CANCELLED_SQL_STATE))
+    }
 }
 
 // Response metadata the runtime ignores is omitted from the deserialize DTOs:
@@ -47,6 +58,8 @@ struct BorrowedSnowflakeResponse<'a> {
     message: Option<String>,
     success: bool,
     code: Option<String>,
+    #[serde(rename = "sqlState")]
+    sql_state: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -67,6 +80,14 @@ struct BorrowedRawQueryResponse<'a> {
     qrmk: Option<String>,
     chunks: Option<Vec<RawQueryResponseChunk>>,
     query_result_format: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireAbortResponse {
+    pub(crate) success: bool,
+    pub(crate) code: Option<String>,
+    pub(crate) message: Option<String>,
 }
 
 /// Parse a response body, keeping the rowset as a zero-copy `Bytes` slice of the input.
@@ -105,6 +126,7 @@ pub(crate) fn parse_response(body: Bytes) -> Result<SnowflakeResponse, ProtocolE
         message: borrowed.message,
         success: borrowed.success,
         code: borrowed.code,
+        sql_state: borrowed.sql_state,
     })
 }
 
@@ -206,6 +228,33 @@ mod tests {
         );
         let resp = parse_response(body).unwrap();
         assert_eq!(resp.code.as_deref(), Some("390112"));
+    }
+
+    #[test]
+    fn parse_response_retains_sql_state_for_structured_error_classification() {
+        let body = Bytes::from(
+            r#"{"sqlState":"57014","message":"statement was cancelled","success":false}"#,
+        );
+        let response = parse_response(body).unwrap();
+        assert_eq!(response.sql_state.as_deref(), Some("57014"));
+    }
+
+    #[test]
+    fn cancellation_marker_recognizes_vendor_code_or_sql_state() {
+        for (code, sql_state) in [
+            (Some(QUERY_CANCELLED_CODE), None),
+            (None, Some(QUERY_CANCELLED_SQL_STATE)),
+        ] {
+            let response = SnowflakeResponse {
+                data: None,
+                message: Some("SQL execution canceled".to_string()),
+                success: false,
+                code: code.map(str::to_string),
+                sql_state: sql_state.map(str::to_string),
+            };
+
+            assert!(response.is_cancellation_marker());
+        }
     }
 
     #[test]

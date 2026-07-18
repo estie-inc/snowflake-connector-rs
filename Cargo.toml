@@ -169,3 +169,9 @@ name = "statement_bind"
 required-features = [
     "external-browser-sso",
 ]
+
+[[example]]
+name = "query_cancel"
+required-features = [
+    "external-browser-sso",
+]
