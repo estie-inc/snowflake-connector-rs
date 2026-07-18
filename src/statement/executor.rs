@@ -2,7 +2,10 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use crate::{
     QueryExecutionSettings,
-    error::{ProtocolError, QueryScopedError, QueryScopedResult, ServerError, SessionExpiredError},
+    error::{
+        CancelledError, ProtocolError, QueryScopedResult, ServerError, SessionExpiredError,
+        with_optional_query_id,
+    },
     result_cursor::{CollectPolicy, RemotePartitionSource, ResultCursor},
     runtime::QueryRuntime,
     statement::StatementParts,
@@ -10,6 +13,7 @@ use crate::{
 };
 
 use super::{
+    cancel::{QueryControl, SubmissionDecision},
     client::{QueryResponseDeadline, StatementApiClient},
     manifest::ResultManifest,
     wire::response::{
@@ -21,36 +25,9 @@ use super::{
 pub(crate) struct StatementExecutor {
     api: StatementApiClient,
     query_response_timeout: Duration,
+    query_cancel_request_timeout: Duration,
     default_collect_concurrency: NonZeroUsize,
     runtime: QueryRuntime,
-}
-
-struct QueryScopedResponse {
-    query_id: Arc<str>,
-    response: SnowflakeResponse,
-}
-
-impl QueryScopedResponse {
-    fn from_submit(response: SnowflakeResponse) -> Result<Self> {
-        match response
-            .data
-            .as_ref()
-            .map(|data| Arc::clone(&data.query_id))
-        {
-            Some(query_id) => Ok(Self { query_id, response }),
-            None if response.code.as_deref() == Some(SESSION_EXPIRED) => {
-                Err(SessionExpiredError::new(response.code, response.message, None).into())
-            }
-            None if !response.success => {
-                Err(ServerError::new(response.code, response.message, None).into())
-            }
-            None => Err(ProtocolError::missing_field("data").into()),
-        }
-    }
-
-    fn into_parts(self) -> (Arc<str>, SnowflakeResponse) {
-        (self.query_id, self.response)
-    }
 }
 
 impl StatementExecutor {
@@ -58,86 +35,127 @@ impl StatementExecutor {
         Self {
             api: StatementApiClient::new(Arc::clone(&session.shared), Arc::clone(&session.auth)),
             query_response_timeout: settings.query_response_timeout,
+            query_cancel_request_timeout: settings.query_cancel_request_timeout,
             default_collect_concurrency: settings.collect_prefetch_concurrency,
             runtime: session.shared.runtime.clone(),
         }
     }
 
-    pub(crate) async fn execute(self, parts: StatementParts) -> Result<ResultCursor> {
-        let deadline = QueryResponseDeadline::new(self.query_response_timeout);
-        let response = QueryScopedResponse::from_submit(self.api.submit(&parts, deadline).await?)?;
-        self.execute_query_scoped(response, deadline)
-            .await
-            .map_err(Error::from)
+    pub(crate) fn api_client(&self) -> StatementApiClient {
+        self.api.clone()
     }
 
-    async fn execute_query_scoped(
+    pub(crate) fn cancel_request_timeout(&self) -> Duration {
+        self.query_cancel_request_timeout
+    }
+
+    pub(crate) async fn execute(
         self,
-        response: QueryScopedResponse,
-        deadline: QueryResponseDeadline,
-    ) -> QueryScopedResult<ResultCursor> {
-        let (query_id, mut response) = response.into_parts();
+        parts: StatementParts,
+        control: Arc<QueryControl>,
+    ) -> Result<ResultCursor> {
+        let deadline = QueryResponseDeadline::new(self.query_response_timeout);
+
+        let prepared = self
+            .api
+            .prepare_submit(&parts, control.query_request_id())?;
+
+        let mut guard = match control.begin_submission() {
+            SubmissionDecision::Start(guard) => guard,
+            SubmissionDecision::CancelledBeforeSubmit => {
+                return Err(CancelledError::new(None, None, None).into());
+            }
+            SubmissionDecision::AlreadyStarted => {
+                return Err(Error::other("query execution has already started"));
+            }
+        };
+
+        let mut response = self.api.send_prepared_submit(prepared, deadline).await?;
+        if let Some(data) = response.data.as_ref() {
+            guard.record_query_id(Arc::clone(&data.query_id));
+        }
 
         let response_code = response.code.as_deref();
         if response_code == Some(QUERY_IN_PROGRESS_ASYNC_CODE)
             || response_code == Some(QUERY_IN_PROGRESS_CODE)
         {
-            let data = response
-                .data
-                .take()
-                .expect("query-scoped responses always carry a query id in data");
+            let Some(data) = response.data.take() else {
+                return Err(with_optional_query_id(
+                    ProtocolError::missing_field("data"),
+                    control.query_id(),
+                ));
+            };
             let Some(result_url) = data.get_result_url else {
-                return Err(QueryScopedError::new(
-                    query_id,
+                return Err(with_optional_query_id(
                     ProtocolError::no_polling_url(),
+                    control.query_id(),
                 ));
             };
 
             response = self
                 .api
-                .poll_async_results(&result_url, deadline, Arc::clone(&query_id))
-                .await?;
+                .poll_async_results(&result_url, deadline, Arc::clone(&data.query_id))
+                .await
+                .map_err(Error::from)?;
+            if let Some(data) = response.data.as_ref() {
+                guard.record_query_id(Arc::clone(&data.query_id));
+            }
         }
 
-        if let Some(SESSION_EXPIRED) = response.code.as_deref() {
-            return Err(QueryScopedError::new(
-                query_id,
-                SessionExpiredError::new(
-                    response.code,
-                    response.message,
-                    response.data.as_ref().map(|data| data.query_id.clone()),
+        // Mark terminality before building the local result manifest. Local schema/manifest failures do not make a
+        // completed server-side query look ambiguous.
+        guard.mark_terminal();
+        self.finish_response(response, &control)
+    }
+
+    fn finish_response(
+        self,
+        response: SnowflakeResponse,
+        control: &QueryControl,
+    ) -> Result<ResultCursor> {
+        let query_id = control.query_id();
+        if control.cancel_intent() && response.is_cancellation_marker() {
+            return Err(with_optional_query_id(
+                CancelledError::new(
+                    response.code.clone(),
+                    response.message.clone(),
+                    query_id.clone(),
                 ),
+                query_id,
+            ));
+        }
+
+        if response.code.as_deref() == Some(SESSION_EXPIRED) {
+            return Err(with_optional_query_id(
+                SessionExpiredError::new(response.code, response.message, query_id.clone()),
+                query_id,
             ));
         }
 
         if !response.success {
-            return Err(QueryScopedError::new(
+            return Err(with_optional_query_id(
+                ServerError::new(response.code, response.message, query_id.clone()),
                 query_id,
-                ServerError::new(
-                    response.code,
-                    response.message,
-                    response.data.as_ref().map(|data| data.query_id.clone()),
-                ),
             ));
         }
 
         let Some(data) = response.data else {
-            return Err(QueryScopedError::new(
-                query_id,
+            return Err(with_optional_query_id(
                 ProtocolError::missing_field("data"),
+                query_id,
             ));
         };
 
         if let Some(ref format) = data.query_result_format
             && format != "json"
         {
-            return Err(QueryScopedError::new(
-                query_id,
+            return Err(with_optional_query_id(
                 ProtocolError::unsupported_result_format(format.clone()),
+                query_id,
             ));
         }
 
-        self.build_result_set(data)
+        self.build_result_set(data).map_err(Error::from)
     }
 
     fn build_result_set(self, data: RawQueryResponse) -> QueryScopedResult<ResultCursor> {
@@ -173,11 +191,11 @@ mod tests {
     use super::*;
     use crate::{
         ClientShared, ErrorKind, QueryConfig, QueryOptions, Statement,
+        config::{DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT, DEFAULT_QUERY_RESPONSE_TIMEOUT},
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
         session::SessionAuth,
         statement::{
-            StatementParts,
             builder::into_statement_parts,
             client::StatementApiClient,
             wire::response::{RawQueryResponse, RawQueryResponseRowType},
@@ -208,7 +226,8 @@ mod tests {
     fn executor() -> StatementExecutor {
         StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
-            query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
+            query_response_timeout: DEFAULT_QUERY_RESPONSE_TIMEOUT,
+            query_cancel_request_timeout: DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime: QueryRuntime::new(),
         }
@@ -218,6 +237,7 @@ mod tests {
         StatementExecutor {
             api: test_statement_api(base_url),
             query_response_timeout: timeout,
+            query_cancel_request_timeout: DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime: QueryRuntime::new(),
         }
@@ -329,14 +349,18 @@ mod tests {
     }
 
     fn select_1_parts() -> StatementParts {
-        into_statement_parts(Statement::from("select 1"))
+        into_statement_parts(Statement::from("select 1")).unwrap()
+    }
+
+    fn fresh_control() -> Arc<QueryControl> {
+        QueryControl::new(Arc::from("query-request-id"))
     }
 
     async fn execute_single_response_err(body: &'static str) -> crate::Error {
         let session = test_session(spawn_single_response_server(body));
 
         match StatementExecutor::new(&session, default_settings(&session))
-            .execute(select_1_parts())
+            .execute(select_1_parts(), fresh_control())
             .await
         {
             Ok(_) => panic!("expected statement execution to fail"),
@@ -431,7 +455,7 @@ mod tests {
             Duration::from_millis(100),
         );
 
-        let err = match executor.execute(select_1_parts()).await {
+        let err = match executor.execute(select_1_parts(), fresh_control()).await {
             Ok(_) => panic!("submit timeout must fail"),
             Err(err) => err,
         };
@@ -452,7 +476,7 @@ mod tests {
             Duration::from_millis(150),
         );
 
-        let err = match executor.execute(select_1_parts()).await {
+        let err = match executor.execute(select_1_parts(), fresh_control()).await {
             Ok(_) => panic!("poll timeout must fail"),
             Err(err) => err,
         };
@@ -473,7 +497,7 @@ mod tests {
             Duration::from_millis(150),
         );
 
-        let err = match executor.execute(select_1_parts()).await {
+        let err = match executor.execute(select_1_parts(), fresh_control()).await {
             Ok(_) => panic!("blocking poll must time out"),
             Err(err) => err,
         };
@@ -496,7 +520,7 @@ mod tests {
         );
 
         let start = Instant::now();
-        let err = match executor.execute(select_1_parts()).await {
+        let err = match executor.execute(select_1_parts(), fresh_control()).await {
             Ok(_) => panic!("blocking poll must time out"),
             Err(err) => err,
         };
@@ -525,7 +549,7 @@ mod tests {
         );
 
         let mut result = executor
-            .execute(select_1_parts())
+            .execute(select_1_parts(), fresh_control())
             .await
             .expect("final response within deadline must build a cursor");
         let table = result
@@ -543,7 +567,7 @@ mod tests {
         ));
 
         let err = match StatementExecutor::new(&session, default_settings(&session))
-            .execute(select_1_parts())
+            .execute(select_1_parts(), fresh_control())
             .await
         {
             Ok(_) => panic!("unsupported result format must fail"),
@@ -562,7 +586,7 @@ mod tests {
         ));
 
         let err = match StatementExecutor::new(&session, default_settings(&session))
-            .execute(select_1_parts())
+            .execute(select_1_parts(), fresh_control())
             .await
         {
             Ok(_) => panic!("session expired response must fail"),
@@ -586,7 +610,7 @@ mod tests {
         ));
 
         let err = match StatementExecutor::new(&session, default_settings(&session))
-            .execute(select_1_parts())
+            .execute(select_1_parts(), fresh_control())
             .await
         {
             Ok(_) => panic!("session expired response must fail"),
@@ -610,7 +634,7 @@ mod tests {
         ));
 
         let err = match StatementExecutor::new(&session, default_settings(&session))
-            .execute(select_1_parts())
+            .execute(select_1_parts(), fresh_control())
             .await
         {
             Ok(_) => panic!("server error response must fail"),
@@ -624,11 +648,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancellation_marker_without_cancel_intent_remains_server_error() {
+        let err = execute_single_response_err(
+            r#"{"code":"000604","message":"SQL execution canceled","success":false,"data":{"queryId":"query-id"}}"#,
+        )
+        .await;
+
+        assert_eq!(err.kind(), ErrorKind::Server);
+        assert!(!err.is_cancelled());
+        assert_eq!(err.snowflake_code(), Some("000604"));
+        assert_eq!(err.query_id(), Some("query-id"));
+    }
+
+    #[tokio::test]
     async fn execute_network_failure_has_no_query_id() {
         let session = test_session(spawn_disconnect_server());
 
         let err = match StatementExecutor::new(&session, default_settings(&session))
-            .execute(select_1_parts())
+            .execute(select_1_parts(), fresh_control())
             .await
         {
             Ok(_) => panic!("network failure must not yield a result set"),
@@ -645,7 +682,8 @@ mod tests {
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
-            query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
+            query_response_timeout: DEFAULT_QUERY_RESPONSE_TIMEOUT,
+            query_cancel_request_timeout: DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
         };
@@ -688,7 +726,8 @@ mod tests {
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
-            query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
+            query_response_timeout: DEFAULT_QUERY_RESPONSE_TIMEOUT,
+            query_cancel_request_timeout: DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
         };
@@ -726,7 +765,8 @@ mod tests {
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
-            query_response_timeout: crate::config::DEFAULT_QUERY_RESPONSE_TIMEOUT,
+            query_response_timeout: DEFAULT_QUERY_RESPONSE_TIMEOUT,
+            query_cancel_request_timeout: DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
         };

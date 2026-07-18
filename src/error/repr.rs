@@ -14,6 +14,7 @@ pub(crate) enum Repr {
         query_id: Option<Arc<str>>,
     },
     Server(ServerError),
+    Cancelled(CancelledError),
     SessionExpired(SessionExpiredError),
     Timeout {
         error: TimeoutError,
@@ -77,6 +78,13 @@ pub(crate) struct ServerError {
 }
 
 #[derive(Debug)]
+pub(crate) struct CancelledError {
+    pub(crate) code: Option<Box<str>>,
+    pub(crate) message: Option<Box<str>>,
+    pub(crate) query_id: Option<Arc<str>>,
+}
+
+#[derive(Debug)]
 pub(crate) struct SessionExpiredError {
     pub(crate) code: Option<Box<str>>,
     pub(crate) message: Option<Box<str>>,
@@ -87,6 +95,7 @@ pub(crate) struct SessionExpiredError {
 pub(crate) enum TimeoutError {
     Request(reqwest::Error),
     Query,
+    QueryCancel,
     #[cfg(feature = "external-browser-sso")]
     BrowserCallback,
 }

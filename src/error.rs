@@ -23,10 +23,12 @@ pub use schema::{
 };
 
 pub(crate) use parse::RowsetParseError;
-pub(crate) use query_scoped::{QueryScopedError, QueryScopedRepr, QueryScopedResult};
+pub(crate) use query_scoped::{
+    QueryScopedError, QueryScopedRepr, QueryScopedResult, with_optional_query_id,
+};
 pub(crate) use repr::{
-    AuthError, ConfigError, InternalError, NetworkError, ProtocolError, ServerError,
-    SessionExpiredError, TimeoutError,
+    AuthError, CancelledError, ConfigError, InternalError, NetworkError, ProtocolError,
+    ServerError, SessionExpiredError, TimeoutError,
 };
 
 const VALUE_PREVIEW_MAX_CHARS: usize = 128;
@@ -44,6 +46,7 @@ const JSON_BODY_PREVIEW_MAX_BYTES: usize = 1024;
 ///
 /// - Snowflake-provided fields: [`snowflake_code`](Error::snowflake_code),
 ///   [`snowflake_message`](Error::snowflake_message), [`query_id`](Error::query_id)
+/// - Cancellation failures: [`is_cancelled`](Error::is_cancelled)
 /// - Decode failures: [`as_schema_error`](Error::as_schema_error) for schema validation failures,
 ///   [`as_cell_decode_error`](Error::as_cell_decode_error) for cell conversion failures,
 ///   [`as_custom_plan_error`](Error::as_custom_plan_error) for plan-time failures raised by a hand-written decoder,
@@ -119,6 +122,8 @@ pub enum ErrorKind {
     Network,
     /// Snowflake rejected the request and returned a server-side error message.
     Server,
+    /// A user-requested cancellation prevented submission or terminated the query.
+    Cancelled,
     /// The current session token is no longer valid.
     SessionExpired,
     /// The connector timed out while waiting for a response.
@@ -157,6 +162,7 @@ impl Error {
             Repr::Auth(_) => ErrorKind::Auth,
             Repr::Network { .. } => ErrorKind::Network,
             Repr::Server(_) => ErrorKind::Server,
+            Repr::Cancelled(_) => ErrorKind::Cancelled,
             Repr::SessionExpired(_) => ErrorKind::SessionExpired,
             Repr::Timeout { .. } => ErrorKind::Timeout,
             Repr::Protocol { .. } => ErrorKind::Protocol,
@@ -176,6 +182,7 @@ impl Error {
             Repr::Auth(AuthError::LoginRejected { message }) => message.as_deref(),
             Repr::SessionExpired(SessionExpiredError { message, .. }) => message.as_deref(),
             Repr::Server(ServerError { message, .. }) => message.as_deref(),
+            Repr::Cancelled(CancelledError { message, .. }) => message.as_deref(),
             _ => None,
         }
     }
@@ -185,6 +192,7 @@ impl Error {
         match &*self.repr {
             Repr::SessionExpired(SessionExpiredError { code, .. }) => code.as_deref(),
             Repr::Server(ServerError { code, .. }) => code.as_deref(),
+            Repr::Cancelled(CancelledError { code, .. }) => code.as_deref(),
             _ => None,
         }
     }
@@ -204,6 +212,7 @@ impl Error {
             | Repr::Protocol { query_id, .. }
             | Repr::Internal { query_id, .. } => query_id.as_deref(),
             Repr::Server(ServerError { query_id, .. }) => query_id.as_deref(),
+            Repr::Cancelled(CancelledError { query_id, .. }) => query_id.as_deref(),
             Repr::SessionExpired(SessionExpiredError { query_id, .. }) => query_id.as_deref(),
             _ => None,
         }
@@ -219,6 +228,11 @@ impl Error {
 
     pub fn is_server(&self) -> bool {
         matches!(&*self.repr, Repr::Server(_))
+    }
+
+    /// Reports whether this error is a cancellation, i.e. [`ErrorKind::Cancelled`].
+    pub fn is_cancelled(&self) -> bool {
+        matches!(&*self.repr, Repr::Cancelled(_))
     }
 
     pub fn as_cell_decode_error(&self) -> Option<&CellDecodeError> {
@@ -325,6 +339,12 @@ impl From<NetworkError> for Error {
 impl From<ServerError> for Error {
     fn from(error: ServerError) -> Self {
         Self::new(Repr::Server(error))
+    }
+}
+
+impl From<CancelledError> for Error {
+    fn from(error: CancelledError) -> Self {
+        Self::new(Repr::Cancelled(error))
     }
 }
 
@@ -500,6 +520,20 @@ impl ServerError {
     }
 }
 
+impl CancelledError {
+    pub(crate) fn new(
+        code: Option<String>,
+        message: Option<String>,
+        query_id: Option<Arc<str>>,
+    ) -> Self {
+        Self {
+            code: code.map(String::into_boxed_str),
+            message: message.map(String::into_boxed_str),
+            query_id,
+        }
+    }
+}
+
 impl SessionExpiredError {
     pub(crate) fn new(
         code: Option<String>,
@@ -525,6 +559,10 @@ impl TimeoutError {
 
     pub(crate) fn query() -> Self {
         Self::Query
+    }
+
+    pub(crate) fn query_cancel() -> Self {
+        Self::QueryCancel
     }
 
     #[cfg(feature = "external-browser-sso")]
@@ -743,6 +781,37 @@ mod tests {
         assert_eq!(server_err.snowflake_code(), Some("390100"));
         assert_eq!(server_err.snowflake_message(), None);
         assert_eq!(server_err.to_string(), "Snowflake server error 390100");
+    }
+
+    #[test]
+    fn cancelled_error_exposes_structured_details() {
+        let err: Error = CancelledError::new(
+            Some("000604".to_string()),
+            Some("SQL execution canceled".to_string()),
+            Some(Arc::from("query-id")),
+        )
+        .into();
+
+        assert_eq!(err.kind(), ErrorKind::Cancelled);
+        assert!(err.is_cancelled());
+        assert_eq!(err.snowflake_code(), Some("000604"));
+        assert_eq!(err.snowflake_message(), Some("SQL execution canceled"));
+        assert_eq!(err.query_id(), Some("query-id"));
+        assert_eq!(
+            err.to_string(),
+            "query cancelled: SQL execution canceled (query id: query-id)"
+        );
+    }
+
+    #[test]
+    fn cancelled_error_without_server_fields_has_stable_display() {
+        let err: Error = CancelledError::new(None, None, None).into();
+        assert_eq!(err.kind(), ErrorKind::Cancelled);
+        assert!(err.is_cancelled());
+        assert_eq!(err.to_string(), "query cancelled");
+        assert_eq!(err.snowflake_code(), None);
+        assert_eq!(err.snowflake_message(), None);
+        assert_eq!(err.query_id(), None);
     }
 
     #[test]

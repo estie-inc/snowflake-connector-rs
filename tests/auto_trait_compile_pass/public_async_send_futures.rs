@@ -3,9 +3,9 @@
 use std::rc::Rc;
 
 use snowflake_connector_rs::{
-    Client, CollectOptions, DynamicRow, FromRow, ResultCursor, RowPlanContext, RowRef,
+    Client, CollectOptions, DynamicRow, FromRow, QueryCanceller, QueryHandle, ResultCursor,
+    RowPlanContext, RowRef, Session,
     decode::{PlanBuildResult, RowDecodeResult},
-    Session,
 };
 
 fn client() -> Client {
@@ -17,6 +17,14 @@ fn session() -> Session {
 }
 
 fn result_cursor() -> ResultCursor {
+    unreachable!()
+}
+
+fn query_handle() -> QueryHandle {
+    unreachable!()
+}
+
+fn query_canceller() -> QueryCanceller {
     unreachable!()
 }
 
@@ -52,6 +60,11 @@ fn checks() {
     // Public untyped collect futures are Send.
     assert_send(result_cursor().collect::<Vec<DynamicRow>>());
     assert_send(result_cursor().collect_with_options::<Vec<DynamicRow>>(CollectOptions::default()));
+
+    // Active query-cancel futures are Send, and their owning handles meet the public auto-trait contract.
+    assert_send(query_handle().execute());
+    assert_send(query_handle().execute_as::<SendRow>());
+    assert_send(query_canceller().cancel());
 
     // Session query futures are Send for representative statements.
     let session = session();
