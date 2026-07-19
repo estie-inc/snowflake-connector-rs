@@ -9,7 +9,7 @@ use crate::{
     Result, ResultTable,
     result_table::Schema,
     rowset::{self, parser},
-    statement::parse_response,
+    statement::parse_query_response,
 };
 
 pub use crate::result_table::test_data::{column_type, make_result_table_from_rows, make_schema};
@@ -22,7 +22,7 @@ pub struct StatementEnvelopeSummary {
 }
 
 pub fn parse_statement_envelope(body: Bytes) -> Result<StatementEnvelopeSummary> {
-    let response = parse_response(body)?;
+    let response = parse_query_response(body)?;
     let Some(data) = response.data else {
         return Ok(StatementEnvelopeSummary {
             rowset_bytes: None,

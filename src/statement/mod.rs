@@ -13,4 +13,4 @@ pub(crate) use executor::StatementExecutor;
 pub use handle::{QueryCancelStatus, QueryCanceller, QueryHandle};
 
 #[cfg(feature = "bench-internals")]
-pub(crate) use wire::response::parse_response;
+pub(crate) use wire::response::parse_query_response;

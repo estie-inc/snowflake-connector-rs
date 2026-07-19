@@ -17,8 +17,8 @@ use super::{
     client::{QueryResponseDeadline, StatementApiClient},
     manifest::ResultManifest,
     wire::response::{
-        QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, RawQueryResponse, SESSION_EXPIRED,
-        SnowflakeResponse,
+        QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, SESSION_EXPIRED, WireQueryData,
+        WireQueryResponse,
     },
 };
 
@@ -110,7 +110,7 @@ impl StatementExecutor {
 
     fn finish_response(
         self,
-        response: SnowflakeResponse,
+        response: WireQueryResponse,
         control: &QueryControl,
     ) -> Result<ResultCursor> {
         let query_id = control.query_id();
@@ -158,7 +158,7 @@ impl StatementExecutor {
         self.build_result_set(data).map_err(Error::from)
     }
 
-    fn build_result_set(self, data: RawQueryResponse) -> QueryScopedResult<ResultCursor> {
+    fn build_result_set(self, data: WireQueryData) -> QueryScopedResult<ResultCursor> {
         let manifest = ResultManifest::try_from(data)?;
 
         let source = RemotePartitionSource::new(manifest.lease, self.api.http_client());
@@ -198,7 +198,7 @@ mod tests {
         statement::{
             builder::into_statement_parts,
             client::StatementApiClient,
-            wire::response::{RawQueryResponse, RawQueryResponseRowType},
+            wire::response::{WireQueryData, WireRowType},
         },
     };
 
@@ -322,8 +322,8 @@ mod tests {
         Url::parse(&format!("http://{addr}/")).unwrap()
     }
 
-    fn text_row_type(name: &str) -> RawQueryResponseRowType {
-        RawQueryResponseRowType {
+    fn text_row_type(name: &str) -> WireRowType {
+        WireRowType {
             name: name.to_string(),
             nullable: false,
             scale: None,
@@ -333,8 +333,8 @@ mod tests {
         }
     }
 
-    fn whitespace_empty_inline_response(rowset: &'static [u8]) -> RawQueryResponse {
-        RawQueryResponse {
+    fn whitespace_empty_inline_query_data(rowset: &'static [u8]) -> WireQueryData {
+        WireQueryData {
             query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: None,
@@ -687,7 +687,7 @@ mod tests {
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
         };
-        let response = RawQueryResponse {
+        let response = WireQueryData {
             query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: Some(BLOCKING_PARSE_CELLS as i64),
@@ -731,7 +731,7 @@ mod tests {
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
         };
-        let response = RawQueryResponse {
+        let response = WireQueryData {
             query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: Some(BLOCKING_PARSE_CELLS as i64),
@@ -770,7 +770,7 @@ mod tests {
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
             runtime,
         };
-        let response = RawQueryResponse {
+        let response = WireQueryData {
             query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: Some(BLOCKING_PARSE_CELLS as i64),
@@ -802,7 +802,7 @@ mod tests {
     async fn whitespace_only_empty_inline_rowset_does_not_create_inline_partition() {
         for rowset in [b"[ ]".as_slice(), b"[\n]".as_slice()] {
             let mut result = executor()
-                .build_result_set(whitespace_empty_inline_response(rowset))
+                .build_result_set(whitespace_empty_inline_query_data(rowset))
                 .unwrap();
             assert_eq!(result.schema().len(), 1);
             assert!(result.is_exhausted());

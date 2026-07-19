@@ -9,7 +9,7 @@ use crate::{
     rowset::parser::inline_rowset_has_rows_inner,
 };
 
-use super::wire::response::{RawQueryResponse, resolve_download_headers};
+use super::wire::response::{WireQueryData, resolve_download_headers};
 
 pub(crate) struct ResultManifest {
     pub(crate) snapshot: Arc<ResultSnapshot>,
@@ -17,11 +17,11 @@ pub(crate) struct ResultManifest {
     pub(crate) inline_rowset: Option<InlineRowset>,
 }
 
-impl TryFrom<RawQueryResponse> for ResultManifest {
+impl TryFrom<WireQueryData> for ResultManifest {
     type Error = QueryScopedError;
 
-    fn try_from(value: RawQueryResponse) -> QueryScopedResult<Self> {
-        let RawQueryResponse {
+    fn try_from(value: WireQueryData) -> QueryScopedResult<Self> {
+        let WireQueryData {
             query_id,
             returned,
             total,
@@ -141,15 +141,15 @@ mod tests {
     use super::*;
     use crate::{
         ErrorKind,
-        statement::wire::response::{RawQueryResponseChunk, RawQueryResponseRowType},
+        statement::wire::response::{WireChunk, WireRowType},
     };
 
-    fn response_with_result_data(
+    fn query_data_with_result_data(
         row_set_bytes: Option<Bytes>,
-        row_types: Option<Vec<RawQueryResponseRowType>>,
-        chunks: Option<Vec<RawQueryResponseChunk>>,
-    ) -> RawQueryResponse {
-        RawQueryResponse {
+        row_types: Option<Vec<WireRowType>>,
+        chunks: Option<Vec<WireChunk>>,
+    ) -> WireQueryData {
+        WireQueryData {
             query_id: Arc::from("query-id"),
             get_result_url: None,
             returned: Some(1),
@@ -163,8 +163,8 @@ mod tests {
         }
     }
 
-    fn chunk() -> RawQueryResponseChunk {
-        RawQueryResponseChunk {
+    fn chunk() -> WireChunk {
+        WireChunk {
             url: "https://example.com/chunk/0".to_string(),
             row_count: 1,
             uncompressed_size: 16,
@@ -172,15 +172,15 @@ mod tests {
         }
     }
 
-    fn manifest_protocol_error(response: RawQueryResponse) -> crate::Error {
-        match ResultManifest::try_from(response) {
+    fn manifest_protocol_error(query_data: WireQueryData) -> crate::Error {
+        match ResultManifest::try_from(query_data) {
             Ok(_) => panic!("result data without valid rowtype metadata must fail"),
             Err(err) => crate::Error::from(err),
         }
     }
 
-    fn text_row_type(name: &str) -> RawQueryResponseRowType {
-        RawQueryResponseRowType {
+    fn text_row_type(name: &str) -> WireRowType {
+        WireRowType {
             name: name.to_string(),
             nullable: false,
             scale: None,
@@ -192,15 +192,15 @@ mod tests {
 
     #[test]
     fn manifest_requires_non_empty_rowtype_when_result_data_is_present() {
-        for (label, response, expected_message) in [
+        for (label, query_data, expected_message) in [
             (
                 "inline missing",
-                response_with_result_data(Some(Bytes::from_static(br#"[["x"]]"#)), None, None),
+                query_data_with_result_data(Some(Bytes::from_static(br#"[["x"]]"#)), None, None),
                 "missing required field in Snowflake response: data.rowtype",
             ),
             (
                 "inline empty",
-                response_with_result_data(
+                query_data_with_result_data(
                     Some(Bytes::from_static(br#"[["x"]]"#)),
                     Some(Vec::new()),
                     None,
@@ -209,16 +209,16 @@ mod tests {
             ),
             (
                 "chunk missing",
-                response_with_result_data(None, None, Some(vec![chunk()])),
+                query_data_with_result_data(None, None, Some(vec![chunk()])),
                 "missing required field in Snowflake response: data.rowtype",
             ),
             (
                 "chunk empty",
-                response_with_result_data(None, Some(Vec::new()), Some(vec![chunk()])),
+                query_data_with_result_data(None, Some(Vec::new()), Some(vec![chunk()])),
                 "invalid Snowflake response field data.rowtype: must not be empty when result data is present",
             ),
         ] {
-            let err = manifest_protocol_error(response);
+            let err = manifest_protocol_error(query_data);
             assert_eq!(err.kind(), ErrorKind::Protocol, "{label}");
             assert_eq!(err.to_string(), expected_message, "{label}");
         }
@@ -226,13 +226,13 @@ mod tests {
 
     #[test]
     fn manifest_accepts_non_empty_rowtype_when_result_data_is_present() {
-        let response = response_with_result_data(
+        let query_data = query_data_with_result_data(
             Some(Bytes::from_static(br#"[["x"]]"#)),
             Some(vec![text_row_type("X")]),
             None,
         );
 
-        let manifest = ResultManifest::try_from(response).unwrap();
+        let manifest = ResultManifest::try_from(query_data).unwrap();
         assert_eq!(manifest.snapshot.schema.len(), 1);
         assert_eq!(manifest.snapshot.partitions.len(), 1);
         assert!(matches!(

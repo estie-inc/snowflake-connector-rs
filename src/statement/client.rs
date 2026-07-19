@@ -23,7 +23,7 @@ use crate::{
             request::{WireAbortBody, WireQueryBody},
             response::{
                 QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, SESSION_EXPIRED,
-                SnowflakeResponse, WireAbortResponse, parse_response,
+                WireAbortResponse, WireQueryResponse, parse_query_response,
             },
         },
     },
@@ -123,7 +123,7 @@ impl StatementApiClient {
         &self,
         prepared: PreparedSubmit,
         deadline: QueryResponseDeadline,
-    ) -> Result<SnowflakeResponse> {
+    ) -> Result<WireQueryResponse> {
         let remaining = deadline.remaining_or_timeout()?;
 
         let body = match timeout(remaining, async {
@@ -148,7 +148,7 @@ impl StatementApiClient {
             Err(_elapsed) => return Err(TimeoutError::query().into()),
         };
 
-        parse_response(body).map_err(Error::from)
+        parse_query_response(body).map_err(Error::from)
     }
 
     pub(crate) async fn abort_query(
@@ -263,7 +263,7 @@ impl StatementApiClient {
         poll_relative_url: &str,
         deadline: QueryResponseDeadline,
         query_id: Arc<str>,
-    ) -> QueryScopedResult<SnowflakeResponse> {
+    ) -> QueryScopedResult<WireQueryResponse> {
         let poll_url = match resolve_poll_url(&self.shared.base_url, poll_relative_url) {
             Ok(url) => url,
             Err(err) => {
@@ -321,7 +321,7 @@ impl StatementApiClient {
                 ));
             }
 
-            match parse_response(body) {
+            match parse_query_response(body) {
                 Ok(response)
                     if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE)
                         && response.code.as_deref() != Some(QUERY_IN_PROGRESS_CODE) =>
