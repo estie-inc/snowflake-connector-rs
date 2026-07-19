@@ -491,18 +491,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        ClientShared, ErrorKind, QueryConfig, Statement, runtime::QueryRuntime,
-        session::SessionAuth, statement::builder::into_statement_parts,
+        ClientSharedPartial, ErrorKind, Statement, session::SessionAuth,
+        statement::builder::into_statement_parts,
     };
 
     fn test_statement_api(base_url: Url) -> StatementApiClient {
         StatementApiClient::new(
-            ClientShared::for_test_with(
-                reqwest::Client::new(),
-                base_url,
-                QueryConfig::default().into(),
-                QueryRuntime::new(),
-            ),
+            ClientSharedPartial::new().with_base_url(base_url).build(),
             SessionAuth::for_test("test-token"),
         )
     }
@@ -562,15 +557,15 @@ mod tests {
         });
 
         let client = StatementApiClient::new(
-            ClientShared::for_test_with(
-                reqwest::Client::builder()
-                    .timeout(Duration::from_millis(50))
-                    .build()
-                    .unwrap(),
-                Url::parse(&format!("http://{addr}/")).unwrap(),
-                QueryConfig::default().into(),
-                QueryRuntime::new(),
-            ),
+            ClientSharedPartial::new()
+                .with_http(
+                    reqwest::Client::builder()
+                        .timeout(Duration::from_millis(50))
+                        .build()
+                        .unwrap(),
+                )
+                .with_base_url(Url::parse(&format!("http://{addr}/")).unwrap())
+                .build(),
             SessionAuth::for_test("test-token"),
         );
 

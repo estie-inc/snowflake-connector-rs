@@ -213,9 +213,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{
-        ClientShared, ErrorKind, QueryCancelStatus, QueryConfig, Statement, runtime::QueryRuntime,
-    };
+    use crate::{ClientSharedPartial, ErrorKind, QueryCancelStatus, QueryConfig, Statement};
 
     fn test_session(base_url: Url) -> Session {
         test_session_with_config(base_url, QueryConfig::default())
@@ -223,12 +221,10 @@ mod tests {
 
     fn test_session_with_config(base_url: Url, config: QueryConfig) -> Session {
         Session {
-            shared: ClientShared::for_test_with(
-                reqwest::Client::new(),
-                base_url,
-                config.into(),
-                QueryRuntime::new(),
-            ),
+            shared: ClientSharedPartial::new()
+                .with_base_url(base_url)
+                .with_query(config.into())
+                .build(),
             auth: SessionAuth::for_test("test-token"),
         }
     }

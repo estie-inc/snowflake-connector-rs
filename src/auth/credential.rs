@@ -142,16 +142,12 @@ fn prepare_jwt_credential(
 
 #[cfg(test)]
 mod tests {
-    use reqwest::Url;
-
     use super::*;
 
-    use crate::{ClientShared, PasswordConfig};
+    use crate::{ClientSharedPartial, PasswordConfig};
 
     fn dummy_client() -> AuthApiClient {
-        AuthApiClient::new(ClientShared::for_test(
-            Url::parse("https://example.com/").unwrap(),
-        ))
+        AuthApiClient::new(ClientSharedPartial::new().build())
     }
 
     #[tokio::test]
