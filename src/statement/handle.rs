@@ -8,8 +8,8 @@ use crate::{
 
 use super::{
     StatementExecutor, StatementParts,
+    api::QueryApiClient,
     cancel::{CancelDecision, QueryControl},
-    client::StatementApiClient,
 };
 
 /// What a successful [`QueryCanceller::cancel`] call achieved.
@@ -42,7 +42,7 @@ pub struct QueryHandle {
 /// has been dropped.
 #[derive(Clone)]
 pub struct QueryCanceller {
-    api: StatementApiClient,
+    api: QueryApiClient,
     control: Arc<QueryControl>,
     request_timeout: Duration,
 }

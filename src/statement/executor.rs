@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::{
+    api::{QueryApiClient, QueryResponseDeadline},
     cancel::{QueryControl, SubmissionDecision},
-    client::{QueryResponseDeadline, StatementApiClient},
     manifest::ResultManifest,
     wire::response::{
         QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, SESSION_EXPIRED, WireQueryData,
@@ -23,7 +23,7 @@ use super::{
 };
 
 pub(crate) struct StatementExecutor {
-    api: StatementApiClient,
+    api: QueryApiClient,
     query_response_timeout: Duration,
     query_cancel_request_timeout: Duration,
     default_collect_concurrency: NonZeroUsize,
@@ -33,7 +33,7 @@ pub(crate) struct StatementExecutor {
 impl StatementExecutor {
     pub(crate) fn new(session: &Session, settings: QueryExecutionSettings) -> Self {
         Self {
-            api: StatementApiClient::new(Arc::clone(&session.shared), Arc::clone(&session.auth)),
+            api: QueryApiClient::new(Arc::clone(&session.shared), Arc::clone(&session.auth)),
             query_response_timeout: settings.query_response_timeout,
             query_cancel_request_timeout: settings.query_cancel_request_timeout,
             default_collect_concurrency: settings.collect_prefetch_concurrency,
@@ -41,7 +41,7 @@ impl StatementExecutor {
         }
     }
 
-    pub(crate) fn api_client(&self) -> StatementApiClient {
+    pub(crate) fn api_client(&self) -> QueryApiClient {
         self.api.clone()
     }
 
@@ -196,8 +196,8 @@ mod tests {
         runtime::QueryRuntime,
         session::SessionAuth,
         statement::{
+            api::QueryApiClient,
             builder::into_statement_parts,
-            client::StatementApiClient,
             wire::response::{WireQueryData, WireRowType},
         },
     };
@@ -209,8 +209,8 @@ mod tests {
             .resolve_options(QueryOptions::default())
     }
 
-    fn test_statement_api(base_url: Url) -> StatementApiClient {
-        StatementApiClient::new(
+    fn test_statement_api(base_url: Url) -> QueryApiClient {
+        QueryApiClient::new(
             ClientSharedPartial::new().with_base_url(base_url).build(),
             SessionAuth::for_test("test-token"),
         )

@@ -4,7 +4,7 @@ use chrono::Utc;
 use crate::{
     AuthConfig, Result,
     auth::{
-        client::AuthApiClient,
+        api::AuthApiClient,
         config::{AuthConfigKind, PasscodeMode},
         wire::{LoginCredentialWire, PasscodeWire},
     },

@@ -1,4 +1,4 @@
-mod client;
+mod api;
 pub(crate) mod config;
 mod credential;
 #[cfg(feature = "external-browser-sso")]
