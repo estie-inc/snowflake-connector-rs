@@ -66,7 +66,7 @@ impl fmt::Debug for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The session token authenticates every request; never print it.
         f.debug_struct("Session")
-            .field("base_url", &self.shared.base_url)
+            .field("base_url", &self.shared.api.base_url())
             .field("session_token", &"<redacted>")
             .field("query", &self.shared.query)
             .finish_non_exhaustive()
@@ -204,16 +204,15 @@ impl Session {
 mod tests {
     use std::time::Duration;
 
+    use http::StatusCode;
     use reqwest::Url;
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-        sync::oneshot,
-        time::timeout,
-    };
+    use tokio::{net::TcpListener, sync::oneshot, time::timeout};
 
     use super::*;
-    use crate::{ClientSharedPartial, ErrorKind, QueryCancelStatus, QueryConfig, Statement};
+    use crate::{
+        ClientSharedPartial, ErrorKind, QueryCancelStatus, QueryConfig, Statement,
+        test_support::http::{read_http_request, write_json_response},
+    };
 
     fn test_session(base_url: Url) -> Session {
         test_session_with_config(base_url, QueryConfig::default())
@@ -260,18 +259,19 @@ mod tests {
         let (query_ready_tx, query_ready_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut query_socket, _) = listener.accept().await.unwrap();
-            let query_request = read_http_request(&mut query_socket).await;
+            let query_request = read_http_request(&mut query_socket).await.unwrap();
             query_ready_tx.send(query_request.clone()).unwrap();
 
             let (mut abort_socket, _) = listener.accept().await.unwrap();
-            let abort_request = read_http_request(&mut abort_socket).await;
-            write_http_response(&mut abort_socket, 200, r#"{"success":true}"#).await;
-            write_http_response(
+            let abort_request = read_http_request(&mut abort_socket).await.unwrap();
+            write_json_response(&mut abort_socket, StatusCode::OK, r#"{"success":true}"#)
+                .await
+                .unwrap();
+            write_json_response(
                 &mut query_socket,
-                200,
+                StatusCode::OK,
                 r#"{"code":"000604","message":"SQL execution canceled","success":false,"data":{"queryId":"query-id"}}"#,
-            )
-            .await;
+            ).await.unwrap();
             (query_request, abort_request)
         });
 
@@ -314,11 +314,13 @@ mod tests {
         let (query_ready_tx, query_ready_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut query_socket, _) = listener.accept().await.unwrap();
-            let query_request = read_http_request(&mut query_socket).await;
+            let query_request = read_http_request(&mut query_socket).await.unwrap();
             query_ready_tx.send(()).unwrap();
             let (mut abort_socket, _) = listener.accept().await.unwrap();
-            let abort_request = read_http_request(&mut abort_socket).await;
-            write_http_response(&mut abort_socket, 200, r#"{"success":true}"#).await;
+            let abort_request = read_http_request(&mut abort_socket).await.unwrap();
+            write_json_response(&mut abort_socket, StatusCode::OK, r#"{"success":true}"#)
+                .await
+                .unwrap();
             (query_request, abort_request)
         });
 
@@ -342,13 +344,12 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let _request = read_http_request(&mut socket).await;
-            write_http_response(
+            let _request = read_http_request(&mut socket).await.unwrap();
+            write_json_response(
                 &mut socket,
-                200,
+                StatusCode::OK,
                 r#"{"success":true,"data":{"queryId":"query-id","rowset":[],"rowtype":[],"queryResultFormat":"json"}}"#,
-            )
-            .await;
+            ).await.unwrap();
             timeout(Duration::from_millis(200), listener.accept())
                 .await
                 .is_err()
@@ -394,18 +395,22 @@ mod tests {
         let (query_ready_tx, query_ready_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut query_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut query_socket).await;
+            read_http_request(&mut query_socket).await.unwrap();
             query_ready_tx.send(()).unwrap();
 
             let (mut abort_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut abort_socket).await;
-            write_http_response(&mut abort_socket, 200, r#"{"success":true}"#).await;
+            read_http_request(&mut abort_socket).await.unwrap();
+            write_json_response(&mut abort_socket, StatusCode::OK, r#"{"success":true}"#)
+                .await
+                .unwrap();
 
             // The first accepted abort caches its outcome, so a concurrent caller must not open a second connection.
             let no_second_abort = timeout(Duration::from_millis(200), listener.accept())
                 .await
                 .is_err();
-            write_http_response(&mut query_socket, 200, CANCELLED_QUERY_RESPONSE).await;
+            write_json_response(&mut query_socket, StatusCode::OK, CANCELLED_QUERY_RESPONSE)
+                .await
+                .unwrap();
             no_second_abort
         });
 
@@ -435,18 +440,28 @@ mod tests {
         let (query_ready_tx, query_ready_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut query_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut query_socket).await;
+            read_http_request(&mut query_socket).await.unwrap();
             query_ready_tx.send(()).unwrap();
 
             let (mut first_abort, _) = listener.accept().await.unwrap();
-            let first_request = read_http_request(&mut first_abort).await;
-            write_http_response(&mut first_abort, 400, r#"{"error":"bad request"}"#).await;
+            let first_request = read_http_request(&mut first_abort).await.unwrap();
+            write_json_response(
+                &mut first_abort,
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"bad request"}"#,
+            )
+            .await
+            .unwrap();
 
             let (mut second_abort, _) = listener.accept().await.unwrap();
-            let second_request = read_http_request(&mut second_abort).await;
-            write_http_response(&mut second_abort, 200, r#"{"success":true}"#).await;
+            let second_request = read_http_request(&mut second_abort).await.unwrap();
+            write_json_response(&mut second_abort, StatusCode::OK, r#"{"success":true}"#)
+                .await
+                .unwrap();
 
-            write_http_response(&mut query_socket, 200, CANCELLED_QUERY_RESPONSE).await;
+            write_json_response(&mut query_socket, StatusCode::OK, CANCELLED_QUERY_RESPONSE)
+                .await
+                .unwrap();
             (first_request, second_request)
         });
 
@@ -495,12 +510,12 @@ mod tests {
         let (query_ready_tx, query_ready_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut query_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut query_socket).await;
+            read_http_request(&mut query_socket).await.unwrap();
             query_ready_tx.send(()).unwrap();
 
             // Accept the one abort and never answer it; the client drops the future while still awaiting the response.
             let (mut abort_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut abort_socket).await;
+            read_http_request(&mut abort_socket).await.unwrap();
 
             let no_retry = timeout(Duration::from_millis(300), listener.accept())
                 .await
@@ -540,11 +555,13 @@ mod tests {
             // Accept the query but never answer it, so the client-side query-response deadline elapses and the
             // execution guard drops into `OutcomeUnknown`.
             let (mut query_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut query_socket).await;
+            read_http_request(&mut query_socket).await.unwrap();
 
             let (mut abort_socket, _) = listener.accept().await.unwrap();
-            let abort_request = read_http_request(&mut abort_socket).await;
-            write_http_response(&mut abort_socket, 200, r#"{"success":true}"#).await;
+            let abort_request = read_http_request(&mut abort_socket).await.unwrap();
+            write_json_response(&mut abort_socket, StatusCode::OK, r#"{"success":true}"#)
+                .await
+                .unwrap();
             drop(query_socket);
             abort_request
         });
@@ -583,16 +600,20 @@ mod tests {
         let (query_ready_tx, query_ready_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut query_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut query_socket).await;
+            read_http_request(&mut query_socket).await.unwrap();
             query_ready_tx.send(()).unwrap();
 
             let (mut abort_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut abort_socket).await;
+            read_http_request(&mut abort_socket).await.unwrap();
 
             // The query completes successfully before its abort is answered: a recorded cancel intent must not turn a
             // non-cancellation terminal response into a `Cancelled` error.
-            write_http_response(&mut query_socket, 200, SUCCESS_QUERY_RESPONSE).await;
-            write_http_response(&mut abort_socket, 200, r#"{"success":true}"#).await;
+            write_json_response(&mut query_socket, StatusCode::OK, SUCCESS_QUERY_RESPONSE)
+                .await
+                .unwrap();
+            write_json_response(&mut abort_socket, StatusCode::OK, r#"{"success":true}"#)
+                .await
+                .unwrap();
         });
 
         let session = test_session(Url::parse(&format!("http://{addr}/")).unwrap());
@@ -619,21 +640,22 @@ mod tests {
         let (query_ready_tx, query_ready_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut query_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut query_socket).await;
+            read_http_request(&mut query_socket).await.unwrap();
             query_ready_tx.send(()).unwrap();
 
             let (mut abort_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut abort_socket).await;
-            write_http_response(&mut abort_socket, 200, r#"{"success":true}"#).await;
+            read_http_request(&mut abort_socket).await.unwrap();
+            write_json_response(&mut abort_socket, StatusCode::OK, r#"{"success":true}"#)
+                .await
+                .unwrap();
 
             // A `success:true` payload is authoritative even when it carries a cancellation code, so the cancel intent
             // must not discard it as a `Cancelled` error.
-            write_http_response(
+            write_json_response(
                 &mut query_socket,
-                200,
+                StatusCode::OK,
                 r#"{"code":"000604","success":true,"data":{"queryId":"query-id","rowset":[],"rowtype":[],"queryResultFormat":"json"}}"#,
-            )
-            .await;
+            ).await.unwrap();
         });
 
         let session = test_session(Url::parse(&format!("http://{addr}/")).unwrap());
@@ -662,20 +684,21 @@ mod tests {
         let (query_ready_tx, query_ready_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut query_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut query_socket).await;
+            read_http_request(&mut query_socket).await.unwrap();
             query_ready_tx.send(()).unwrap();
 
             let (mut abort_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut abort_socket).await;
-            write_http_response(&mut abort_socket, 200, r#"{"success":true}"#).await;
+            read_http_request(&mut abort_socket).await.unwrap();
+            write_json_response(&mut abort_socket, StatusCode::OK, r#"{"success":true}"#)
+                .await
+                .unwrap();
 
             // No top-level `code`; cancellation is signaled only through `sqlState`.
-            write_http_response(
+            write_json_response(
                 &mut query_socket,
-                200,
+                StatusCode::OK,
                 r#"{"sqlState":"57014","message":"SQL execution canceled","success":false,"data":{"queryId":"query-id"}}"#,
-            )
-            .await;
+            ).await.unwrap();
         });
 
         let session = test_session(Url::parse(&format!("http://{addr}/")).unwrap());
@@ -709,17 +732,18 @@ mod tests {
         let (query_ready_tx, query_ready_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut query_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut query_socket).await;
+            read_http_request(&mut query_socket).await.unwrap();
             query_ready_tx.send(()).unwrap();
 
             let (mut abort_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut abort_socket).await;
-            write_http_response(
+            read_http_request(&mut abort_socket).await.unwrap();
+            write_json_response(
                 &mut abort_socket,
-                200,
+                StatusCode::OK,
                 r#"{"success":false,"code":"390112","message":"session expired"}"#,
             )
-            .await;
+            .await
+            .unwrap();
             drop(query_socket);
         });
 
@@ -736,46 +760,5 @@ mod tests {
         execution.abort();
         let _ = execution.await;
         server.await.unwrap();
-    }
-
-    async fn read_http_request(socket: &mut tokio::net::TcpStream) -> String {
-        let mut bytes = Vec::new();
-        let mut chunk = [0_u8; 1024];
-        let body_start;
-        let body_length;
-
-        loop {
-            let read = socket.read(&mut chunk).await.unwrap();
-            assert!(read > 0, "connection closed before request completed");
-            bytes.extend_from_slice(&chunk[..read]);
-            if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-                body_start = index + 4;
-                let headers = String::from_utf8_lossy(&bytes[..index]);
-                body_length = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.strip_prefix("content-length:")
-                            .or_else(|| line.strip_prefix("Content-Length:"))
-                    })
-                    .and_then(|value| value.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                break;
-            }
-        }
-
-        while bytes.len() < body_start + body_length {
-            let read = socket.read(&mut chunk).await.unwrap();
-            assert!(read > 0, "connection closed before request body completed");
-            bytes.extend_from_slice(&chunk[..read]);
-        }
-        String::from_utf8(bytes).unwrap()
-    }
-
-    async fn write_http_response(socket: &mut tokio::net::TcpStream, status: u16, body: &str) {
-        let response = format!(
-            "HTTP/1.1 {status} OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        socket.write_all(response.as_bytes()).await.unwrap();
     }
 }

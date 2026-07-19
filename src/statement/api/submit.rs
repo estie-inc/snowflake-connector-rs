@@ -1,10 +1,13 @@
 use bytes::Bytes;
-use http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use http::{
+    Method,
+    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
+};
 use tokio::time::timeout;
 
 use crate::{
     Error, Result,
-    error::{ConfigError, NetworkError, TimeoutError, classify_request_error},
+    error::{NetworkError, TimeoutError, classify_request_error},
     statement::{
         StatementParts,
         wire::{
@@ -26,11 +29,7 @@ impl QueryApiClient {
         parts: &StatementParts,
         query_request_id: &str,
     ) -> Result<PreparedSubmit> {
-        let mut url = self
-            .shared
-            .base_url
-            .join("queries/v1/query-request")
-            .map_err(|e| ConfigError::invalid_url(e.to_string()))?;
+        let mut url = self.api.resolve("queries/v1/query-request")?;
         url.query_pairs_mut()
             .append_pair("requestId", query_request_id);
 
@@ -41,9 +40,8 @@ impl QueryApiClient {
         );
 
         let request = self
-            .shared
-            .http
-            .post(url)
+            .api
+            .request(Method::POST, url)
             .header(ACCEPT, "application/snowflake")
             .header(CONTENT_TYPE, "application/json")
             .header(
@@ -90,19 +88,19 @@ impl QueryApiClient {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
+    use http::StatusCode;
     use reqwest::Url;
     use tokio::net::TcpListener;
 
     use super::*;
     use crate::{
-        ClientSharedPartial, ErrorKind, Statement,
+        ApiContext, ErrorKind, Statement,
+        api_context::DEFAULT_USER_AGENT,
         session::SessionAuth,
-        statement::{
-            api::test_support::{read_http_request, test_query_api, write_http_response},
-            builder::into_statement_parts,
-        },
+        statement::{api::test_support::test_query_api, builder::into_statement_parts},
+        test_support::http::{read_http_request, write_json_response},
     };
 
     #[tokio::test]
@@ -111,13 +109,14 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let request = read_http_request(&mut socket).await;
-            write_http_response(
+            let request = read_http_request(&mut socket).await.unwrap();
+            write_json_response(
                 &mut socket,
-                200,
+                StatusCode::OK,
                 r#"{"success":true,"data":{"queryId":"q","rowtype":[],"rowset":[],"queryResultFormat":"json"}}"#,
             )
-            .await;
+            .await
+            .unwrap();
             request
         });
 
@@ -140,6 +139,10 @@ mod tests {
         assert!(request.contains("accept: application/snowflake"));
         assert!(request.contains("content-type: application/json"));
         assert!(request.contains(r#"authorization: Snowflake Token="test-token""#));
+        assert!(request.to_ascii_lowercase().contains(&format!(
+            "user-agent: {}",
+            DEFAULT_USER_AGENT.to_ascii_lowercase()
+        )));
         let body = request.split("\r\n\r\n").nth(1).unwrap();
         let body: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(body["sqlText"], "select 1");
@@ -155,15 +158,13 @@ mod tests {
         });
 
         let client = QueryApiClient::new(
-            ClientSharedPartial::new()
-                .with_http(
-                    reqwest::Client::builder()
-                        .timeout(Duration::from_millis(50))
-                        .build()
-                        .unwrap(),
-                )
-                .with_base_url(Url::parse(&format!("http://{addr}/")).unwrap())
-                .build(),
+            Arc::new(ApiContext::new(
+                reqwest::Client::builder()
+                    .timeout(Duration::from_millis(50))
+                    .build()
+                    .unwrap(),
+                Url::parse(&format!("http://{addr}/")).unwrap(),
+            )),
             SessionAuth::for_test("test-token"),
         );
 

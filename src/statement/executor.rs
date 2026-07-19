@@ -24,6 +24,7 @@ use super::{
 
 pub(crate) struct StatementExecutor {
     api: QueryApiClient,
+    chunk_http: reqwest::Client,
     query_response_timeout: Duration,
     query_cancel_request_timeout: Duration,
     default_collect_concurrency: NonZeroUsize,
@@ -33,7 +34,8 @@ pub(crate) struct StatementExecutor {
 impl StatementExecutor {
     pub(crate) fn new(session: &Session, settings: QueryExecutionSettings) -> Self {
         Self {
-            api: QueryApiClient::new(Arc::clone(&session.shared), Arc::clone(&session.auth)),
+            api: QueryApiClient::new(Arc::clone(&session.shared.api), Arc::clone(&session.auth)),
+            chunk_http: session.shared.chunk_http.clone(),
             query_response_timeout: settings.query_response_timeout,
             query_cancel_request_timeout: settings.query_cancel_request_timeout,
             default_collect_concurrency: settings.collect_prefetch_concurrency,
@@ -161,7 +163,7 @@ impl StatementExecutor {
     fn build_result_set(self, data: WireQueryData) -> QueryScopedResult<ResultCursor> {
         let manifest = ResultManifest::try_from(data)?;
 
-        let source = RemotePartitionSource::new(manifest.lease, self.api.http_client());
+        let source = RemotePartitionSource::new(manifest.lease, self.chunk_http);
         let default_collect_policy = CollectPolicy::new(self.default_collect_concurrency);
 
         Ok(ResultCursor::new(
@@ -190,7 +192,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ClientSharedPartial, ErrorKind, QueryOptions, Statement,
+        ApiContext, ClientSharedPartial, ErrorKind, QueryOptions, Statement,
         config::{DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT, DEFAULT_QUERY_RESPONSE_TIMEOUT},
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
@@ -211,7 +213,7 @@ mod tests {
 
     fn test_statement_api(base_url: Url) -> QueryApiClient {
         QueryApiClient::new(
-            ClientSharedPartial::new().with_base_url(base_url).build(),
+            Arc::new(ApiContext::new(reqwest::Client::new(), base_url)),
             SessionAuth::for_test("test-token"),
         )
     }
@@ -226,6 +228,7 @@ mod tests {
     fn executor() -> StatementExecutor {
         StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
+            chunk_http: reqwest::Client::new(),
             query_response_timeout: DEFAULT_QUERY_RESPONSE_TIMEOUT,
             query_cancel_request_timeout: DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
@@ -236,6 +239,7 @@ mod tests {
     fn executor_with_timeout(base_url: Url, timeout: Duration) -> StatementExecutor {
         StatementExecutor {
             api: test_statement_api(base_url),
+            chunk_http: reqwest::Client::new(),
             query_response_timeout: timeout,
             query_cancel_request_timeout: DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
@@ -680,6 +684,7 @@ mod tests {
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
+            chunk_http: reqwest::Client::new(),
             query_response_timeout: DEFAULT_QUERY_RESPONSE_TIMEOUT,
             query_cancel_request_timeout: DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
@@ -724,6 +729,7 @@ mod tests {
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
+            chunk_http: reqwest::Client::new(),
             query_response_timeout: DEFAULT_QUERY_RESPONSE_TIMEOUT,
             query_cancel_request_timeout: DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
@@ -763,6 +769,7 @@ mod tests {
         let permit = runtime.blocking_parse_limiter().acquire_owned().await;
         let executor = StatementExecutor {
             api: test_statement_api(Url::parse("https://example.com/").unwrap()),
+            chunk_http: reqwest::Client::new(),
             query_response_timeout: DEFAULT_QUERY_RESPONSE_TIMEOUT,
             query_cancel_request_timeout: DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT,
             default_collect_concurrency: NonZeroUsize::new(1).unwrap(),
