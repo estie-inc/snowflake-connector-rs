@@ -121,12 +121,16 @@ mod tests {
 
     use super::*;
     use crate::{
-        ErrorKind,
+        ClientSharedPartial, ErrorKind,
         auth::wire::{LoginBody, LoginCredentialWire, LoginData, LoginQuery, LoginRequest},
     };
 
     fn auth_client(addr: SocketAddr) -> AuthApiClient {
-        AuthApiClient::new(ClientShared::for_test(base_url_for(addr)))
+        AuthApiClient::new(
+            ClientSharedPartial::new()
+                .with_base_url(base_url_for(addr))
+                .build(),
+        )
     }
 
     #[cfg(feature = "external-browser-sso")]
@@ -323,7 +327,9 @@ mod tests {
         });
 
         let client = AuthApiClient::with_request_timeout(
-            ClientShared::for_test(base_url_for(addr)),
+            ClientSharedPartial::new()
+                .with_base_url(base_url_for(addr))
+                .build(),
             Duration::from_millis(50),
         );
         let err = client.login(sample_login_request()).await.unwrap_err();

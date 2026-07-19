@@ -190,7 +190,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ClientShared, ErrorKind, QueryConfig, QueryOptions, Statement,
+        ClientSharedPartial, ErrorKind, QueryOptions, Statement,
         config::{DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT, DEFAULT_QUERY_RESPONSE_TIMEOUT},
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
@@ -211,14 +211,14 @@ mod tests {
 
     fn test_statement_api(base_url: Url) -> StatementApiClient {
         StatementApiClient::new(
-            ClientShared::for_test(base_url),
+            ClientSharedPartial::new().with_base_url(base_url).build(),
             SessionAuth::for_test("test-token"),
         )
     }
 
     fn test_session(base_url: Url) -> Session {
         Session {
-            shared: ClientShared::for_test(base_url),
+            shared: ClientSharedPartial::new().with_base_url(base_url).build(),
             auth: SessionAuth::for_test("test-token"),
         }
     }
@@ -372,12 +372,10 @@ mod tests {
     fn statement_executor_reuses_session_query_runtime() {
         let runtime = QueryRuntime::with_blocking_parse_concurrency(NonZeroUsize::new(1).unwrap());
         let session = Session {
-            shared: ClientShared::for_test_with(
-                Client::new(),
-                Url::parse("https://example.com/").unwrap(),
-                QueryConfig::default().into(),
-                runtime.clone(),
-            ),
+            shared: ClientSharedPartial::new()
+                .with_http(Client::new())
+                .with_runtime(runtime.clone())
+                .build(),
             auth: SessionAuth::for_test("test-token"),
         };
 

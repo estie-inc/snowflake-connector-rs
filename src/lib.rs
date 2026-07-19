@@ -1,7 +1,6 @@
 //! # Snowflake Connector
 //!
-//! A Rust client for Snowflake. Query results are materialized into a
-//! [`ResultTable`] and decoded with the [`FromRow`] / [`FromCell`] traits.
+//! A Rust client for Snowflake.
 //!
 //! ```rust,no_run
 //! # use snowflake_connector_rs::{
@@ -65,6 +64,7 @@
 
 mod auth;
 pub mod bind;
+mod client;
 mod config;
 pub mod decode;
 pub mod error;
@@ -75,16 +75,10 @@ mod runtime;
 mod session;
 mod statement;
 
-#[cfg(feature = "key-pair-auth")]
-pub use auth::config::KeyPairConfig;
 pub use auth::config::{AuthConfig, PasswordConfig};
-#[cfg(feature = "external-browser-sso")]
-pub use auth::external_browser::{BrowserLaunchMode, ExternalBrowserConfig};
+pub use client::Client;
 pub use config::{
     ClientConfig, EndpointConfig, ProxyConfig, QueryConfig, SessionConfig, TransportConfig,
-};
-pub(crate) use config::{
-    ClientLoginConfig, InitialSessionConfig, QueryExecutionPolicy, QueryExecutionSettings,
 };
 pub use decode::{CellPlan, CellPlanContext, FromCell, FromRow, RowPlanContext};
 pub use error::{Error, ErrorKind, Result};
@@ -93,10 +87,15 @@ pub use result_table::{
     BinaryValue, CellRef, CellValue, Column, ColumnType, DecimalValue, DynamicRow, ResultTable,
     RowRef, Rows, Schema, TypedResultTable, VectorValue,
 };
-use runtime::QueryRuntime;
 pub use session::{QueryOptions, Session};
 pub use statement::builder::{IntoStatement, NamedBinds, PositionalBinds, Statement, UnboundBinds};
 pub use statement::{QueryCancelStatus, QueryCanceller, QueryHandle};
+
+#[cfg(feature = "external-browser-sso")]
+pub use auth::external_browser::{BrowserLaunchMode, ExternalBrowserConfig};
+
+#[cfg(feature = "key-pair-auth")]
+pub use auth::config::KeyPairConfig;
 
 #[cfg(feature = "derive")]
 pub use snowflake_connector_rs_derive::FromRow;
@@ -105,105 +104,10 @@ pub use snowflake_connector_rs_derive::FromRow;
 #[doc(hidden)]
 pub mod bench_support;
 
-use std::{fmt, sync::Arc};
-
-use url::Url;
-
-use auth::login;
-use session::SessionAuth;
-
-#[derive(Clone)]
-pub struct Client {
-    inner: Arc<ClientInner>,
-}
-
-struct ClientInner {
-    login: ClientLoginConfig,
-    shared: Arc<ClientShared>,
-}
-
-/// Connector-wide execution state shared by every session a client creates.
-pub(crate) struct ClientShared {
-    pub(crate) http: reqwest::Client,
-    pub(crate) base_url: Url,
-    pub(crate) query: QueryExecutionPolicy,
-    pub(crate) runtime: QueryRuntime,
-}
-
-impl fmt::Debug for Client {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Prints only non-secret identity fields; credentials, the reqwest client, and the runtime are omitted.
-        f.debug_struct("Client")
-            .field("base_url", &self.inner.shared.base_url)
-            .field("username", &self.inner.login.username())
-            .field("account", &self.inner.login.account())
-            .finish_non_exhaustive()
-    }
-}
-
-impl Client {
-    /// Build a client from validated configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ErrorKind::Config` when endpoint or transport configuration is invalid.
-    pub fn new(config: ClientConfig) -> Result<Self> {
-        let prepared = config.prepare()?;
-
-        let shared = Arc::new(ClientShared {
-            http: prepared.shared.http,
-            base_url: prepared.shared.base_url,
-            query: prepared.shared.query,
-            runtime: QueryRuntime::new(),
-        });
-
-        Ok(Self {
-            inner: Arc::new(ClientInner {
-                login: prepared.login,
-                shared,
-            }),
-        })
-    }
-
-    /// Authenticate and create a new Snowflake session.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ErrorKind::Config`, `ErrorKind::Auth`, `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, or
-    /// `ErrorKind::Internal` depending on how session establishment fails.
-    pub async fn create_session(&self) -> Result<Session> {
-        let session_token = login(&self.inner.login, Arc::clone(&self.inner.shared)).await?;
-        Ok(Session {
-            shared: Arc::clone(&self.inner.shared),
-            auth: Arc::new(SessionAuth { session_token }),
-        })
-    }
-}
+pub(crate) use client::ClientShared;
+pub(crate) use config::{
+    ClientLoginConfig, InitialSessionConfig, QueryExecutionPolicy, QueryExecutionSettings,
+};
 
 #[cfg(test)]
-impl ClientShared {
-    /// Build a shared-state handle for unit tests with connector defaults.
-    pub(crate) fn for_test(base_url: Url) -> Arc<Self> {
-        Self::for_test_with(
-            reqwest::Client::new(),
-            base_url,
-            QueryConfig::default().into(),
-            QueryRuntime::new(),
-        )
-    }
-
-    /// Build a shared-state handle for unit tests with explicit dependencies.
-    pub(crate) fn for_test_with(
-        http: reqwest::Client,
-        base_url: Url,
-        query: QueryExecutionPolicy,
-        runtime: QueryRuntime,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            http,
-            base_url,
-            query,
-            runtime,
-        })
-    }
-}
+pub(crate) use client::ClientSharedPartial;
