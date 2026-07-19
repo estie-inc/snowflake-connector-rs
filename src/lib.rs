@@ -62,6 +62,7 @@
 //! # }
 //! ```
 
+mod api_context;
 mod auth;
 pub mod bind;
 mod client;
@@ -74,6 +75,9 @@ mod rowset;
 mod runtime;
 mod session;
 mod statement;
+
+#[cfg(test)]
+mod test_support;
 
 pub use auth::config::{AuthConfig, PasswordConfig};
 pub use client::Client;
@@ -104,6 +108,7 @@ pub use snowflake_connector_rs_derive::FromRow;
 #[doc(hidden)]
 pub mod bench_support;
 
+pub(crate) use api_context::ApiContext;
 pub(crate) use client::ClientShared;
 pub(crate) use config::{
     ClientLoginConfig, InitialSessionConfig, QueryExecutionPolicy, QueryExecutionSettings,

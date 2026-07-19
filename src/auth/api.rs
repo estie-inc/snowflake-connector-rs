@@ -1,13 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
-use reqwest::{
-    Url,
-    header::{ACCEPT, USER_AGENT},
-};
+use http::Method;
+use reqwest::{Url, header::ACCEPT};
 
 use crate::{
-    ClientShared, Result,
-    error::{ConfigError, NetworkError, classify_request_error},
+    ApiContext, Result,
+    error::{NetworkError, classify_request_error},
 };
 
 #[cfg(feature = "external-browser-sso")]
@@ -23,32 +21,28 @@ const AUTHENTICATOR_REQUEST_ACCEPT: &str = "application/json";
 
 #[derive(Clone)]
 pub(crate) struct AuthApiClient {
-    shared: Arc<ClientShared>,
+    api: Arc<ApiContext>,
     request_timeout: Duration,
 }
 
 impl AuthApiClient {
-    pub(crate) fn new(shared: Arc<ClientShared>) -> Self {
+    pub(crate) fn new(api: Arc<ApiContext>) -> Self {
         Self {
-            shared,
+            api,
             request_timeout: AUTH_REQUEST_TIMEOUT,
         }
     }
 
     #[cfg(test)]
-    fn with_request_timeout(shared: Arc<ClientShared>, request_timeout: Duration) -> Self {
+    fn with_request_timeout(api: Arc<ApiContext>, request_timeout: Duration) -> Self {
         Self {
-            shared,
+            api,
             request_timeout,
         }
     }
 
     pub(crate) async fn login(&self, request: LoginRequest<'_>) -> Result<LoginSession> {
-        let url = self
-            .shared
-            .base_url
-            .join("session/v1/login-request")
-            .map_err(|e| ConfigError::invalid_url(e.to_string()))?;
+        let url = self.api.resolve("session/v1/login-request")?;
 
         let response = self
             .post(url, LOGIN_REQUEST_ACCEPT)
@@ -72,11 +66,7 @@ impl AuthApiClient {
         &self,
         request: AuthenticatorRequest<'_>,
     ) -> Result<ExternalBrowserChallenge> {
-        let url = self
-            .shared
-            .base_url
-            .join("session/authenticator-request")
-            .map_err(|e| ConfigError::invalid_url(e.to_string()))?;
+        let url = self.api.resolve("session/authenticator-request")?;
 
         let body = request.into_body(ClientEnvironment::auth_defaults(self.request_timeout));
         let response = self
@@ -96,108 +86,38 @@ impl AuthApiClient {
     }
 
     fn post(&self, url: Url, accept: &'static str) -> reqwest::RequestBuilder {
-        self.shared
-            .http
-            .post(url)
+        self.api
+            .request(Method::POST, url)
             .header(ACCEPT, accept)
-            .header(USER_AGENT, default_user_agent())
             .timeout(self.request_timeout)
     }
 }
 
-fn default_user_agent() -> String {
-    format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{io, net::SocketAddr, time::Duration};
+    use std::{net::SocketAddr, time::Duration};
 
+    use http::StatusCode;
     use serde_json::json;
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::{TcpListener, TcpStream},
-    };
+    use tokio::net::TcpListener;
 
     use super::*;
     use crate::{
-        ClientSharedPartial, ErrorKind,
+        ErrorKind,
+        api_context::DEFAULT_USER_AGENT,
         auth::wire::{LoginBody, LoginCredentialWire, LoginData, LoginQuery, LoginRequest},
+        test_support::http::{base_url, read_http_request, write_json_response},
     };
-
-    fn auth_client(addr: SocketAddr) -> AuthApiClient {
-        AuthApiClient::new(
-            ClientSharedPartial::new()
-                .with_base_url(base_url_for(addr))
-                .build(),
-        )
-    }
 
     #[cfg(feature = "external-browser-sso")]
     use crate::auth::wire::AuthenticatorRequest;
 
-    async fn read_http_message(stream: &mut TcpStream) -> io::Result<String> {
-        let mut buf = Vec::new();
-        let mut header_end = None;
-
-        while header_end.is_none() {
-            let mut chunk = [0_u8; 1024];
-            let n = stream.read(&mut chunk).await?;
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "stream closed before headers completed",
-                ));
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            header_end = buf.windows(4).position(|w| w == b"\r\n\r\n");
-        }
-
-        let header_end = header_end.expect("header end must exist") + 4;
-        let headers = String::from_utf8_lossy(&buf[..header_end]);
-        let content_length = headers
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().ok())
-                    .flatten()
-            })
-            .unwrap_or(0);
-
-        while buf.len() < header_end + content_length {
-            let mut chunk = [0_u8; 1024];
-            let n = stream.read(&mut chunk).await?;
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "stream closed before body completed",
-                ));
-            }
-            buf.extend_from_slice(&chunk[..n]);
-        }
-
-        Ok(String::from_utf8_lossy(&buf).into_owned())
+    fn test_api_context(http: reqwest::Client, base_url: Url) -> Arc<ApiContext> {
+        Arc::new(ApiContext::new(http, base_url))
     }
 
-    async fn write_http_response(
-        stream: &mut TcpStream,
-        status: &str,
-        body: &str,
-    ) -> io::Result<()> {
-        stream
-            .write_all(
-                format!(
-                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-                .as_bytes(),
-            )
-            .await
-    }
-
-    fn base_url_for(addr: SocketAddr) -> Url {
-        Url::parse(&format!("http://{addr}/")).expect("test base URL must parse")
+    fn auth_client(addr: SocketAddr) -> AuthApiClient {
+        AuthApiClient::new(test_api_context(reqwest::Client::new(), base_url(addr)))
     }
 
     fn sample_login_request<'a>() -> LoginRequest<'a> {
@@ -229,7 +149,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let request = read_http_message(&mut socket).await.unwrap();
+            let request = read_http_request(&mut socket).await.unwrap();
             assert!(
                 request.starts_with(
                     "POST /session/v1/login-request?warehouse=warehouse&databaseName=database&schemaName=schema&roleName=role HTTP/1.1"
@@ -241,7 +161,7 @@ mod tests {
             assert!(lowered.contains("\r\naccept: application/snowflake\r\n"));
             assert!(lowered.contains(&format!(
                 "\r\nuser-agent: {}\r\n",
-                default_user_agent().to_ascii_lowercase()
+                DEFAULT_USER_AGENT.to_ascii_lowercase()
             )));
 
             let body = request
@@ -260,9 +180,9 @@ mod tests {
                 })
             );
 
-            write_http_response(
+            write_json_response(
                 &mut socket,
-                "200 OK",
+                StatusCode::OK,
                 r#"{"success":true,"data":{"token":"session-token"}}"#,
             )
             .await
@@ -283,10 +203,14 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let _ = read_http_message(&mut socket).await.unwrap();
-            write_http_response(&mut socket, "401 Unauthorized", r#"{"message":"nope"}"#)
-                .await
-                .unwrap();
+            let _ = read_http_request(&mut socket).await.unwrap();
+            write_json_response(
+                &mut socket,
+                StatusCode::UNAUTHORIZED,
+                r#"{"message":"nope"}"#,
+            )
+            .await
+            .unwrap();
         });
 
         let client = auth_client(addr);
@@ -303,8 +227,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let _ = read_http_message(&mut socket).await.unwrap();
-            write_http_response(&mut socket, "200 OK", "not-json")
+            let _ = read_http_request(&mut socket).await.unwrap();
+            write_json_response(&mut socket, StatusCode::OK, "not-json")
                 .await
                 .unwrap();
         });
@@ -327,9 +251,7 @@ mod tests {
         });
 
         let client = AuthApiClient::with_request_timeout(
-            ClientSharedPartial::new()
-                .with_base_url(base_url_for(addr))
-                .build(),
+            test_api_context(reqwest::Client::new(), base_url(addr)),
             Duration::from_millis(50),
         );
         let err = client.login(sample_login_request()).await.unwrap_err();
@@ -348,13 +270,17 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let request = read_http_message(&mut socket).await.unwrap();
+            let request = read_http_request(&mut socket).await.unwrap();
             assert!(
                 request.starts_with("POST /session/authenticator-request HTTP/1.1"),
                 "{request}"
             );
             let lowered = request.to_ascii_lowercase();
             assert!(lowered.contains("\r\naccept: application/json\r\n"));
+            assert!(lowered.contains(&format!(
+                "\r\nuser-agent: {}\r\n",
+                DEFAULT_USER_AGENT.to_ascii_lowercase()
+            )));
 
             let body = request
                 .split("\r\n\r\n")
@@ -380,9 +306,9 @@ mod tests {
                 })
             );
 
-            write_http_response(
+            write_json_response(
                 &mut socket,
-                "200 OK",
+                StatusCode::OK,
                 r#"{"success":true,"data":{"ssoUrl":"https://example.com/sso","proofKey":"proof-key"}}"#,
             )
             .await

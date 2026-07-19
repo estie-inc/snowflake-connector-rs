@@ -142,12 +142,19 @@ fn prepare_jwt_credential(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use url::Url;
+
     use super::*;
 
-    use crate::{ClientSharedPartial, PasswordConfig};
+    use crate::{ApiContext, PasswordConfig};
 
     fn dummy_client() -> AuthApiClient {
-        AuthApiClient::new(ClientSharedPartial::new().build())
+        AuthApiClient::new(Arc::new(ApiContext::new(
+            reqwest::Client::new(),
+            Url::parse("https://example.com/").expect("test base URL must parse"),
+        )))
     }
 
     #[tokio::test]

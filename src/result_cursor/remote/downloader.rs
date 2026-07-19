@@ -195,11 +195,61 @@ fn retry_delay(retries: usize) -> Duration {
 mod tests {
     use std::sync::Arc;
 
+    use http::{HeaderMap, StatusCode};
+    use tokio::net::TcpListener;
+
     use super::*;
-    use crate::ErrorKind;
+    use crate::{
+        ErrorKind,
+        result_table::Schema,
+        test_support::http::{read_http_request, write_json_response},
+    };
 
     fn qid() -> Arc<str> {
         Arc::from("query-id")
+    }
+
+    #[tokio::test]
+    async fn chunk_request_uses_only_server_headers_without_connector_identity() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await.unwrap();
+            // Respond with a non-retryable status so the download fails after exactly one request.
+            write_json_response(&mut socket, StatusCode::FORBIDDEN, "denied")
+                .await
+                .unwrap();
+            request
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-amz-server-side-encryption", "AES256".parse().unwrap());
+        let request = DownloadRequest {
+            url: format!("http://{addr}/chunk-0"),
+            headers: Arc::new(headers),
+            query_id: qid(),
+            row_count: 1,
+            compressed_size: 1,
+            uncompressed_size: 1,
+            blocking_parse_limiter: None,
+        };
+
+        let downloader = RemotePartitionDownloader::new(reqwest::Client::new());
+        let _ = downloader
+            .download_table(request, Arc::new(Schema::from_columns(vec![])))
+            .await;
+
+        let request = server.await.unwrap();
+        let lowered = request.to_ascii_lowercase();
+        // The server-provided chunk header is forwarded.
+        assert!(lowered.contains("x-amz-server-side-encryption: aes256"));
+        // Chunk requests are built independently of the Snowflake API context, so they carry only server-provided
+        // headers. Never sending the session token to a storage origin is the invariant that matters. The absence of
+        // the connector User-Agent just follows from that independence and may change if we later choose to identify
+        // these requests; a generic HTTP-library User-Agent is out of scope either way.
+        assert!(!lowered.contains("authorization:"));
+        assert!(!lowered.contains("snowflake-connector-rs/"));
     }
 
     #[test]

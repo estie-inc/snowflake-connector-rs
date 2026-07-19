@@ -1,7 +1,10 @@
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use http::{
+    Method,
+    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
+};
 use serde_json::from_slice;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
@@ -9,7 +12,7 @@ use uuid::Uuid;
 use crate::{
     Error, Result,
     error::{
-        ConfigError, NetworkError, ProtocolError, ServerError, SessionExpiredError, TimeoutError,
+        NetworkError, ProtocolError, ServerError, SessionExpiredError, TimeoutError,
         classify_request_error,
     },
     statement::wire::{
@@ -38,11 +41,7 @@ impl QueryApiClient {
         clock: &C,
     ) -> Result<()> {
         let cancel_request_id = Uuid::new_v4().to_string();
-        let mut url = self
-            .shared
-            .base_url
-            .join("queries/v1/abort-request")
-            .map_err(|e| ConfigError::invalid_url(e.to_string()))?;
+        let mut url = self.api.resolve("queries/v1/abort-request")?;
         url.query_pairs_mut()
             .append_pair("requestId", &cancel_request_id);
 
@@ -61,9 +60,8 @@ impl QueryApiClient {
             }
 
             let request = self
-                .shared
-                .http
-                .post(url.clone())
+                .api
+                .request(Method::POST, url.clone())
                 .header(ACCEPT, "application/snowflake")
                 .header(CONTENT_TYPE, "application/json")
                 .header(
@@ -189,15 +187,16 @@ impl AbortBackoff {
 mod tests {
     use std::{sync::Mutex as StdMutex, time::Duration};
 
+    use http::StatusCode;
     use reqwest::Url;
     use tokio::{net::TcpListener, time::timeout};
 
     use super::*;
     use crate::{
         ErrorKind,
-        statement::api::test_support::{
-            read_http_request, respond_once, test_query_api, write_http_response,
-        },
+        api_context::DEFAULT_USER_AGENT,
+        statement::api::test_support::{respond_once, test_query_api},
+        test_support::http::{read_http_request, write_json_response},
     };
 
     #[tokio::test]
@@ -206,8 +205,10 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let request = read_http_request(&mut socket).await;
-            write_http_response(&mut socket, 200, r#"{"success":true}"#).await;
+            let request = read_http_request(&mut socket).await.unwrap();
+            write_json_response(&mut socket, StatusCode::OK, r#"{"success":true}"#)
+                .await
+                .unwrap();
             request
         });
 
@@ -231,6 +232,10 @@ mod tests {
         );
         assert!(request.contains("accept: application/snowflake"));
         assert!(request.contains(r#"authorization: Snowflake Token="test-token""#));
+        assert!(request.to_ascii_lowercase().contains(&format!(
+            "user-agent: {}",
+            DEFAULT_USER_AGENT.to_ascii_lowercase()
+        )));
     }
 
     #[tokio::test]
@@ -244,8 +249,10 @@ mod tests {
                 (200, r#"{"success":true}"#),
             ] {
                 let (mut socket, _) = listener.accept().await.unwrap();
-                requests.push(read_http_request(&mut socket).await);
-                write_http_response(&mut socket, status, body).await;
+                requests.push(read_http_request(&mut socket).await.unwrap());
+                write_json_response(&mut socket, StatusCode::from_u16(status).unwrap(), body)
+                    .await
+                    .unwrap();
             }
             requests
         });
@@ -283,13 +290,14 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let request = read_http_request(&mut socket).await;
-            write_http_response(
+            let request = read_http_request(&mut socket).await.unwrap();
+            write_json_response(
                 &mut socket,
-                200,
+                StatusCode::OK,
                 r#"{"success":false,"code":"000605","message":"query is not executing"}"#,
             )
-            .await;
+            .await
+            .unwrap();
             request
         });
 
@@ -311,8 +319,10 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let request = read_http_request(&mut socket).await;
-            write_http_response(&mut socket, 200, r#"{"success":"yes"}"#).await;
+            let request = read_http_request(&mut socket).await.unwrap();
+            write_json_response(&mut socket, StatusCode::OK, r#"{"success":"yes"}"#)
+                .await
+                .unwrap();
             request
         });
 
@@ -350,8 +360,14 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let request = read_http_request(&mut socket).await;
-            write_http_response(&mut socket, 400, r#"{"error":"bad request"}"#).await;
+            let request = read_http_request(&mut socket).await.unwrap();
+            write_json_response(
+                &mut socket,
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"bad request"}"#,
+            )
+            .await
+            .unwrap();
             request
         });
 

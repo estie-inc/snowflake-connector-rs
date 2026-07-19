@@ -1,6 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
-use http::header::{ACCEPT, AUTHORIZATION};
+use http::{
+    Method,
+    header::{ACCEPT, AUTHORIZATION},
+};
 use reqwest::Url;
 use tokio::time::{sleep, timeout};
 
@@ -21,7 +24,7 @@ impl QueryApiClient {
         deadline: QueryResponseDeadline,
         query_id: Arc<str>,
     ) -> QueryScopedResult<WireQueryResponse> {
-        let poll_url = match resolve_poll_url(&self.shared.base_url, poll_relative_url) {
+        let poll_url = match resolve_poll_url(self.api.base_url(), poll_relative_url) {
             Ok(url) => url,
             Err(err) => {
                 return Err(QueryScopedError::new(query_id, err));
@@ -38,9 +41,8 @@ impl QueryApiClient {
             };
 
             let request = self
-                .shared
-                .http
-                .get(poll_url.clone())
+                .api
+                .request(Method::GET, poll_url.clone())
                 .header(ACCEPT, "application/snowflake")
                 .header(
                     AUTHORIZATION,
@@ -180,12 +182,62 @@ fn validate_same_origin_absolute_url(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
+    use http::StatusCode;
     use reqwest::Url;
+    use tokio::net::TcpListener;
 
     use super::*;
-    use crate::{Error, ErrorKind};
+    use crate::{
+        Error, ErrorKind,
+        api_context::DEFAULT_USER_AGENT,
+        statement::api::{QueryResponseDeadline, test_support::test_query_api},
+        test_support::http::{read_http_request, write_json_response},
+    };
+
+    #[tokio::test]
+    async fn poll_get_carries_session_auth_and_user_agent() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await.unwrap();
+            write_json_response(
+                &mut socket,
+                StatusCode::OK,
+                r#"{"success":true,"data":{"queryId":"q","rowtype":[],"rowset":[],"queryResultFormat":"json"}}"#,
+            )
+            .await
+            .unwrap();
+            request
+        });
+
+        let client = test_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let deadline = QueryResponseDeadline::new(Duration::from_secs(30));
+        client
+            .poll_async_results(
+                "/queries/v1/query-request?requestId=abc",
+                deadline,
+                Arc::from("query-id"),
+            )
+            .await
+            .unwrap();
+
+        let request = server.await.unwrap();
+        let request_line = request.lines().next().unwrap();
+        assert!(
+            request_line.starts_with("GET /queries/v1/query-request?requestId=abc HTTP/1.1"),
+            "{request_line}"
+        );
+        let lowered = request.to_ascii_lowercase();
+        assert!(lowered.contains("accept: application/snowflake"));
+        assert!(lowered.contains(r#"authorization: snowflake token="test-token""#));
+        assert!(lowered.contains(&format!(
+            "user-agent: {}",
+            DEFAULT_USER_AGENT.to_ascii_lowercase()
+        )));
+    }
 
     #[test]
     fn resolve_poll_url_accepts_relative_and_same_origin_absolute_urls() {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    ClientLoginConfig, ClientShared, InitialSessionConfig, Result,
+    ApiContext, ClientLoginConfig, InitialSessionConfig, Result,
     auth::credential::{LoginCredentialProvider, PreparedLoginCredential},
 };
 
@@ -14,8 +14,8 @@ use super::{
 };
 
 /// Login to Snowflake and return a session token.
-pub(crate) async fn login(login: &ClientLoginConfig, shared: Arc<ClientShared>) -> Result<String> {
-    let client = AuthApiClient::new(shared);
+pub(crate) async fn login(login: &ClientLoginConfig, api: Arc<ApiContext>) -> Result<String> {
+    let client = AuthApiClient::new(api);
     let context = LoginContext {
         username: login.username(),
         account: login.account(),
