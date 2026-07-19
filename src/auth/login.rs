@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::{
-    client::AuthApiClient,
+    api::AuthApiClient,
     credential::LoginContext,
     wire::{LoginBody, LoginData, LoginQuery, LoginRequest},
 };

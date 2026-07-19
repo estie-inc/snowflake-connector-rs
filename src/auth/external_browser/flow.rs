@@ -4,7 +4,7 @@ use url::Url;
 
 use crate::{
     Result,
-    auth::{client::AuthApiClient, credential::LoginContext, wire::AuthenticatorRequest},
+    auth::{api::AuthApiClient, credential::LoginContext, wire::AuthenticatorRequest},
     error::{AuthError, TimeoutError},
 };
 

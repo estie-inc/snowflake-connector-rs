@@ -1,7 +1,7 @@
+mod api;
 pub(crate) mod bind;
 pub(crate) mod builder;
 mod cancel;
-mod client;
 mod executor;
 mod handle;
 mod manifest;
