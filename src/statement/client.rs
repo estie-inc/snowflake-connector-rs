@@ -151,17 +151,6 @@ impl StatementApiClient {
         parse_response(body).map_err(Error::from)
     }
 
-    #[cfg(test)]
-    pub(crate) async fn submit(
-        &self,
-        parts: &StatementParts,
-        query_request_id: &str,
-        deadline: QueryResponseDeadline,
-    ) -> Result<SnowflakeResponse> {
-        let prepared = self.prepare_submit(parts, query_request_id)?;
-        self.send_prepared_submit(prepared, deadline).await
-    }
-
     pub(crate) async fn abort_query(
         &self,
         query_request_id: &str,
@@ -588,8 +577,9 @@ mod tests {
         let parts = into_statement_parts(Statement::from("select 1")).unwrap();
         // A generous deadline leaves the reqwest client-wide timeout as the trigger for this case.
         let deadline = QueryResponseDeadline::new(Duration::from_secs(30));
+        let prepared = client.prepare_submit(&parts, "query-request-id").unwrap();
         let err = client
-            .submit(&parts, "query-request-id", deadline)
+            .send_prepared_submit(prepared, deadline)
             .await
             .unwrap_err();
 
