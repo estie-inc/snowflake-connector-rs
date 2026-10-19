@@ -138,6 +138,8 @@ mod tests {
                         passcode: None,
                     },
                     session_parameters: None,
+                    client_app_id: None,
+                    client_app_version: None,
                 },
             },
         }

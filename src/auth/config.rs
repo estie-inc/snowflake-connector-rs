@@ -14,6 +14,7 @@ pub(crate) enum AuthConfigKind {
     #[cfg(feature = "key-pair-auth")]
     KeyPair(KeyPairConfig),
     OAuth(OAuthConfig),
+    IdToken(String),
     #[cfg(feature = "external-browser-sso")]
     ExternalBrowser(ExternalBrowserConfig),
 }
@@ -89,6 +90,16 @@ impl AuthConfig {
         }
     }
 
+    /// Authenticate with an ID token from a previous SSO login ([`Session::id_token`](crate::Session::id_token)).
+    ///
+    /// Storing the token and falling back to another authenticator once Snowflake rejects it (for example after it
+    /// expires) is the caller's responsibility.
+    pub fn id_token(token: impl Into<String>) -> Self {
+        Self {
+            kind: AuthConfigKind::IdToken(token.into()),
+        }
+    }
+
     pub(crate) fn kind(&self) -> &AuthConfigKind {
         &self.kind
     }
@@ -106,6 +117,10 @@ impl fmt::Debug for AuthConfig {
             }
             AuthConfigKind::OAuth(_) => f
                 .debug_tuple("AuthConfig::OAuth")
+                .field(&"<redacted>")
+                .finish(),
+            AuthConfigKind::IdToken(_) => f
+                .debug_tuple("AuthConfig::IdToken")
                 .field(&"<redacted>")
                 .finish(),
             #[cfg(feature = "external-browser-sso")]
@@ -290,6 +305,13 @@ mod tests {
                 .passcode(),
             Some(PasscodeMode::InPassword)
         ));
+    }
+
+    #[test]
+    fn id_token_debug_redacts_secret() {
+        let debug = format!("{:?}", AuthConfig::id_token("id-token"));
+        assert!(debug.contains("AuthConfig::IdToken"));
+        assert!(!debug.contains("id-token"));
     }
 
     #[test]

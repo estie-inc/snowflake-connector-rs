@@ -6,12 +6,14 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LoginSession {
     pub(crate) token: String,
+    pub(crate) id_token: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LoginResponseData {
     token: Option<String>,
+    id_token: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -35,7 +37,10 @@ pub(crate) fn parse_login_response(body: &str) -> Result<LoginSession> {
         .token
         .ok_or_else(|| ProtocolError::missing_field("data.token"))?;
 
-    Ok(LoginSession { token })
+    Ok(LoginSession {
+        token,
+        id_token: data.id_token,
+    })
 }
 
 #[cfg(test)]
@@ -51,7 +56,8 @@ mod tests {
         assert_eq!(
             session,
             LoginSession {
-                token: "session-token".to_string()
+                token: "session-token".to_string(),
+                id_token: None,
             }
         );
     }
@@ -91,5 +97,14 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::Auth);
         assert_eq!(err.snowflake_message(), None);
         assert_eq!(err.to_string(), "authentication rejected");
+    }
+
+    #[test]
+    fn parse_login_response_keeps_the_id_token() {
+        let s = parse_login_response(r#"{"success":true,"data":{"token":"t","idToken":"id-123"}}"#)
+            .unwrap();
+        assert_eq!(s.id_token.as_deref(), Some("id-123"));
+        let s = parse_login_response(r#"{"success":true,"data":{"token":"t"}}"#).unwrap();
+        assert_eq!(s.id_token, None);
     }
 }

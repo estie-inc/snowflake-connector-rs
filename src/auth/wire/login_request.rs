@@ -38,6 +38,10 @@ pub(crate) struct LoginData<'a> {
     pub(crate) credential: LoginCredentialWire<'a>,
     #[serde(rename = "SESSION_PARAMETERS", skip_serializing_if = "Option::is_none")]
     pub(crate) session_parameters: Option<&'a HashMap<String, serde_json::Value>>,
+    #[serde(rename = "CLIENT_APP_ID", skip_serializing_if = "Option::is_none")]
+    pub(crate) client_app_id: Option<&'a str>,
+    #[serde(rename = "CLIENT_APP_VERSION", skip_serializing_if = "Option::is_none")]
+    pub(crate) client_app_version: Option<&'a str>,
 }
 
 #[derive(Debug)]
@@ -51,6 +55,9 @@ pub(crate) enum LoginCredentialWire<'a> {
         token: &'a str,
     },
     OAuth {
+        token: &'a str,
+    },
+    IdToken {
         token: &'a str,
     },
     #[cfg(feature = "external-browser-sso")]
@@ -105,6 +112,12 @@ impl Serialize for LoginCredentialWire<'_> {
                 map.serialize_entry("TOKEN", token)?;
                 map.end()
             }
+            Self::IdToken { token } => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("AUTHENTICATOR", "ID_TOKEN")?;
+                map.serialize_entry("TOKEN", token)?;
+                map.end()
+            }
             #[cfg(feature = "external-browser-sso")]
             Self::ExternalBrowser { token, proof_key } => {
                 let len = if proof_key.is_some() { 3 } else { 2 };
@@ -140,6 +153,8 @@ mod tests {
                     passcode: None,
                 },
                 session_parameters: None,
+                client_app_id: None,
+                client_app_version: None,
             },
         };
 
@@ -166,6 +181,8 @@ mod tests {
                     passcode: Some(PasscodeWire::Separate("123456")),
                 },
                 session_parameters: None,
+                client_app_id: None,
+                client_app_version: None,
             },
         };
 
@@ -194,6 +211,8 @@ mod tests {
                     passcode: Some(PasscodeWire::InPassword),
                 },
                 session_parameters: None,
+                client_app_id: None,
+                client_app_version: None,
             },
         };
 
@@ -220,6 +239,8 @@ mod tests {
                 login_name: "username",
                 credential: LoginCredentialWire::SnowflakeJwt { token: "jwt-token" },
                 session_parameters: None,
+                client_app_id: None,
+                client_app_version: None,
             },
         };
 
@@ -246,6 +267,8 @@ mod tests {
                     token: "oauth-token",
                 },
                 session_parameters: None,
+                client_app_id: None,
+                client_app_version: None,
             },
         };
 
@@ -274,6 +297,8 @@ mod tests {
                     proof_key: Some("proof-key"),
                 },
                 session_parameters: None,
+                client_app_id: None,
+                client_app_version: None,
             },
         };
 
@@ -303,6 +328,8 @@ mod tests {
                     proof_key: None,
                 },
                 session_parameters: None,
+                client_app_id: None,
+                client_app_version: None,
             },
         };
 
@@ -330,6 +357,8 @@ mod tests {
                     passcode: None,
                 },
                 session_parameters: None,
+                client_app_id: None,
+                client_app_version: None,
             },
         };
 
@@ -350,6 +379,8 @@ mod tests {
                     passcode: None,
                 },
                 session_parameters: Some(&session_parameters),
+                client_app_id: None,
+                client_app_version: None,
             },
         };
 
@@ -413,5 +444,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(request.url().query(), None);
+    }
+
+    #[test]
+    fn id_token_credential_serializes_as_id_token_authenticator() {
+        let v = serde_json::to_value(LoginCredentialWire::IdToken { token: "id-123" }).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"AUTHENTICATOR": "ID_TOKEN", "TOKEN": "id-123"})
+        );
     }
 }

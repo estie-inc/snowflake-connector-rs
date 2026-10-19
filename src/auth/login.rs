@@ -10,26 +10,31 @@ use crate::{
 use super::{
     api::AuthApiClient,
     credential::LoginContext,
-    wire::{LoginBody, LoginData, LoginQuery, LoginRequest},
+    wire::{LoginBody, LoginData, LoginQuery, LoginRequest, LoginSession},
 };
 
-/// Login to Snowflake and return a session token.
-pub(crate) async fn login(login: &ClientLoginConfig, api: Arc<ApiContext>) -> Result<String> {
+/// Login to Snowflake and return the session token and, when issued, the ID token.
+pub(crate) async fn login(login: &ClientLoginConfig, api: Arc<ApiContext>) -> Result<LoginSession> {
     let client = AuthApiClient::new(api);
     let context = LoginContext {
         username: login.username(),
         account: login.account(),
     };
     let credential = login.auth().prepare(&client, context).await?;
-    let request = build_login_request(context, login.initial_session(), &credential);
+    let request = build_login_request(
+        context,
+        login.initial_session(),
+        login.client_app(),
+        &credential,
+    );
 
-    let session = client.login(request).await?;
-    Ok(session.token)
+    client.login(request).await
 }
 
 fn build_login_request<'a>(
     context: LoginContext<'a>,
     initial_session: &'a InitialSessionConfig,
+    client_app: Option<(&'a str, &'a str)>,
     credential: &'a PreparedLoginCredential,
 ) -> LoginRequest<'a> {
     let session_parameters = initial_session.session_parameters();
@@ -48,6 +53,8 @@ fn build_login_request<'a>(
                 login_name: context.username,
                 credential: credential.as_wire(),
                 session_parameters: (!session_parameters.is_empty()).then_some(session_parameters),
+                client_app_id: client_app.map(|(id, _)| id),
+                client_app_version: client_app.map(|(_, version)| version),
             },
         },
     }
@@ -85,6 +92,7 @@ mod tests {
                 account: "account",
             },
             &session,
+            None,
             &credential,
         );
 
@@ -93,6 +101,30 @@ mod tests {
             query_string(&request.query).as_deref(),
             Some("warehouse=warehouse")
         );
+    }
+
+    #[test]
+    fn login_request_sends_client_app_only_when_configured() {
+        let session = InitialSessionConfig::from(SessionConfig::default());
+        let credential = PreparedLoginCredential::Password {
+            password: "secret".to_string(),
+            passcode: None,
+        };
+        let context = LoginContext {
+            username: "user",
+            account: "account",
+        };
+
+        let request = build_login_request(context, &session, None, &credential);
+        let body = serde_json::to_value(&request.body).unwrap();
+        assert!(body["data"].get("CLIENT_APP_ID").is_none());
+        assert!(body["data"].get("CLIENT_APP_VERSION").is_none());
+
+        let request =
+            build_login_request(context, &session, Some(("my-app", "1.2.3")), &credential);
+        let body = serde_json::to_value(&request.body).unwrap();
+        assert_eq!(body["data"]["CLIENT_APP_ID"], "my-app");
+        assert_eq!(body["data"]["CLIENT_APP_VERSION"], "1.2.3");
     }
 
     #[test]
@@ -109,6 +141,7 @@ mod tests {
                 account: "account",
             },
             &session,
+            None,
             &credential,
         );
 
@@ -135,6 +168,7 @@ mod tests {
                 account: "account",
             },
             &session,
+            None,
             &credential,
         );
 

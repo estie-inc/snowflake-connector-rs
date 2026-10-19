@@ -60,6 +60,8 @@ impl QueryOptions {
 /// Per-session authentication state.
 pub(crate) struct SessionAuth {
     pub(crate) session_token: String,
+    /// ID token issued at login, when the server returned one.
+    pub(crate) id_token: Option<String>,
 }
 
 impl fmt::Debug for Session {
@@ -79,11 +81,24 @@ impl SessionAuth {
     pub(crate) fn for_test(session_token: impl Into<String>) -> Arc<Self> {
         Arc::new(Self {
             session_token: session_token.into(),
+            id_token: None,
         })
     }
 }
 
 impl Session {
+    /// ID token returned by the login that created this session, if any.
+    ///
+    /// Snowflake issues one for external browser SSO when the login sets the
+    /// `CLIENT_STORE_TEMPORARY_CREDENTIAL` session parameter, the account allows it (`ALLOW_ID_TOKEN = TRUE`)
+    /// and the client identifies itself with an app id the server recognizes
+    /// (see [`ClientConfig::with_client_app`](crate::ClientConfig::with_client_app)).
+    /// Store it and pass it to [`AuthConfig::id_token`](crate::AuthConfig::id_token) to create later sessions
+    /// without opening the browser while the token is valid.
+    pub fn id_token(&self) -> Option<&str> {
+        self.auth.id_token.as_deref()
+    }
+
     /// Submit a statement and return a `ResultCursor` for streaming partition access.
     ///
     /// # Errors

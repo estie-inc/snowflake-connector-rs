@@ -191,6 +191,33 @@ In `ManualRedirect` mode:
 - a non-zero `redirect_port` is still required because Snowflake uses `BROWSER_MODE_REDIRECT_PORT` to construct the browser redirect URL.
 - the browser may show a connection error page at `localhost:<redirect_port>` after login; copy that redirected URL and paste it into the terminal prompt so the connector can extract the token.
 
+#### Reusing the login with an ID token
+
+Snowflake can return an ID token from an external browser SSO login, so later sessions can log in without opening the browser while the token is valid (as the official drivers do with `client_store_temporary_credential`). This requires:
+
+- `ALLOW_ID_TOKEN = TRUE` on the account,
+- the `CLIENT_STORE_TEMPORARY_CREDENTIAL` session parameter on the SSO login, and
+- a client application identity Snowflake recognizes, set with `ClientConfig::with_client_app` (the server does not issue the token otherwise). The identity can change server defaults; for example, with the Go driver's identity the server returns query results in Arrow unless `GO_QUERY_RESULT_FORMAT` is set to `JSON`.
+
+```rust
+use snowflake_connector_rs::{AuthConfig, ClientConfig, ExternalBrowserConfig, SessionConfig};
+
+let session_config = SessionConfig::new()
+    .with_session_parameter("CLIENT_STORE_TEMPORARY_CREDENTIAL", serde_json::Value::Bool(true));
+let config = ClientConfig::new(
+    "USERNAME",
+    "ACCOUNT",
+    AuthConfig::external_browser(ExternalBrowserConfig::default()),
+)
+.with_session(session_config)
+.with_client_app("APP_ID", "APP_VERSION");
+
+// After `client.create_session().await?`, keep `session.id_token()` somewhere safe and log in later with:
+let auth = AuthConfig::id_token("STORED_ID_TOKEN");
+```
+
+Storing the token and falling back to the browser once Snowflake rejects it (for example after it expires) is up to the application.
+
 ## Configuration
 
 ### Custom endpoint

@@ -14,6 +14,14 @@ pub struct ClientConfig {
     query: QueryConfig,
     endpoint: EndpointConfig,
     transport: TransportConfig,
+    client_app: Option<ClientApp>,
+}
+
+/// Client application identity sent at login (`CLIENT_APP_ID` / `CLIENT_APP_VERSION`).
+#[derive(Clone, Debug)]
+pub(crate) struct ClientApp {
+    id: String,
+    version: String,
 }
 
 /// Server-side session context sent to Snowflake at login time.
@@ -115,6 +123,7 @@ impl ClientConfig {
             query: QueryConfig::default(),
             endpoint: EndpointConfig::default(),
             transport: TransportConfig::default(),
+            client_app: None,
         }
     }
 
@@ -138,6 +147,19 @@ impl ClientConfig {
         self
     }
 
+    /// Sends `CLIENT_APP_ID` and `CLIENT_APP_VERSION` in the login request. Not sent by default.
+    ///
+    /// Snowflake decides some login behavior from the client application identity. In particular, it only returns
+    /// an ID token for external browser SSO ([`Session::id_token`](crate::Session::id_token)) to client applications it
+    /// recognizes. Note that the identity can also change server defaults, such as the result format of queries.
+    pub fn with_client_app(mut self, id: impl Into<String>, version: impl Into<String>) -> Self {
+        self.client_app = Some(ClientApp {
+            id: id.into(),
+            version: version.into(),
+        });
+        self
+    }
+
     /// Compile this public builder input into the internal model held by `Client`.
     ///
     /// # Errors
@@ -153,6 +175,7 @@ impl ClientConfig {
                 account: self.account,
                 auth: self.auth,
                 initial_session: self.session.into(),
+                client_app: self.client_app,
             },
             shared: PreparedClientShared {
                 http,
@@ -269,6 +292,7 @@ pub(crate) struct ClientLoginConfig {
     account: String,
     auth: AuthConfig,
     initial_session: InitialSessionConfig,
+    client_app: Option<ClientApp>,
 }
 
 impl ClientLoginConfig {
@@ -286,6 +310,13 @@ impl ClientLoginConfig {
 
     pub(crate) fn initial_session(&self) -> &InitialSessionConfig {
         &self.initial_session
+    }
+
+    /// `(CLIENT_APP_ID, CLIENT_APP_VERSION)` for the login request, when configured.
+    pub(crate) fn client_app(&self) -> Option<(&str, &str)> {
+        self.client_app
+            .as_ref()
+            .map(|app| (app.id.as_str(), app.version.as_str()))
     }
 }
 

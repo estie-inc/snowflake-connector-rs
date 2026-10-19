@@ -24,6 +24,7 @@ pub(crate) enum PreparedLoginCredential {
     #[cfg(feature = "key-pair-auth")]
     SnowflakeJwt(String),
     OAuth(String),
+    IdToken(String),
     #[cfg(feature = "external-browser-sso")]
     ExternalBrowser {
         token: String,
@@ -50,6 +51,7 @@ impl PreparedLoginCredential {
             #[cfg(feature = "key-pair-auth")]
             Self::SnowflakeJwt(token) => LoginCredentialWire::SnowflakeJwt { token },
             Self::OAuth(token) => LoginCredentialWire::OAuth { token },
+            Self::IdToken(token) => LoginCredentialWire::IdToken { token },
             #[cfg(feature = "external-browser-sso")]
             Self::ExternalBrowser { token, proof_key } => LoginCredentialWire::ExternalBrowser {
                 token,
@@ -115,6 +117,7 @@ impl LoginCredentialProvider for AuthConfig {
             AuthConfigKind::OAuth(config) => {
                 Ok(PreparedLoginCredential::OAuth(config.token().to_owned()))
             }
+            AuthConfigKind::IdToken(token) => Ok(PreparedLoginCredential::IdToken(token.clone())),
             #[cfg(feature = "external-browser-sso")]
             AuthConfigKind::ExternalBrowser(config) => {
                 let credential =
@@ -177,6 +180,25 @@ mod tests {
                 password: "secret".to_string(),
                 passcode: None,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn id_token_auth_is_prepared_as_id_token_credential() {
+        let credential = AuthConfig::id_token("id-token")
+            .prepare(
+                &dummy_client(),
+                LoginContext {
+                    username: "user",
+                    account: "account",
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            credential,
+            PreparedLoginCredential::IdToken("id-token".to_string())
         );
     }
 

@@ -66,10 +66,13 @@ impl Client {
     /// Returns `ErrorKind::Config`, `ErrorKind::Auth`, `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, or
     /// `ErrorKind::Internal` depending on how session establishment fails.
     pub async fn create_session(&self) -> Result<Session> {
-        let session_token = login(&self.inner.login, Arc::clone(&self.inner.shared.api)).await?;
+        let logged = login(&self.inner.login, Arc::clone(&self.inner.shared.api)).await?;
         Ok(Session {
             shared: Arc::clone(&self.inner.shared),
-            auth: Arc::new(SessionAuth { session_token }),
+            auth: Arc::new(SessionAuth {
+                session_token: logged.token,
+                id_token: logged.id_token,
+            }),
         })
     }
 }
@@ -130,5 +133,53 @@ mod test_support {
                 runtime: self.runtime,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use http::StatusCode;
+    use tokio::net::TcpListener;
+
+    use super::*;
+    use crate::{
+        AuthConfig, EndpointConfig,
+        test_support::http::{base_url, read_http_request, write_json_response},
+    };
+
+    #[tokio::test]
+    async fn id_token_login_sends_client_app_and_exposes_the_new_id_token() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await.unwrap();
+            let body = request
+                .split("\r\n\r\n")
+                .nth(1)
+                .expect("request must contain body");
+            let body: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert_eq!(body["data"]["AUTHENTICATOR"], "ID_TOKEN");
+            assert_eq!(body["data"]["TOKEN"], "stored-id-token");
+            assert_eq!(body["data"]["CLIENT_APP_ID"], "my-app");
+            assert_eq!(body["data"]["CLIENT_APP_VERSION"], "1.2.3");
+
+            write_json_response(
+                &mut socket,
+                StatusCode::OK,
+                r#"{"success":true,"data":{"token":"session-token","idToken":"new-id-token"}}"#,
+            )
+            .await
+            .unwrap();
+        });
+
+        let config = ClientConfig::new("user", "account", AuthConfig::id_token("stored-id-token"))
+            .with_endpoint(EndpointConfig::CustomBaseUrl(base_url(addr)))
+            .with_client_app("my-app", "1.2.3");
+        let session = Client::new(config).unwrap().create_session().await.unwrap();
+
+        assert_eq!(session.id_token(), Some("new-id-token"));
+
+        server.await.unwrap();
     }
 }
