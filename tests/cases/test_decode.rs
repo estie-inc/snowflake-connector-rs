@@ -420,11 +420,14 @@ async fn test_decode() -> Result<()> {
     // VECTOR(FLOAT) renders every element as a fixed decimal (always a `.`, never exponent notation) across the full
     // f32 magnitude range: extremes render as e.g. `3.4e38 -> 339...704.000000` and tiny values as `0.000000`.
     // `Vector<f32>` decoding relies on this, since an integer-only token would be rejected as a VECTOR(INT) payload.
+    // Non-VECTOR floats are always 64-bit, so a literal is parsed as a double before the cast to the 32-bit VECTOR
+    // element, and the cast rejects any double above f32::MAX (≈3.40282347e38) with error 220000 instead of rounding.
+    // `3.4028235e38` (the shortest f32 round-trip form of f32::MAX) therefore overflows; `3.4028234e38` is used instead.
     let table = session
         .query(
             "SELECT
                 [3.4e38, 1e-30]::VECTOR(FLOAT, 2)               AS huge_and_tiny,
-                [3.4028235e38, -3.4028235e38]::VECTOR(FLOAT, 2) AS f32_max,
+                [3.4028234e38, -3.4028234e38]::VECTOR(FLOAT, 2) AS f32_max,
                 [1.4e-45, 9.9e37]::VECTOR(FLOAT, 2)             AS subnormal_and_large",
         )
         .await?
