@@ -34,14 +34,14 @@ members = [
 version = "1.1.0"
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1.12"
 chrono = { version = "0.4", default-features = false, features = [
     "clock",
     "std",
 ] }
 flate2 = "1.1"
-http = "1.4"
+http = "1.5"
 indexmap = "2.14"
 reqwest = { version = "0.13", default-features = false, features = [
     "gzip",
@@ -55,12 +55,12 @@ serde = { version = "1.0", features = [
 serde_json = { version = "1.0", features = [
     "raw_value",
 ] }
-tokio = { version = "1.53", features = [
+tokio = { version = "1.54", features = [
     "sync",
     "time",
 ] }
 url = "2.5"
-uuid = { version = "1.24", features = [
+uuid = { version = "1.26", features = [
     "serde",
     "v4",
 ] }
@@ -75,7 +75,7 @@ sha2 = { version = "0.11", optional = true, default-features = false, features =
 ] }
 
 http-body-util = { version = "0.1", optional = true }
-hyper = { version = "1.10", optional = true, features = [
+hyper = { version = "1.12", optional = true, features = [
     "http1",
     "server",
 ] }
@@ -134,7 +134,7 @@ criterion = { version = "0.8", default-features = false, features = [
     "cargo_bench_support",
     "rayon",
 ] }
-tokio = { version = "1.52", features = [
+tokio = { version = "1.54", features = [
     "macros",
     "rt-multi-thread",
     "test-util",
