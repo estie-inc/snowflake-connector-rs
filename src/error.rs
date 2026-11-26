@@ -124,7 +124,8 @@ pub enum ErrorKind {
     Server,
     /// A user-requested cancellation prevented submission or terminated the query.
     Cancelled,
-    /// The current session token is no longer valid.
+    /// The session can no longer be used: its session token expired and could not be renewed with the master token
+    /// from login, so a new session is needed.
     SessionExpired,
     /// The connector timed out while waiting for a response.
     Timeout,

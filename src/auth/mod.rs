@@ -8,4 +8,4 @@ mod key_pair;
 mod login;
 mod wire;
 
-pub(crate) use login::login;
+pub(crate) use login::{login, renew_session};

@@ -8,9 +8,10 @@ use reqwest::Url;
 use tokio::time::{sleep, timeout};
 
 use crate::{
-    error::{NetworkError, ProtocolError, QueryScopedError, QueryScopedResult, TimeoutError},
+    Error, Result,
+    error::{NetworkError, ProtocolError, QueryScopedError, QueryScopedRepr, TimeoutError},
     statement::wire::response::{
-        QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, WireQueryResponse,
+        QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, SESSION_EXPIRED, WireQueryResponse,
         parse_query_response,
     },
 };
@@ -23,31 +24,30 @@ impl QueryApiClient {
         poll_relative_url: &str,
         deadline: QueryResponseDeadline,
         query_id: Arc<str>,
-    ) -> QueryScopedResult<WireQueryResponse> {
-        let poll_url = match resolve_poll_url(self.api.base_url(), poll_relative_url) {
-            Ok(url) => url,
-            Err(err) => {
-                return Err(QueryScopedError::new(query_id, err));
-            }
-        };
+    ) -> Result<WireQueryResponse> {
+        let scoped =
+            |err: QueryScopedRepr| Error::from(QueryScopedError::new(Arc::clone(&query_id), err));
+
+        let poll_url = resolve_poll_url(self.api.base_url(), poll_relative_url)
+            .map_err(|err| scoped(err.into()))?;
         let mut backoff = PollBackoff::new();
+        // A long-running query can outlive several session tokens, so renew whenever the token expires, but give up
+        // when a freshly renewed token is rejected right away.
+        let mut retrying_after_renewal = false;
 
         loop {
             // The poll endpoint is a server-side long-poll, so apply the remaining query-response budget to the whole
             // GET instead of only checking the deadline between poll attempts.
-            let remaining = match deadline.remaining_or_timeout() {
-                Ok(remaining) => remaining,
-                Err(err) => return Err(QueryScopedError::new(query_id, err)),
-            };
+            let remaining = deadline
+                .remaining_or_timeout()
+                .map_err(|err| scoped(err.into()))?;
 
+            let (session_token, authorization) = self.authorization();
             let request = self
                 .api
                 .request(Method::GET, poll_url.clone())
                 .header(ACCEPT, "application/snowflake")
-                .header(
-                    AUTHORIZATION,
-                    format!(r#"Snowflake Token="{}""#, self.auth.session_token),
-                );
+                .header(AUTHORIZATION, authorization);
 
             let response = match timeout(remaining, async {
                 let resp = request.send().await?;
@@ -60,42 +60,41 @@ impl QueryApiClient {
                 Ok(Ok(pair)) => pair,
                 Ok(Err(error)) => {
                     if error.is_timeout() {
-                        return Err(QueryScopedError::new(
-                            query_id,
-                            TimeoutError::request(error),
-                        ));
+                        return Err(scoped(TimeoutError::request(error).into()));
                     }
-                    return Err(QueryScopedError::new(query_id, NetworkError::Http(error)));
+                    return Err(scoped(NetworkError::Http(error).into()));
                 }
                 Err(_elapsed) => {
-                    return Err(QueryScopedError::new(query_id, TimeoutError::query()));
+                    return Err(scoped(TimeoutError::query().into()));
                 }
             };
 
             let (status, body) = response;
             if !status.is_success() {
-                return Err(QueryScopedError::new(
-                    query_id,
-                    NetworkError::http_status(status.as_u16(), &body),
+                return Err(scoped(
+                    NetworkError::http_status(status.as_u16(), &body).into(),
                 ));
             }
 
-            match parse_query_response(body) {
-                Ok(response)
-                    if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE)
-                        && response.code.as_deref() != Some(QUERY_IN_PROGRESS_CODE) =>
-                {
-                    return Ok(response);
+            let response = parse_query_response(body).map_err(|err| scoped(err.into()))?;
+            let code = response.code.as_deref();
+            if code == Some(SESSION_EXPIRED) && !retrying_after_renewal {
+                if self.renew_session(&session_token).await? {
+                    retrying_after_renewal = true;
+                    continue;
                 }
-                Ok(_) => {
-                    let remaining = deadline.remaining();
-                    if remaining.is_zero() {
-                        return Err(QueryScopedError::new(query_id, TimeoutError::query()));
-                    }
-                    sleep(remaining.min(backoff.next_delay())).await;
-                }
-                Err(err) => return Err(QueryScopedError::new(query_id, err)),
+                return Ok(response);
             }
+            if code != Some(QUERY_IN_PROGRESS_ASYNC_CODE) && code != Some(QUERY_IN_PROGRESS_CODE) {
+                return Ok(response);
+            }
+
+            retrying_after_renewal = false;
+            let remaining = deadline.remaining();
+            if remaining.is_zero() {
+                return Err(scoped(TimeoutError::query().into()));
+            }
+            sleep(remaining.min(backoff.next_delay())).await;
         }
     }
 }

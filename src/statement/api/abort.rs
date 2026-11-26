@@ -52,6 +52,7 @@ impl QueryApiClient {
             .map_err(|error| Error::other(format!("failed to serialize abort request: {error}")))?,
         );
         let mut backoff = AbortBackoff::new();
+        let mut renewed = false;
 
         for attempt in 0..MAX_ABORT_ATTEMPTS {
             let remaining = clock.remaining();
@@ -59,15 +60,13 @@ impl QueryApiClient {
                 return Err(TimeoutError::query_cancel().into());
             }
 
+            let (session_token, authorization) = self.authorization();
             let request = self
                 .api
                 .request(Method::POST, url.clone())
                 .header(ACCEPT, "application/snowflake")
                 .header(CONTENT_TYPE, "application/json")
-                .header(
-                    AUTHORIZATION,
-                    format!(r#"Snowflake Token="{}""#, self.auth.session_token),
-                )
+                .header(AUTHORIZATION, authorization)
                 .body(body.clone());
 
             let attempt_result = match timeout(remaining, async {
@@ -91,6 +90,10 @@ impl QueryApiClient {
                             Error::from(ProtocolError::json_parse(error, &body))
                         })?;
                         if response.code.as_deref() == Some(SESSION_EXPIRED) {
+                            if !renewed && self.renew_session(&session_token).await? {
+                                renewed = true;
+                                continue;
+                            }
                             Err((
                                 false,
                                 SessionExpiredError::new(response.code, response.message, None)
@@ -185,7 +188,10 @@ impl AbortBackoff {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Mutex as StdMutex, time::Duration};
+    use std::{
+        sync::{Arc, Mutex as StdMutex},
+        time::Duration,
+    };
 
     use http::StatusCode;
     use reqwest::Url;
@@ -193,9 +199,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        ErrorKind,
+        ApiContext, ErrorKind,
         api_context::DEFAULT_USER_AGENT,
-        statement::api::test_support::{respond_once, test_query_api},
+        session::SessionAuth,
+        statement::api::{
+            QueryApiClient,
+            test_support::{respond_once, test_query_api},
+        },
         test_support::http::{read_http_request, write_json_response},
     };
 
@@ -311,6 +321,68 @@ mod tests {
         assert_eq!(err.snowflake_code(), Some("000605"));
         assert_eq!(err.snowflake_message(), Some("query is not executing"));
         let _ = server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn abort_with_expired_token_renews_and_retries() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for body in [
+                r#"{"success":false,"code":"390112","message":"Your session has expired. Please login again."}"#,
+                r#"{"success":true,"data":{"sessionToken":"renewed-token"}}"#,
+                r#"{"success":true}"#,
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                requests.push(read_http_request(&mut socket).await.unwrap());
+                write_json_response(&mut socket, StatusCode::OK, body)
+                    .await
+                    .unwrap();
+            }
+            requests
+        });
+
+        let client = QueryApiClient::new(
+            Arc::new(ApiContext::new(
+                reqwest::Client::new(),
+                Url::parse(&format!("http://{addr}/")).unwrap(),
+            )),
+            SessionAuth::for_test_with_master("test-token", "master-token"),
+        );
+        client
+            .abort_query("query-request-id", Duration::from_secs(2))
+            .await
+            .unwrap();
+
+        let requests = server.await.unwrap();
+        assert!(requests[0].starts_with("POST /queries/v1/abort-request?requestId="));
+        assert!(requests[1].starts_with("POST /session/token-request?requestId="));
+        assert!(requests[2].starts_with("POST /queries/v1/abort-request?requestId="));
+        assert!(requests[2].contains(r#"authorization: Snowflake Token="renewed-token""#));
+    }
+
+    #[tokio::test]
+    async fn abort_with_expired_token_and_no_master_token_is_session_expired() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            respond_once(
+                &listener,
+                200,
+                r#"{"success":false,"code":"390112","message":"Your session has expired. Please login again."}"#,
+            )
+            .await;
+        });
+
+        let client = test_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let err = client
+            .abort_query("query-request-id", Duration::from_secs(2))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        server.await.unwrap();
     }
 
     #[tokio::test]

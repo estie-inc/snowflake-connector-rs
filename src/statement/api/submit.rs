@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use http::{
     Method,
@@ -21,6 +23,14 @@ use super::{QueryApiClient, QueryResponseDeadline};
 
 pub(crate) struct PreparedSubmit {
     request: reqwest::RequestBuilder,
+    session_token: Arc<str>,
+}
+
+impl PreparedSubmit {
+    /// The session token this request authenticates with, to renew if Snowflake reports it expired.
+    pub(crate) fn session_token(&self) -> &Arc<str> {
+        &self.session_token
+    }
 }
 
 impl QueryApiClient {
@@ -39,18 +49,19 @@ impl QueryApiClient {
             })?,
         );
 
+        let (session_token, authorization) = self.authorization();
         let request = self
             .api
             .request(Method::POST, url)
             .header(ACCEPT, "application/snowflake")
             .header(CONTENT_TYPE, "application/json")
-            .header(
-                AUTHORIZATION,
-                format!(r#"Snowflake Token="{}""#, self.auth.session_token),
-            )
+            .header(AUTHORIZATION, authorization)
             .body(body);
 
-        Ok(PreparedSubmit { request })
+        Ok(PreparedSubmit {
+            request,
+            session_token,
+        })
     }
 
     pub(crate) async fn send_prepared_submit(

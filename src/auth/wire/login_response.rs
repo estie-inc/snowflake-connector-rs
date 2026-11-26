@@ -6,12 +6,16 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LoginSession {
     pub(crate) token: String,
+    /// Renews `token` once it expires. Snowflake always returns one, but a missing master token only disables
+    /// renewal instead of failing the login.
+    pub(crate) master_token: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LoginResponseData {
     token: Option<String>,
+    master_token: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -35,7 +39,10 @@ pub(crate) fn parse_login_response(body: &str) -> Result<LoginSession> {
         .token
         .ok_or_else(|| ProtocolError::missing_field("data.token"))?;
 
-    Ok(LoginSession { token })
+    Ok(LoginSession {
+        token,
+        master_token: data.master_token,
+    })
 }
 
 #[cfg(test)]
@@ -51,9 +58,20 @@ mod tests {
         assert_eq!(
             session,
             LoginSession {
-                token: "session-token".to_string()
+                token: "session-token".to_string(),
+                master_token: None,
             }
         );
+    }
+
+    #[test]
+    fn parse_login_response_keeps_master_token() {
+        let session = parse_login_response(
+            r#"{"success":true,"data":{"token":"session-token","masterToken":"master-token"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(session.master_token.as_deref(), Some("master-token"));
     }
 
     #[test]

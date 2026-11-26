@@ -1,7 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
 use http::Method;
-use reqwest::{Url, header::ACCEPT};
+use reqwest::{
+    Url,
+    header::{ACCEPT, AUTHORIZATION},
+};
+use uuid::Uuid;
 
 use crate::{
     ApiContext, Result,
@@ -12,10 +16,14 @@ use crate::{
 use super::wire::{
     AuthenticatorRequest, ClientEnvironment, ExternalBrowserChallenge, parse_authenticator_response,
 };
-use super::wire::{LoginRequest, LoginSession, parse_login_response};
+use super::wire::{
+    LoginRequest, LoginSession, RenewSessionBody, RenewedSession, parse_login_response,
+    parse_renew_session_response,
+};
 
 const AUTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const LOGIN_REQUEST_ACCEPT: &str = "application/snowflake";
+const TOKEN_REQUEST_ACCEPT: &str = "application/snowflake";
 #[cfg(feature = "external-browser-sso")]
 const AUTHENTICATOR_REQUEST_ACCEPT: &str = "application/json";
 
@@ -59,6 +67,36 @@ impl AuthApiClient {
         }
 
         parse_login_response(&body)
+    }
+
+    /// Trade the master token for a new session token of the same server-side session.
+    pub(crate) async fn renew_session(
+        &self,
+        master_token: &str,
+        old_session_token: &str,
+    ) -> Result<RenewedSession> {
+        let mut url = self.api.resolve("session/token-request")?;
+        url.query_pairs_mut()
+            .append_pair("requestId", &Uuid::new_v4().to_string());
+
+        let response = self
+            .post(url, TOKEN_REQUEST_ACCEPT)
+            .header(
+                AUTHORIZATION,
+                format!(r#"Snowflake Token="{master_token}""#),
+            )
+            .json(&RenewSessionBody::renew(old_session_token))
+            .send()
+            .await
+            .map_err(classify_request_error)?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(classify_request_error)?;
+        if !status.is_success() {
+            return Err(NetworkError::http_status(status.as_u16(), body.as_bytes()).into());
+        }
+
+        parse_renew_session_response(&body)
     }
 
     #[cfg(feature = "external-browser-sso")]
@@ -195,6 +233,51 @@ mod tests {
         assert_eq!(session.token, "session-token");
 
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn renew_session_posts_master_token_and_parses_response() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await.unwrap();
+            write_json_response(
+                &mut socket,
+                StatusCode::OK,
+                r#"{"success":true,"data":{"sessionToken":"new-session","masterToken":"new-master"}}"#,
+            )
+            .await
+            .unwrap();
+            request
+        });
+
+        let client = auth_client(addr);
+        let renewed = client
+            .renew_session("master-token", "old-session")
+            .await
+            .unwrap();
+
+        assert_eq!(renewed.session_token, "new-session");
+        assert_eq!(renewed.master_token.as_deref(), Some("new-master"));
+
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with("POST /session/token-request?requestId="),
+            "{request}"
+        );
+        let lowered = request.to_ascii_lowercase();
+        assert!(lowered.contains("\r\naccept: application/snowflake\r\n"));
+        assert!(request.contains(r#"authorization: Snowflake Token="master-token""#));
+        let body = request
+            .split("\r\n\r\n")
+            .nth(1)
+            .expect("request must contain body");
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            body,
+            json!({"oldSessionToken": "old-session", "requestType": "RENEW"})
+        );
     }
 
     #[tokio::test]

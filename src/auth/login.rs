@@ -10,11 +10,11 @@ use crate::{
 use super::{
     api::AuthApiClient,
     credential::LoginContext,
-    wire::{LoginBody, LoginData, LoginQuery, LoginRequest},
+    wire::{LoginBody, LoginData, LoginQuery, LoginRequest, LoginSession, RenewedSession},
 };
 
-/// Login to Snowflake and return a session token.
-pub(crate) async fn login(login: &ClientLoginConfig, api: Arc<ApiContext>) -> Result<String> {
+/// Login to Snowflake and return the session and master tokens.
+pub(crate) async fn login(login: &ClientLoginConfig, api: Arc<ApiContext>) -> Result<LoginSession> {
     let client = AuthApiClient::new(api);
     let context = LoginContext {
         username: login.username(),
@@ -23,8 +23,18 @@ pub(crate) async fn login(login: &ClientLoginConfig, api: Arc<ApiContext>) -> Re
     let credential = login.auth().prepare(&client, context).await?;
     let request = build_login_request(context, login.initial_session(), &credential);
 
-    let session = client.login(request).await?;
-    Ok(session.token)
+    client.login(request).await
+}
+
+/// Renew an expired session token with the master token from login.
+pub(crate) async fn renew_session(
+    api: Arc<ApiContext>,
+    master_token: &str,
+    old_session_token: &str,
+) -> Result<RenewedSession> {
+    AuthApiClient::new(api)
+        .renew_session(master_token, old_session_token)
+        .await
 }
 
 fn build_login_request<'a>(

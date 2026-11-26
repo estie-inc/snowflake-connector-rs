@@ -8,7 +8,7 @@ mod test_support;
 
 use std::sync::Arc;
 
-use crate::{ApiContext, session::SessionAuth};
+use crate::{ApiContext, Result, session::SessionAuth};
 
 pub(crate) use deadline::QueryResponseDeadline;
 
@@ -21,5 +21,19 @@ pub(crate) struct QueryApiClient {
 impl QueryApiClient {
     pub(crate) fn new(api: Arc<ApiContext>, auth: Arc<SessionAuth>) -> Self {
         Self { api, auth }
+    }
+
+    /// The current session token and the `Authorization` header value that carries it.
+    fn authorization(&self) -> (Arc<str>, String) {
+        let token = self.auth.session_token();
+        let header = format!(r#"Snowflake Token="{token}""#);
+        (token, header)
+    }
+
+    /// Renew `expired` after Snowflake rejected a request made with it.
+    ///
+    /// Returns whether the request can be retried with a renewed token; see [`SessionAuth::renew`].
+    pub(crate) async fn renew_session(&self, expired: &str) -> Result<bool> {
+        self.auth.renew(&self.api, expired).await
     }
 }
