@@ -197,8 +197,9 @@ mod tests {
     };
 
     use bytes::Bytes;
+    use http::StatusCode;
     use reqwest::{Client, Url};
-    use tokio::time::timeout;
+    use tokio::{net::TcpListener, time::timeout};
 
     use super::*;
     use crate::{
@@ -212,6 +213,7 @@ mod tests {
             builder::into_statement_parts,
             wire::response::{WireQueryData, WireRowType},
         },
+        test_support::http::{base_url, read_http_request, write_json_response},
     };
 
     fn default_settings(session: &Session) -> QueryExecutionSettings {
@@ -382,6 +384,8 @@ mod tests {
         }
     }
 
+    const SESSION_EXPIRED_RESPONSE: &str = r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":null}"#;
+    const SELECT_1_RESPONSE: &str = r#"{"success":true,"data":{"queryId":"query-id","rowtype":[],"rowset":[],"queryResultFormat":"json"}}"#;
     const RENEWED_SESSION_RESPONSE: &str =
         r#"{"success":true,"data":{"sessionToken":"renewed-token"}}"#;
 
@@ -393,6 +397,61 @@ mod tests {
             ServerStep::Respond(RENEWED_SESSION_RESPONSE),
             ServerStep::Respond(expired_response),
         ])
+    }
+
+    /// Answers one request per connection with `responses` in order and returns the requests it received.
+    async fn serve_in_order(
+        responses: Vec<&'static str>,
+    ) -> (Url, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let url = base_url(listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for body in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                requests.push(read_http_request(&mut socket).await.unwrap());
+                write_json_response(&mut socket, StatusCode::OK, body)
+                    .await
+                    .unwrap();
+            }
+            requests
+        });
+        (url, server)
+    }
+
+    async fn execute_select_1(session: &Session) -> Result<ResultCursor> {
+        StatementExecutor::new(session, default_settings(session))
+            .execute(select_1_parts(), fresh_control())
+            .await
+    }
+
+    fn assert_query_submit(request: &str, token: &str) {
+        assert!(
+            request
+                .starts_with("POST /queries/v1/query-request?requestId=query-request-id HTTP/1.1"),
+            "{request}"
+        );
+        assert!(
+            request.contains(&format!(r#"authorization: Snowflake Token="{token}""#)),
+            "{request}"
+        );
+    }
+
+    fn assert_token_request(request: &str) {
+        assert!(
+            request.starts_with("POST /session/token-request?requestId="),
+            "{request}"
+        );
+        assert!(
+            request.contains(r#"authorization: Snowflake Token="master-token""#),
+            "{request}"
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"oldSessionToken": "test-token", "requestType": "RENEW"})
+        );
     }
 
     #[test]
@@ -838,180 +897,105 @@ mod tests {
         }
     }
 
-    mod session_renewal {
-        use http::StatusCode;
-        use tokio::net::TcpListener;
+    #[tokio::test]
+    async fn submit_with_expired_token_renews_and_resubmits_same_request() {
+        let (url, server) = serve_in_order(vec![
+            SESSION_EXPIRED_RESPONSE,
+            RENEWED_SESSION_RESPONSE,
+            SELECT_1_RESPONSE,
+        ])
+        .await;
+        let session = test_session(url);
 
-        use super::*;
-        use crate::test_support::http::{base_url, read_http_request, write_json_response};
+        execute_select_1(&session).await.unwrap();
 
-        const SESSION_EXPIRED_RESPONSE: &str = r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":null}"#;
-        const RENEWED_RESPONSE: &str = r#"{"success":true,"data":{"sessionToken":"renewed-token","masterToken":"renewed-master"}}"#;
-        const SELECT_1_RESPONSE: &str = r#"{"success":true,"data":{"queryId":"query-id","rowtype":[],"rowset":[],"queryResultFormat":"json"}}"#;
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_query_submit(&requests[0], "test-token");
+        assert_token_request(&requests[1]);
+        assert_query_submit(&requests[2], "renewed-token");
+        assert_eq!(&*session.auth.session_token(), "renewed-token");
+    }
 
-        /// Answers one request per connection with `responses` in order and returns the requests it received.
-        async fn serve_in_order(
-            responses: Vec<&'static str>,
-        ) -> (Url, tokio::task::JoinHandle<Vec<String>>) {
-            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-            let url = base_url(listener.local_addr().unwrap());
-            let server = tokio::spawn(async move {
-                let mut requests = Vec::new();
-                for body in responses {
-                    let (mut socket, _) = listener.accept().await.unwrap();
-                    requests.push(read_http_request(&mut socket).await.unwrap());
-                    write_json_response(&mut socket, StatusCode::OK, body)
-                        .await
-                        .unwrap();
-                }
-                requests
-            });
-            (url, server)
-        }
+    #[tokio::test]
+    async fn rejected_renewal_is_session_expired() {
+        let (url, server) = serve_in_order(vec![
+            SESSION_EXPIRED_RESPONSE,
+            r#"{"success":false,"code":"390114","message":"Authentication token has expired.  The user must authenticate again.","data":null}"#,
+        ])
+        .await;
+        let session = test_session(url);
 
-        fn renewable_session(base_url: Url) -> Session {
-            Session {
-                shared: ClientSharedPartial::new().with_base_url(base_url).build(),
-                auth: SessionAuth::for_test("test-token"),
-            }
-        }
+        let err = execute_select_1(&session).await.unwrap_err();
 
-        async fn execute(session: &Session) -> Result<ResultCursor> {
-            StatementExecutor::new(session, default_settings(session))
-                .execute(select_1_parts(), fresh_control())
-                .await
-        }
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert_eq!(err.snowflake_code(), Some("390114"));
+        assert_eq!(server.await.unwrap().len(), 2);
+    }
 
-        fn assert_query_submit(request: &str, token: &str) {
-            assert!(
-                request.starts_with(
-                    "POST /queries/v1/query-request?requestId=query-request-id HTTP/1.1"
-                ),
-                "{request}"
-            );
-            assert!(
-                request.contains(&format!(r#"authorization: Snowflake Token="{token}""#)),
-                "{request}"
-            );
-        }
+    #[tokio::test]
+    async fn renewed_token_rejected_again_is_session_expired_without_looping() {
+        let (url, server) = serve_in_order(vec![
+            SESSION_EXPIRED_RESPONSE,
+            RENEWED_SESSION_RESPONSE,
+            SESSION_EXPIRED_RESPONSE,
+        ])
+        .await;
+        let session = test_session(url);
 
-        fn assert_token_request(request: &str) {
-            assert!(
-                request.starts_with("POST /session/token-request?requestId="),
-                "{request}"
-            );
-            assert!(
-                request.contains(r#"authorization: Snowflake Token="master-token""#),
-                "{request}"
-            );
-            let body: serde_json::Value =
-                serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-            assert_eq!(
-                body,
-                serde_json::json!({"oldSessionToken": "test-token", "requestType": "RENEW"})
-            );
-        }
+        let err = execute_select_1(&session).await.unwrap_err();
 
-        #[tokio::test]
-        async fn submit_with_expired_token_renews_and_resubmits_same_request() {
-            let (url, server) = serve_in_order(vec![
-                SESSION_EXPIRED_RESPONSE,
-                RENEWED_RESPONSE,
-                SELECT_1_RESPONSE,
-            ])
-            .await;
-            let session = renewable_session(url);
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert_eq!(err.snowflake_code(), Some("390112"));
+        assert_eq!(server.await.unwrap().len(), 3);
+    }
 
-            execute(&session).await.unwrap();
+    #[tokio::test]
+    async fn poll_with_expired_token_renews_and_polls_again() {
+        let (url, server) = serve_in_order(vec![
+            r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"/queries/query-id/result"}}"#,
+            SESSION_EXPIRED_RESPONSE,
+            RENEWED_SESSION_RESPONSE,
+            SELECT_1_RESPONSE,
+        ])
+        .await;
+        let session = test_session(url);
 
-            let requests = server.await.unwrap();
-            assert_eq!(requests.len(), 3);
-            assert_query_submit(&requests[0], "test-token");
-            assert_token_request(&requests[1]);
-            assert_query_submit(&requests[2], "renewed-token");
-            assert_eq!(&*session.auth.session_token(), "renewed-token");
-        }
+        execute_select_1(&session).await.unwrap();
 
-        #[tokio::test]
-        async fn rejected_renewal_is_session_expired() {
-            let (url, server) = serve_in_order(vec![
-                SESSION_EXPIRED_RESPONSE,
-                r#"{"success":false,"code":"390114","message":"Authentication token has expired.  The user must authenticate again.","data":null}"#,
-            ])
-            .await;
-            let session = renewable_session(url);
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 4);
+        assert_query_submit(&requests[0], "test-token");
+        assert!(
+            requests[1].starts_with("GET /queries/query-id/result HTTP/1.1")
+                && requests[1].contains(r#"authorization: Snowflake Token="test-token""#),
+            "{}",
+            requests[1]
+        );
+        assert_token_request(&requests[2]);
+        assert!(
+            requests[3].starts_with("GET /queries/query-id/result HTTP/1.1")
+                && requests[3].contains(r#"authorization: Snowflake Token="renewed-token""#),
+            "{}",
+            requests[3]
+        );
+    }
 
-            let err = execute(&session).await.unwrap_err();
+    #[tokio::test]
+    async fn later_queries_use_the_renewed_token() {
+        let (url, server) = serve_in_order(vec![
+            SESSION_EXPIRED_RESPONSE,
+            RENEWED_SESSION_RESPONSE,
+            SELECT_1_RESPONSE,
+            SELECT_1_RESPONSE,
+        ])
+        .await;
+        let session = test_session(url);
 
-            assert_eq!(err.kind(), ErrorKind::SessionExpired);
-            assert_eq!(err.snowflake_code(), Some("390114"));
-            assert_eq!(server.await.unwrap().len(), 2);
-        }
+        execute_select_1(&session).await.unwrap();
+        execute_select_1(&session).await.unwrap();
 
-        #[tokio::test]
-        async fn renewed_token_rejected_again_is_session_expired_without_looping() {
-            let (url, server) = serve_in_order(vec![
-                SESSION_EXPIRED_RESPONSE,
-                RENEWED_RESPONSE,
-                SESSION_EXPIRED_RESPONSE,
-            ])
-            .await;
-            let session = renewable_session(url);
-
-            let err = execute(&session).await.unwrap_err();
-
-            assert_eq!(err.kind(), ErrorKind::SessionExpired);
-            assert_eq!(err.snowflake_code(), Some("390112"));
-            assert_eq!(server.await.unwrap().len(), 3);
-        }
-
-        #[tokio::test]
-        async fn poll_with_expired_token_renews_and_polls_again() {
-            let (url, server) = serve_in_order(vec![
-                r#"{"code":"333334","success":true,"data":{"queryId":"query-id","getResultUrl":"/queries/query-id/result"}}"#,
-                SESSION_EXPIRED_RESPONSE,
-                RENEWED_RESPONSE,
-                SELECT_1_RESPONSE,
-            ])
-            .await;
-            let session = renewable_session(url);
-
-            execute(&session).await.unwrap();
-
-            let requests = server.await.unwrap();
-            assert_eq!(requests.len(), 4);
-            assert_query_submit(&requests[0], "test-token");
-            assert!(
-                requests[1].starts_with("GET /queries/query-id/result HTTP/1.1")
-                    && requests[1].contains(r#"authorization: Snowflake Token="test-token""#),
-                "{}",
-                requests[1]
-            );
-            assert_token_request(&requests[2]);
-            assert!(
-                requests[3].starts_with("GET /queries/query-id/result HTTP/1.1")
-                    && requests[3].contains(r#"authorization: Snowflake Token="renewed-token""#),
-                "{}",
-                requests[3]
-            );
-        }
-
-        #[tokio::test]
-        async fn later_queries_use_the_renewed_token() {
-            let (url, server) = serve_in_order(vec![
-                SESSION_EXPIRED_RESPONSE,
-                RENEWED_RESPONSE,
-                SELECT_1_RESPONSE,
-                SELECT_1_RESPONSE,
-            ])
-            .await;
-            let session = renewable_session(url);
-
-            execute(&session).await.unwrap();
-            execute(&session).await.unwrap();
-
-            let requests = server.await.unwrap();
-            assert_query_submit(&requests[3], "renewed-token");
-        }
+        let requests = server.await.unwrap();
+        assert_query_submit(&requests[3], "renewed-token");
     }
 }
