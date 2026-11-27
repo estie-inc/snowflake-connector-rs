@@ -6,7 +6,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LoginSession {
     pub(crate) token: String,
-    /// Renews `token` once it expires.
+    /// Credential for `/session/token-request`, which issues a new session token after `token` expires.
     pub(crate) master_token: String,
 }
 
