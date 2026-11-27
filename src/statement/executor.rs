@@ -79,8 +79,6 @@ impl StatementExecutor {
             if control.cancel_intent() {
                 return Err(CancelledError::new(None, None, None).into());
             }
-            // Snowflake rejects an expired token before running the statement, so resubmitting it under the same
-            // request ID runs it once.
             let prepared = self
                 .api
                 .prepare_submit(&parts, control.query_request_id())?;
