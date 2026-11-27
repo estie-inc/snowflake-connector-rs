@@ -382,6 +382,19 @@ mod tests {
         }
     }
 
+    const RENEWED_SESSION_RESPONSE: &str =
+        r#"{"success":true,"data":{"sessionToken":"renewed-token"}}"#;
+
+    /// The connector renews an expired token once, so a session-expired error surfaces when the renewed token is
+    /// rejected too.
+    fn spawn_expired_after_renewal_server(expired_response: &'static str) -> Url {
+        spawn_scripted_server(vec![
+            ServerStep::Respond(expired_response),
+            ServerStep::Respond(RENEWED_SESSION_RESPONSE),
+            ServerStep::Respond(expired_response),
+        ])
+    }
+
     #[test]
     fn statement_executor_reuses_session_query_runtime() {
         let runtime = QueryRuntime::with_blocking_parse_concurrency(NonZeroUsize::new(1).unwrap());
@@ -589,19 +602,6 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::Protocol);
         assert_eq!(err.to_string(), "unsupported result format: arrow");
         assert_eq!(err.query_id(), Some("query-id"));
-    }
-
-    const RENEWED_SESSION_RESPONSE: &str =
-        r#"{"success":true,"data":{"sessionToken":"renewed-token"}}"#;
-
-    /// The connector renews an expired token once, so a session-expired error surfaces when the renewed token is
-    /// rejected too.
-    fn spawn_expired_after_renewal_server(expired_response: &'static str) -> Url {
-        spawn_scripted_server(vec![
-            ServerStep::Respond(expired_response),
-            ServerStep::Respond(RENEWED_SESSION_RESPONSE),
-            ServerStep::Respond(expired_response),
-        ])
     }
 
     #[tokio::test]
