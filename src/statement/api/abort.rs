@@ -41,7 +41,7 @@ impl QueryApiClient {
         clock: &C,
     ) -> Result<()> {
         let cancel_request_id = Uuid::new_v4().to_string();
-        let mut url = self.api.resolve("queries/v1/abort-request")?;
+        let mut url = self.api.resolve("queries/v1/abort-request");
         url.query_pairs_mut()
             .append_pair("requestId", &cancel_request_id);
 
