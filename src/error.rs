@@ -58,7 +58,7 @@ const JSON_BODY_PREVIEW_MAX_BYTES: usize = 1024;
 ///
 /// fn report(err: &Error) {
 ///     match err.kind() {
-///         // The token is stale; recover by creating a fresh session and retrying.
+///         // The session could not be kept alive; recover by creating a fresh session and retrying.
 ///         ErrorKind::SessionExpired => eprintln!("session expired, reconnecting"),
 ///         // Snowflake rejected the statement.
 ///         // The code, message, and query id correlate the failure with Snowsight / query history.
@@ -124,7 +124,12 @@ pub enum ErrorKind {
     Server,
     /// A user-requested cancellation prevented submission or terminated the query.
     Cancelled,
-    /// The current session token is no longer valid.
+    /// The session is no longer usable and a new one must be created with
+    /// [`Client::create_session`](crate::Client::create_session).
+    ///
+    /// Snowflake session tokens expire on a fixed schedule (one hour by default) even while in use. The connector
+    /// renews an expired token transparently and resends the affected request, so this kind is only reported once
+    /// renewal is impossible.
     SessionExpired,
     /// The connector timed out while waiting for a response.
     Timeout,
@@ -563,6 +568,10 @@ impl TimeoutError {
 
     pub(crate) fn query_cancel() -> Self {
         Self::QueryCancel
+    }
+
+    pub(crate) fn session_renewal() -> Self {
+        Self::SessionRenewal
     }
 
     #[cfg(feature = "external-browser-sso")]

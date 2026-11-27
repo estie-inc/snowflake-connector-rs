@@ -104,6 +104,10 @@ impl Display for Error {
                 error: TimeoutError::QueryCancel,
                 ..
             } => f.write_str("timed out waiting for query cancellation response"),
+            Repr::Timeout {
+                error: TimeoutError::SessionRenewal,
+                ..
+            } => f.write_str("timed out renewing the session token"),
             #[cfg(feature = "external-browser-sso")]
             Repr::Timeout {
                 error: TimeoutError::BrowserCallback,

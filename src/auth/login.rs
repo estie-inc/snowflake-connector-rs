@@ -8,13 +8,14 @@ use crate::{
 };
 
 use super::{
+    SessionAuth,
     api::AuthApiClient,
     credential::LoginContext,
     wire::{LoginBody, LoginData, LoginQuery, LoginRequest},
 };
 
-/// Login to Snowflake and return a session token.
-pub(crate) async fn login(login: &ClientLoginConfig, api: Arc<ApiContext>) -> Result<String> {
+/// Login to Snowflake and return the credentials of the new session.
+pub(crate) async fn login(login: &ClientLoginConfig, api: Arc<ApiContext>) -> Result<SessionAuth> {
     let client = AuthApiClient::new(api);
     let context = LoginContext {
         username: login.username(),
@@ -24,7 +25,7 @@ pub(crate) async fn login(login: &ClientLoginConfig, api: Arc<ApiContext>) -> Re
     let request = build_login_request(context, login.initial_session(), &credential);
 
     let session = client.login(request).await?;
-    Ok(session.token)
+    Ok(SessionAuth::from_login(session))
 }
 
 fn build_login_request<'a>(

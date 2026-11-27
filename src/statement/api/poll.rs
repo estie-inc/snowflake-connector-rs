@@ -8,9 +8,12 @@ use reqwest::Url;
 use tokio::time::{sleep, timeout};
 
 use crate::{
-    error::{NetworkError, ProtocolError, QueryScopedError, QueryScopedResult, TimeoutError},
+    error::{
+        NetworkError, ProtocolError, QueryScopedError, QueryScopedResult, SessionExpiredError,
+        TimeoutError,
+    },
     statement::wire::response::{
-        QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, WireQueryResponse,
+        QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, SESSION_EXPIRED, WireQueryResponse,
         parse_query_response,
     },
 };
@@ -31,6 +34,7 @@ impl QueryApiClient {
             }
         };
         let mut backoff = PollBackoff::new();
+        let mut resent_after_renewal = false;
 
         loop {
             // The poll endpoint is a server-side long-poll, so apply the remaining query-response budget to the whole
@@ -40,14 +44,12 @@ impl QueryApiClient {
                 Err(err) => return Err(QueryScopedError::new(query_id, err)),
             };
 
+            let tokens = self.auth.snapshot();
             let request = self
                 .api
                 .request(Method::GET, poll_url.clone())
                 .header(ACCEPT, "application/snowflake")
-                .header(
-                    AUTHORIZATION,
-                    format!(r#"Snowflake Token="{}""#, self.auth.session_token),
-                );
+                .header(AUTHORIZATION, tokens.authorization());
 
             let response = match timeout(remaining, async {
                 let resp = request.send().await?;
@@ -82,12 +84,31 @@ impl QueryApiClient {
 
             match parse_query_response(body) {
                 Ok(response)
+                    if response.code.as_deref() == Some(SESSION_EXPIRED)
+                        && !resent_after_renewal =>
+                {
+                    if let Err(error) = self
+                        .auth
+                        .renew(&self.api, &tokens, deadline.remaining())
+                        .await
+                    {
+                        let observed =
+                            SessionExpiredError::new(response.code, response.message, None);
+                        return Err(QueryScopedError::new(
+                            query_id,
+                            error.into_scoped(observed, TimeoutError::query()),
+                        ));
+                    }
+                    resent_after_renewal = true;
+                }
+                Ok(response)
                     if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE)
                         && response.code.as_deref() != Some(QUERY_IN_PROGRESS_CODE) =>
                 {
                     return Ok(response);
                 }
                 Ok(_) => {
+                    resent_after_renewal = false;
                     let remaining = deadline.remaining();
                     if remaining.is_zero() {
                         return Err(QueryScopedError::new(query_id, TimeoutError::query()));
@@ -192,7 +213,13 @@ mod tests {
     use crate::{
         Error, ErrorKind,
         api_context::DEFAULT_USER_AGENT,
-        statement::api::{QueryResponseDeadline, test_support::test_query_api},
+        statement::api::{
+            QueryResponseDeadline,
+            test_support::{
+                QUERY_DONE_BODY, RENEWED_BODY, SESSION_EXPIRED_BODY, renewable_query_api,
+                request_target, serve_script, test_query_api,
+            },
+        },
         test_support::http::{read_http_request, write_json_response},
     };
 
@@ -304,5 +331,125 @@ mod tests {
                 Duration::from_secs(5),
             ]
         );
+    }
+
+    const POLL_PATH: &str = "/queries/query-id/result";
+    const IN_PROGRESS_BODY: &str = r#"{"success":true,"code":"333334","data":{"queryId":"query-id","getResultUrl":"/queries/query-id/result"}}"#;
+
+    #[tokio::test]
+    async fn poll_renews_expired_session_and_keeps_polling() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = serve_script(
+            listener,
+            vec![SESSION_EXPIRED_BODY, RENEWED_BODY, QUERY_DONE_BODY],
+        );
+
+        let client = renewable_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let response = client
+            .poll_async_results(
+                POLL_PATH,
+                QueryResponseDeadline::new(Duration::from_secs(30)),
+                Arc::from("query-id"),
+            )
+            .await
+            .unwrap();
+        assert!(response.success);
+
+        let (requests, quiet) = server.await.unwrap();
+        assert!(quiet);
+        assert_eq!(request_target(&requests[0]), POLL_PATH);
+        assert!(requests[0].contains(r#"authorization: Snowflake Token="test-token""#));
+        assert!(request_target(&requests[1]).starts_with("/session/token-request?"));
+        assert_eq!(request_target(&requests[2]), POLL_PATH);
+        assert!(requests[2].contains(r#"authorization: Snowflake Token="renewed-token""#));
+    }
+
+    #[tokio::test]
+    async fn poll_renews_again_after_progress_was_observed() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = serve_script(
+            listener,
+            vec![
+                SESSION_EXPIRED_BODY,
+                RENEWED_BODY,
+                IN_PROGRESS_BODY,
+                SESSION_EXPIRED_BODY,
+                r#"{"success":true,"data":{"sessionToken":"renewed-again"}}"#,
+                QUERY_DONE_BODY,
+            ],
+        );
+
+        let client = renewable_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let response = client
+            .poll_async_results(
+                POLL_PATH,
+                QueryResponseDeadline::new(Duration::from_secs(30)),
+                Arc::from("query-id"),
+            )
+            .await
+            .unwrap();
+        assert!(response.success);
+
+        let (requests, quiet) = server.await.unwrap();
+        assert!(quiet);
+        assert!(requests[4].contains(r#"authorization: Snowflake Token="renewed-master""#));
+        assert!(requests[5].contains(r#"authorization: Snowflake Token="renewed-again""#));
+    }
+
+    #[tokio::test]
+    async fn poll_rejected_renewal_is_session_expired_with_query_id() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = serve_script(
+            listener,
+            vec![
+                SESSION_EXPIRED_BODY,
+                r#"{"success":false,"code":"390114","message":"master token expired"}"#,
+            ],
+        );
+
+        let client = renewable_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let err: Error = client
+            .poll_async_results(
+                POLL_PATH,
+                QueryResponseDeadline::new(Duration::from_secs(30)),
+                Arc::from("query-id"),
+            )
+            .await
+            .unwrap_err()
+            .into();
+
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert_eq!(err.snowflake_code(), Some("390114"));
+        assert_eq!(err.query_id(), Some("query-id"));
+        let (_requests, quiet) = server.await.unwrap();
+        assert!(quiet);
+    }
+
+    #[tokio::test]
+    async fn poll_without_master_token_returns_expired_response() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = serve_script(listener, vec![SESSION_EXPIRED_BODY]);
+
+        let client = test_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let err: Error = client
+            .poll_async_results(
+                POLL_PATH,
+                QueryResponseDeadline::new(Duration::from_secs(30)),
+                Arc::from("query-id"),
+            )
+            .await
+            .unwrap_err()
+            .into();
+
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert_eq!(err.snowflake_code(), Some("390112"));
+        assert_eq!(err.query_id(), Some("query-id"));
+        let (requests, quiet) = server.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(quiet);
     }
 }

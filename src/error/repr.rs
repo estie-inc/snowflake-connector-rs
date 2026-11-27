@@ -96,6 +96,7 @@ pub(crate) enum TimeoutError {
     Request(reqwest::Error),
     Query,
     QueryCancel,
+    SessionRenewal,
     #[cfg(feature = "external-browser-sso")]
     BrowserCallback,
 }

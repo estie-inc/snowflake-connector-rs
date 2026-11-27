@@ -2,7 +2,7 @@ use std::{fmt, sync::Arc};
 
 use crate::{
     ApiContext, ClientConfig, ClientLoginConfig, QueryExecutionPolicy, Result, Session,
-    auth::login, runtime::QueryRuntime, session::SessionAuth,
+    auth::login, runtime::QueryRuntime,
 };
 
 #[derive(Clone)]
@@ -66,10 +66,10 @@ impl Client {
     /// Returns `ErrorKind::Config`, `ErrorKind::Auth`, `ErrorKind::Network`, `ErrorKind::Timeout`, `ErrorKind::Protocol`, or
     /// `ErrorKind::Internal` depending on how session establishment fails.
     pub async fn create_session(&self) -> Result<Session> {
-        let session_token = login(&self.inner.login, Arc::clone(&self.inner.shared.api)).await?;
+        let auth = login(&self.inner.login, Arc::clone(&self.inner.shared.api)).await?;
         Ok(Session {
             shared: Arc::clone(&self.inner.shared),
-            auth: Arc::new(SessionAuth { session_token }),
+            auth: Arc::new(auth),
         })
     }
 }

@@ -8,7 +8,7 @@ mod test_support;
 
 use std::sync::Arc;
 
-use crate::{ApiContext, session::SessionAuth};
+use crate::{ApiContext, auth::SessionAuth};
 
 pub(crate) use deadline::QueryResponseDeadline;
 
