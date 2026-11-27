@@ -3,6 +3,7 @@ channel = "1.88"
 components = [
     "cargo",
     "clippy",
+    "rust-analyzer",
     "rust-src",
     "rustc",
     "rustfmt",
