@@ -74,9 +74,8 @@ impl StatementExecutor {
 
         let submitted_token = Arc::clone(prepared.session_token());
         let mut response = self.api.send_prepared_submit(prepared, deadline).await?;
-        if response.code.as_deref() == Some(SESSION_EXPIRED)
-            && self.api.renew_session(&submitted_token).await?
-        {
+        if response.code.as_deref() == Some(SESSION_EXPIRED) {
+            self.api.renew_session(&submitted_token).await?;
             if control.cancel_intent() {
                 return Err(CancelledError::new(None, None, None).into());
             }
@@ -594,9 +593,22 @@ mod tests {
         assert_eq!(err.query_id(), Some("query-id"));
     }
 
+    const RENEWED_SESSION_RESPONSE: &str =
+        r#"{"success":true,"data":{"sessionToken":"renewed-token"}}"#;
+
+    /// The connector renews an expired token once, so a session-expired error surfaces when the renewed token is
+    /// rejected too.
+    fn spawn_expired_after_renewal_server(expired_response: &'static str) -> Url {
+        spawn_scripted_server(vec![
+            ServerStep::Respond(expired_response),
+            ServerStep::Respond(RENEWED_SESSION_RESPONSE),
+            ServerStep::Respond(expired_response),
+        ])
+    }
+
     #[tokio::test]
     async fn execute_session_expired_preserves_snowflake_fields() {
-        let session = test_session(spawn_single_response_server(
+        let session = test_session(spawn_expired_after_renewal_server(
             r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":{"queryId":"query-id"}}"#,
         ));
 
@@ -620,7 +632,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_session_expired_without_query_id_preserves_snowflake_fields() {
-        let session = test_session(spawn_single_response_server(
+        let session = test_session(spawn_expired_after_renewal_server(
             r#"{"code":"390112","message":"Your session has expired. Please login again.","success":false,"data":null}"#,
         ));
 
@@ -862,7 +874,7 @@ mod tests {
         fn renewable_session(base_url: Url) -> Session {
             Session {
                 shared: ClientSharedPartial::new().with_base_url(base_url).build(),
-                auth: SessionAuth::for_test_with_master("test-token", "master-token"),
+                auth: SessionAuth::for_test("test-token"),
             }
         }
 

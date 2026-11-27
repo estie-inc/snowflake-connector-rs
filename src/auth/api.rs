@@ -221,7 +221,7 @@ mod tests {
             write_json_response(
                 &mut socket,
                 StatusCode::OK,
-                r#"{"success":true,"data":{"token":"session-token"}}"#,
+                r#"{"success":true,"data":{"token":"session-token","masterToken":"master-token"}}"#,
             )
             .await
             .unwrap();
@@ -231,6 +231,7 @@ mod tests {
         let session = client.login(sample_login_request()).await.unwrap();
 
         assert_eq!(session.token, "session-token");
+        assert_eq!(session.master_token, "master-token");
 
         server.await.unwrap();
     }

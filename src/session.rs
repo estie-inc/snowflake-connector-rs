@@ -76,15 +76,15 @@ pub(crate) struct SessionAuth {
 
 struct SessionTokens {
     session: Arc<str>,
-    master: Option<Arc<str>>,
+    master: Arc<str>,
 }
 
 impl SessionAuth {
-    pub(crate) fn new(session_token: String, master_token: Option<String>) -> Self {
+    pub(crate) fn new(session_token: String, master_token: String) -> Self {
         Self {
             tokens: RwLock::new(SessionTokens {
                 session: Arc::from(session_token),
-                master: master_token.map(Arc::from),
+                master: Arc::from(master_token),
             }),
             renewal: tokio::sync::Mutex::new(()),
         }
@@ -95,37 +95,33 @@ impl SessionAuth {
         Arc::clone(&self.read_tokens().session)
     }
 
-    /// Replace `expired` with a renewed session token.
-    ///
-    /// Returns `Ok(true)` when the caller should retry with [`SessionAuth::session_token`], including when another
-    /// request already renewed `expired`. Returns `Ok(false)` when the session has no master token to renew with.
+    /// Replace `expired` with a renewed session token, after which the caller retries with
+    /// [`SessionAuth::session_token`]. Does nothing when another request already renewed `expired`.
     ///
     /// # Errors
     ///
     /// Returns `ErrorKind::SessionExpired` when Snowflake rejects the renewal (for example because the master token
     /// has expired too), or the network, timeout, or protocol error of the token request.
-    pub(crate) async fn renew(&self, api: &Arc<ApiContext>, expired: &str) -> Result<bool> {
+    pub(crate) async fn renew(&self, api: &Arc<ApiContext>, expired: &str) -> Result<()> {
         let _renewal = self.renewal.lock().await;
 
         let master = {
             let tokens = self.read_tokens();
             if *tokens.session != *expired {
-                return Ok(true);
+                return Ok(());
             }
-            match &tokens.master {
-                Some(master) => Arc::clone(master),
-                None => return Ok(false),
-            }
+            Arc::clone(&tokens.master)
         };
 
         let renewed = renew_session(Arc::clone(api), &master, expired).await?;
 
         let mut tokens = self.tokens.write().unwrap_or_else(PoisonError::into_inner);
         tokens.session = Arc::from(renewed.session_token);
+        // Keep the current master token when Snowflake does not rotate it.
         if let Some(master) = renewed.master_token {
-            tokens.master = Some(Arc::from(master));
+            tokens.master = Arc::from(master);
         }
-        Ok(true)
+        Ok(())
     }
 
     fn read_tokens(&self) -> RwLockReadGuard<'_, SessionTokens> {
@@ -146,17 +142,9 @@ impl fmt::Debug for Session {
 
 #[cfg(test)]
 impl SessionAuth {
-    /// Build a per-session auth handle without a master token for unit tests.
+    /// Build a per-session auth handle for unit tests. Its master token is `master-token`.
     pub(crate) fn for_test(session_token: impl Into<String>) -> Arc<Self> {
-        Arc::new(Self::new(session_token.into(), None))
-    }
-
-    /// Build a per-session auth handle that can renew its session token for unit tests.
-    pub(crate) fn for_test_with_master(
-        session_token: impl Into<String>,
-        master_token: impl Into<String>,
-    ) -> Arc<Self> {
-        Arc::new(Self::new(session_token.into(), Some(master_token.into())))
+        Arc::new(Self::new(session_token.into(), "master-token".to_string()))
     }
 }
 
@@ -812,15 +800,18 @@ mod tests {
             read_http_request(&mut query_socket).await.unwrap();
             query_ready_tx.send(()).unwrap();
 
-            let (mut abort_socket, _) = listener.accept().await.unwrap();
-            read_http_request(&mut abort_socket).await.unwrap();
-            write_json_response(
-                &mut abort_socket,
-                StatusCode::OK,
+            // The abort is rejected as expired, renewed once, and rejected again with the renewed token.
+            for body in [
                 r#"{"success":false,"code":"390112","message":"session expired"}"#,
-            )
-            .await
-            .unwrap();
+                r#"{"success":true,"data":{"sessionToken":"renewed-token"}}"#,
+                r#"{"success":false,"code":"390112","message":"session expired"}"#,
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                read_http_request(&mut socket).await.unwrap();
+                write_json_response(&mut socket, StatusCode::OK, body)
+                    .await
+                    .unwrap();
+            }
             drop(query_socket);
         });
 
@@ -859,29 +850,17 @@ mod tests {
             reqwest::Client::new(),
             Url::parse(&format!("http://{addr}/")).unwrap(),
         ));
-        let auth = SessionAuth::for_test_with_master("test-token", "master-token");
+        let auth = SessionAuth::for_test("test-token");
 
         let (first, second) = tokio::join!(
             auth.renew(&api, "test-token"),
             auth.renew(&api, "test-token")
         );
 
-        assert!(first.unwrap());
-        assert!(second.unwrap());
+        first.unwrap();
+        second.unwrap();
         assert_eq!(&*auth.session_token(), "renewed-token");
         let request = server.await.unwrap();
         assert!(request.starts_with("POST /session/token-request?requestId="));
-    }
-
-    #[tokio::test]
-    async fn renewal_without_master_token_is_not_possible() {
-        let api = Arc::new(ApiContext::new(
-            reqwest::Client::new(),
-            Url::parse("http://127.0.0.1:1/").unwrap(),
-        ));
-        let auth = SessionAuth::for_test("test-token");
-
-        assert!(!auth.renew(&api, "test-token").await.unwrap());
-        assert_eq!(&*auth.session_token(), "test-token");
     }
 }

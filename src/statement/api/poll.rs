@@ -79,11 +79,9 @@ impl QueryApiClient {
             let response = parse_query_response(body).map_err(|err| scoped(err.into()))?;
             let code = response.code.as_deref();
             if code == Some(SESSION_EXPIRED) && !retrying_after_renewal {
-                if self.renew_session(&session_token).await? {
-                    retrying_after_renewal = true;
-                    continue;
-                }
-                return Ok(response);
+                self.renew_session(&session_token).await?;
+                retrying_after_renewal = true;
+                continue;
             }
             if code != Some(QUERY_IN_PROGRESS_ASYNC_CODE) && code != Some(QUERY_IN_PROGRESS_CODE) {
                 return Ok(response);

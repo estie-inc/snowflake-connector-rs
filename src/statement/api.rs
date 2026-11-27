@@ -30,10 +30,8 @@ impl QueryApiClient {
         (token, header)
     }
 
-    /// Renew `expired` after Snowflake rejected a request made with it.
-    ///
-    /// Returns whether the request can be retried with a renewed token; see [`SessionAuth::renew`].
-    pub(crate) async fn renew_session(&self, expired: &str) -> Result<bool> {
+    /// Renew `expired` after Snowflake rejected a request made with it; see [`SessionAuth::renew`].
+    pub(crate) async fn renew_session(&self, expired: &str) -> Result<()> {
         self.auth.renew(&self.api, expired).await
     }
 }

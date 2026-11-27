@@ -6,9 +6,8 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LoginSession {
     pub(crate) token: String,
-    /// Renews `token` once it expires. Snowflake always returns one, but a missing master token only disables
-    /// renewal instead of failing the login.
-    pub(crate) master_token: Option<String>,
+    /// Renews `token` once it expires.
+    pub(crate) master_token: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -38,10 +37,13 @@ pub(crate) fn parse_login_response(body: &str) -> Result<LoginSession> {
     let token = data
         .token
         .ok_or_else(|| ProtocolError::missing_field("data.token"))?;
+    let master_token = data
+        .master_token
+        .ok_or_else(|| ProtocolError::missing_field("data.masterToken"))?;
 
     Ok(LoginSession {
         token,
-        master_token: data.master_token,
+        master_token,
     })
 }
 
@@ -52,26 +54,18 @@ mod tests {
 
     #[test]
     fn parse_login_response_success_returns_session() {
-        let session =
-            parse_login_response(r#"{"success":true,"data":{"token":"session-token"}}"#).unwrap();
-
-        assert_eq!(
-            session,
-            LoginSession {
-                token: "session-token".to_string(),
-                master_token: None,
-            }
-        );
-    }
-
-    #[test]
-    fn parse_login_response_keeps_master_token() {
         let session = parse_login_response(
             r#"{"success":true,"data":{"token":"session-token","masterToken":"master-token"}}"#,
         )
         .unwrap();
 
-        assert_eq!(session.master_token.as_deref(), Some("master-token"));
+        assert_eq!(
+            session,
+            LoginSession {
+                token: "session-token".to_string(),
+                master_token: "master-token".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -90,6 +84,18 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "missing required field in Snowflake response: data.token"
+        );
+    }
+
+    #[test]
+    fn parse_login_response_missing_master_token_is_protocol_error() {
+        let err = parse_login_response(r#"{"success":true,"data":{"token":"session-token"}}"#)
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::Protocol);
+        assert_eq!(
+            err.to_string(),
+            "missing required field in Snowflake response: data.masterToken"
         );
     }
 
