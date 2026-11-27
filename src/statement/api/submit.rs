@@ -29,7 +29,7 @@ impl QueryApiClient {
         parts: &StatementParts,
         query_request_id: &str,
     ) -> Result<PreparedSubmit> {
-        let mut url = self.api.resolve("queries/v1/query-request")?;
+        let mut url = self.api.resolve("queries/v1/query-request");
         url.query_pairs_mut()
             .append_pair("requestId", query_request_id);
 

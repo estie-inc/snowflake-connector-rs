@@ -42,7 +42,7 @@ impl AuthApiClient {
     }
 
     pub(crate) async fn login(&self, request: LoginRequest<'_>) -> Result<LoginSession> {
-        let url = self.api.resolve("session/v1/login-request")?;
+        let url = self.api.resolve("session/v1/login-request");
 
         let response = self
             .post(url, LOGIN_REQUEST_ACCEPT)
@@ -66,7 +66,7 @@ impl AuthApiClient {
         &self,
         request: AuthenticatorRequest<'_>,
     ) -> Result<ExternalBrowserChallenge> {
-        let url = self.api.resolve("session/authenticator-request")?;
+        let url = self.api.resolve("session/authenticator-request");
 
         let body = request.into_body(ClientEnvironment::auth_defaults(self.request_timeout));
         let response = self

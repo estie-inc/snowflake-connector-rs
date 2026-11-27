@@ -1,8 +1,6 @@
 use http::Method;
 use reqwest::{Url, header::USER_AGENT};
 
-use crate::{Result, error::ConfigError};
-
 pub(crate) const DEFAULT_USER_AGENT: &str =
     concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
@@ -20,10 +18,12 @@ impl ApiContext {
         Self { http, base_url }
     }
 
-    pub(crate) fn resolve(&self, relative: &str) -> Result<Url> {
+    pub(crate) fn resolve(&self, endpoint: &'static str) -> Url {
+        // The base URL was validated as an `http(s)` origin when the client was built,
+        // and joining a constant relative path onto such a URL cannot fail.
         self.base_url
-            .join(relative)
-            .map_err(|e| ConfigError::invalid_url(e.to_string()).into())
+            .join(endpoint)
+            .expect("fixed endpoint path must join onto a validated http(s) base URL")
     }
 
     pub(crate) fn request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
@@ -40,7 +40,6 @@ impl ApiContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ErrorKind;
 
     fn context() -> ApiContext {
         ApiContext::new(
@@ -51,21 +50,14 @@ mod tests {
 
     #[test]
     fn resolve_joins_relative_endpoint_against_base_url() {
-        let url = context().resolve("session/v1/login-request").unwrap();
+        let url = context().resolve("session/v1/login-request");
         assert_eq!(url.as_str(), "https://example.com/session/v1/login-request");
-    }
-
-    #[test]
-    fn resolve_invalid_url_is_config_error() {
-        // An empty host makes the join fail; it must surface as the same config error the endpoints used before.
-        let err = context().resolve("https://").unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::Config);
     }
 
     #[test]
     fn request_carries_connector_user_agent() {
         let ctx = context();
-        let url = ctx.resolve("queries/v1/query-request").unwrap();
+        let url = ctx.resolve("queries/v1/query-request");
         let request = ctx.request(Method::POST, url).build().unwrap();
         assert_eq!(
             request.headers().get(USER_AGENT).unwrap(),
@@ -76,7 +68,7 @@ mod tests {
     #[test]
     fn request_does_not_attach_endpoint_headers() {
         let ctx = context();
-        let url = ctx.resolve("queries/v1/query-request").unwrap();
+        let url = ctx.resolve("queries/v1/query-request");
         let request = ctx.request(Method::POST, url).build().unwrap();
         assert!(request.headers().get(reqwest::header::ACCEPT).is_none());
         assert!(
