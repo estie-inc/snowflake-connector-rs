@@ -112,6 +112,16 @@ impl RenewError {
     }
 }
 
+pub(crate) enum Exchange<T> {
+    Done(T),
+    Expired(T),
+}
+
+pub(crate) enum RenewedSendError<T, E> {
+    Send(E),
+    Renew { response: T, error: RenewError },
+}
+
 impl SessionAuth {
     pub(crate) fn new(session_token: String, master_token: Option<String>) -> Self {
         Self {
@@ -132,9 +142,31 @@ impl SessionAuth {
         Arc::clone(&self.current.read().unwrap_or_else(PoisonError::into_inner))
     }
 
-    /// Replaces the session token that `observed` carried. When another task already replaced it, no token request
-    /// is sent and the current credentials are returned.
-    pub(crate) async fn renew(
+    pub(crate) async fn send_with_renewal<T, E, F, Fut>(
+        &self,
+        api: &Arc<ApiContext>,
+        renew_budget: impl FnOnce() -> Duration,
+        mut send: F,
+    ) -> Result<Exchange<T>, RenewedSendError<T, E>>
+    where
+        F: FnMut(Arc<TokenSet>) -> Fut,
+        Fut: Future<Output = Result<Exchange<T>, E>>,
+    {
+        let tokens = self.snapshot();
+        let response = match send(Arc::clone(&tokens)).await {
+            Ok(Exchange::Expired(response)) => response,
+            Ok(done) => return Ok(done),
+            Err(error) => return Err(RenewedSendError::Send(error)),
+        };
+
+        if let Err(error) = self.renew(api, &tokens, renew_budget()).await {
+            return Err(RenewedSendError::Renew { response, error });
+        }
+
+        send(self.snapshot()).await.map_err(RenewedSendError::Send)
+    }
+
+    async fn renew(
         &self,
         api: &Arc<ApiContext>,
         observed: &TokenSet,
@@ -234,6 +266,19 @@ impl SessionAuth {
         *self.current.write().unwrap_or_else(PoisonError::into_inner) = Arc::clone(&next);
         Ok(next)
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(session_token: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self::new(session_token.into(), None))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_master(
+        session_token: impl Into<String>,
+        master_token: impl Into<String>,
+    ) -> Arc<Self> {
+        Arc::new(Self::new(session_token.into(), Some(master_token.into())))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -262,20 +307,6 @@ impl RenewBackoff {
         let delay = Self::STEPS[self.step];
         self.step = (self.step + 1).min(Self::STEPS.len() - 1);
         delay
-    }
-}
-
-#[cfg(test)]
-impl SessionAuth {
-    pub(crate) fn for_test(session_token: impl Into<String>) -> Arc<Self> {
-        Arc::new(Self::new(session_token.into(), None))
-    }
-
-    pub(crate) fn for_test_with_master(
-        session_token: impl Into<String>,
-        master_token: impl Into<String>,
-    ) -> Arc<Self> {
-        Arc::new(Self::new(session_token.into(), Some(master_token.into())))
     }
 }
 

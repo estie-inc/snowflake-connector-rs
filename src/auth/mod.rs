@@ -10,4 +10,4 @@ mod session_auth;
 mod wire;
 
 pub(crate) use login::login;
-pub(crate) use session_auth::{RenewError, SessionAuth};
+pub(crate) use session_auth::{Exchange, RenewError, RenewedSendError, SessionAuth};

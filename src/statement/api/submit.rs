@@ -8,7 +8,7 @@ use tokio::time::timeout;
 
 use crate::{
     Error, Result,
-    auth::RenewError,
+    auth::{Exchange, RenewError, RenewedSendError},
     error::{
         NetworkError, SessionExpiredError, TimeoutError, classify_request_error,
         with_optional_query_id,
@@ -53,61 +53,70 @@ impl QueryApiClient {
         prepared: PreparedSubmit,
         deadline: QueryResponseDeadline,
     ) -> Result<WireQueryResponse> {
-        let mut resent_after_renewal = false;
+        let sent = self
+            .auth
+            .send_with_renewal(
+                &self.api,
+                || deadline.remaining(),
+                |tokens| {
+                    let request = self
+                        .api
+                        .request(Method::POST, prepared.url.clone())
+                        .header(ACCEPT, "application/snowflake")
+                        .header(CONTENT_TYPE, "application/json")
+                        .header(AUTHORIZATION, tokens.authorization())
+                        .body(prepared.body.clone());
+                    async move {
+                        let remaining = deadline.remaining_or_timeout()?;
+                        let body = match timeout(remaining, async {
+                            let response = request.send().await.map_err(classify_request_error)?;
+                            let status = response.status();
+                            let body = response.bytes().await.map_err(classify_request_error)?;
+                            if !status.is_success() {
+                                return Err(Error::from(NetworkError::http_status(
+                                    status.as_u16(),
+                                    &body,
+                                )));
+                            }
+                            Ok(body)
+                        })
+                        .await
+                        {
+                            Ok(result) => result?,
+                            Err(_elapsed) => return Err(TimeoutError::query().into()),
+                        };
 
-        loop {
-            let remaining = deadline.remaining_or_timeout()?;
-            let tokens = self.auth.snapshot();
-            let request = self
-                .api
-                .request(Method::POST, prepared.url.clone())
-                .header(ACCEPT, "application/snowflake")
-                .header(CONTENT_TYPE, "application/json")
-                .header(AUTHORIZATION, tokens.authorization())
-                .body(prepared.body.clone());
+                        let response = parse_query_response(body).map_err(Error::from)?;
+                        // UNVERIFIED (no public protocol reference): the assumption that a "session expired" answer
+                        // guarantees Snowflake did not start the query. The submission is resent without checking for
+                        // a duplicate execution, with the same `requestId` and no retry parameters, exactly as both
+                        // official connectors do. Keeping the `requestId` also keeps cancellation working, since abort
+                        // addresses the query by that id.
+                        if response.code.as_deref() == Some(SESSION_EXPIRED) {
+                            Ok(Exchange::Expired(response))
+                        } else {
+                            Ok(Exchange::Done(response))
+                        }
+                    }
+                },
+            )
+            .await;
 
-            let body = match timeout(remaining, async {
-                let response = request.send().await.map_err(classify_request_error)?;
-                let status = response.status();
-                let body = response.bytes().await.map_err(classify_request_error)?;
-                if !status.is_success() {
-                    return Err(Error::from(NetworkError::http_status(
-                        status.as_u16(),
-                        &body,
-                    )));
-                }
-                Ok(body)
-            })
-            .await
-            {
-                Ok(result) => result?,
-                Err(_elapsed) => return Err(TimeoutError::query().into()),
-            };
-
-            let response = parse_query_response(body).map_err(Error::from)?;
-            if response.code.as_deref() != Some(SESSION_EXPIRED) || resent_after_renewal {
-                return Ok(response);
-            }
-
-            // UNVERIFIED (no public protocol reference): the assumption that a "session expired" answer guarantees
-            // Snowflake did not start the query. The submission is resent without checking for a duplicate execution,
-            // with the same `requestId` and no retry parameters, exactly as both official connectors do. Keeping the
-            // `requestId` also keeps cancellation working, since abort addresses the query by that id.
-            match self
-                .auth
-                .renew(&self.api, &tokens, deadline.remaining())
-                .await
-            {
-                Ok(_) => resent_after_renewal = true,
-                Err(RenewError::NoMasterToken) => return Ok(response),
-                Err(error) => {
-                    let query_id = response.data.map(|data| data.query_id);
-                    let observed = SessionExpiredError::new(response.code, response.message, None);
-                    return Err(with_optional_query_id(
-                        error.into_scoped(observed, TimeoutError::query()),
-                        query_id,
-                    ));
-                }
+        // A response that is still expired is returned as is; the executor turns it into a session-expired error.
+        match sent {
+            Ok(Exchange::Done(response) | Exchange::Expired(response)) => Ok(response),
+            Err(RenewedSendError::Send(error)) => Err(error),
+            Err(RenewedSendError::Renew {
+                response,
+                error: RenewError::NoMasterToken,
+            }) => Ok(response),
+            Err(RenewedSendError::Renew { response, error }) => {
+                let query_id = response.data.map(|data| data.query_id);
+                let observed = SessionExpiredError::new(response.code, response.message, None);
+                Err(with_optional_query_id(
+                    error.into_scoped(observed, TimeoutError::query()),
+                    query_id,
+                ))
             }
         }
     }

@@ -8,6 +8,7 @@ use reqwest::Url;
 use tokio::time::{sleep, timeout};
 
 use crate::{
+    auth::{Exchange, RenewedSendError},
     error::{
         NetworkError, ProtocolError, QueryScopedError, QueryScopedResult, SessionExpiredError,
         TimeoutError,
@@ -34,89 +35,98 @@ impl QueryApiClient {
             }
         };
         let mut backoff = PollBackoff::new();
-        let mut resent_after_renewal = false;
 
         loop {
-            // The poll endpoint is a server-side long-poll, so apply the remaining query-response budget to the whole
-            // GET instead of only checking the deadline between poll attempts.
-            let remaining = match deadline.remaining_or_timeout() {
-                Ok(remaining) => remaining,
-                Err(err) => return Err(QueryScopedError::new(query_id, err)),
+            let sent = self
+                .auth
+                .send_with_renewal(
+                    &self.api,
+                    || deadline.remaining(),
+                    |tokens| {
+                        let request = self
+                            .api
+                            .request(Method::GET, poll_url.clone())
+                            .header(ACCEPT, "application/snowflake")
+                            .header(AUTHORIZATION, tokens.authorization());
+                        let query_id = Arc::clone(&query_id);
+                        async move {
+                            // The poll endpoint is a server-side long-poll, so apply the remaining query-response budget
+                            // to the whole GET instead of only checking the deadline between poll attempts.
+                            let remaining = deadline
+                                .remaining_or_timeout()
+                                .map_err(|err| QueryScopedError::new(Arc::clone(&query_id), err))?;
+                            let (status, body) = match timeout(remaining, async {
+                                let resp = request.send().await?;
+                                let status = resp.status();
+                                let body = resp.bytes().await?;
+                                Ok::<_, reqwest::Error>((status, body))
+                            })
+                            .await
+                            {
+                                Ok(Ok(pair)) => pair,
+                                Ok(Err(error)) if error.is_timeout() => {
+                                    return Err(QueryScopedError::new(
+                                        query_id,
+                                        TimeoutError::request(error),
+                                    ));
+                                }
+                                Ok(Err(error)) => {
+                                    return Err(QueryScopedError::new(
+                                        query_id,
+                                        NetworkError::Http(error),
+                                    ));
+                                }
+                                Err(_elapsed) => {
+                                    return Err(QueryScopedError::new(
+                                        query_id,
+                                        TimeoutError::query(),
+                                    ));
+                                }
+                            };
+
+                            if !status.is_success() {
+                                return Err(QueryScopedError::new(
+                                    query_id,
+                                    NetworkError::http_status(status.as_u16(), &body),
+                                ));
+                            }
+
+                            let response = parse_query_response(body)
+                                .map_err(|err| QueryScopedError::new(query_id, err))?;
+                            if response.code.as_deref() == Some(SESSION_EXPIRED) {
+                                Ok(Exchange::Expired(response))
+                            } else {
+                                Ok(Exchange::Done(response))
+                            }
+                        }
+                    },
+                )
+                .await;
+
+            let response = match sent {
+                // A response that is still expired is final; the executor turns it into a session-expired error.
+                Ok(Exchange::Done(response) | Exchange::Expired(response)) => response,
+                Err(RenewedSendError::Send(err)) => return Err(err),
+                Err(RenewedSendError::Renew { response, error }) => {
+                    let observed = SessionExpiredError::new(response.code, response.message, None);
+                    return Err(QueryScopedError::new(
+                        query_id,
+                        error.into_scoped(observed, TimeoutError::query()),
+                    ));
+                }
             };
 
-            let tokens = self.auth.snapshot();
-            let request = self
-                .api
-                .request(Method::GET, poll_url.clone())
-                .header(ACCEPT, "application/snowflake")
-                .header(AUTHORIZATION, tokens.authorization());
-
-            let response = match timeout(remaining, async {
-                let resp = request.send().await?;
-                let status = resp.status();
-                let body = resp.bytes().await?;
-                Ok::<_, reqwest::Error>((status, body))
-            })
-            .await
+            if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE)
+                && response.code.as_deref() != Some(QUERY_IN_PROGRESS_CODE)
             {
-                Ok(Ok(pair)) => pair,
-                Ok(Err(error)) => {
-                    if error.is_timeout() {
-                        return Err(QueryScopedError::new(
-                            query_id,
-                            TimeoutError::request(error),
-                        ));
-                    }
-                    return Err(QueryScopedError::new(query_id, NetworkError::Http(error)));
-                }
-                Err(_elapsed) => {
-                    return Err(QueryScopedError::new(query_id, TimeoutError::query()));
-                }
-            };
-
-            let (status, body) = response;
-            if !status.is_success() {
-                return Err(QueryScopedError::new(
-                    query_id,
-                    NetworkError::http_status(status.as_u16(), &body),
-                ));
+                return Ok(response);
             }
 
-            match parse_query_response(body) {
-                Ok(response)
-                    if response.code.as_deref() == Some(SESSION_EXPIRED)
-                        && !resent_after_renewal =>
-                {
-                    if let Err(error) = self
-                        .auth
-                        .renew(&self.api, &tokens, deadline.remaining())
-                        .await
-                    {
-                        let observed =
-                            SessionExpiredError::new(response.code, response.message, None);
-                        return Err(QueryScopedError::new(
-                            query_id,
-                            error.into_scoped(observed, TimeoutError::query()),
-                        ));
-                    }
-                    resent_after_renewal = true;
-                }
-                Ok(response)
-                    if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE)
-                        && response.code.as_deref() != Some(QUERY_IN_PROGRESS_CODE) =>
-                {
-                    return Ok(response);
-                }
-                Ok(_) => {
-                    resent_after_renewal = false;
-                    let remaining = deadline.remaining();
-                    if remaining.is_zero() {
-                        return Err(QueryScopedError::new(query_id, TimeoutError::query()));
-                    }
-                    sleep(remaining.min(backoff.next_delay())).await;
-                }
-                Err(err) => return Err(QueryScopedError::new(query_id, err)),
+            let remaining = deadline.remaining();
+            if remaining.is_zero() {
+                return Err(QueryScopedError::new(query_id, TimeoutError::query()));
             }
+            sleep(remaining.min(backoff.next_delay())).await;
         }
     }
 }

@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     Error, Result,
+    auth::{Exchange, RenewedSendError},
     error::{
         NetworkError, ProtocolError, ServerError, SessionExpiredError, TimeoutError,
         classify_request_error, with_optional_query_id,
@@ -53,72 +54,83 @@ impl QueryApiClient {
         );
         let mut backoff = AbortBackoff::new();
         let mut attempt = 0;
-        let mut resent_after_renewal = false;
 
         loop {
-            let remaining = clock.remaining();
-            if remaining.is_zero() {
-                return Err(TimeoutError::query_cancel().into());
-            }
-
-            let tokens = self.auth.snapshot();
-            let request = self
-                .api
-                .request(Method::POST, url.clone())
-                .header(ACCEPT, "application/snowflake")
-                .header(CONTENT_TYPE, "application/json")
-                .header(AUTHORIZATION, tokens.authorization())
-                .body(body.clone());
-
-            let attempt_result = match timeout(remaining, async {
-                let response = request.send().await?;
-                let status = response.status();
-                let body = response.bytes().await?;
-                Ok::<_, reqwest::Error>((status, body))
-            })
-            .await
-            {
-                Ok(Ok((status, body))) => {
-                    if !status.is_success() {
-                        let error = NetworkError::http_status(status.as_u16(), &body);
-                        if is_retryable_abort_status(status.as_u16()) {
-                            Err((true, Error::from(error)))
-                        } else {
-                            Err((false, Error::from(error)))
-                        }
-                    } else {
-                        let response: WireAbortResponse = from_slice(&body).map_err(|error| {
-                            Error::from(ProtocolError::json_parse(error, &body))
-                        })?;
-                        if response.code.as_deref() == Some(SESSION_EXPIRED) {
-                            let observed =
-                                SessionExpiredError::new(response.code, response.message, None);
-                            if resent_after_renewal {
-                                return Err(observed.into());
+            // Renewing and resending happens inside one attempt, so it does not count against the abort attempt budget.
+            let sent = self
+                .auth
+                .send_with_renewal(
+                    &self.api,
+                    || clock.remaining(),
+                    |tokens| {
+                        let request = self
+                            .api
+                            .request(Method::POST, url.clone())
+                            .header(ACCEPT, "application/snowflake")
+                            .header(CONTENT_TYPE, "application/json")
+                            .header(AUTHORIZATION, tokens.authorization())
+                            .body(body.clone());
+                        async move {
+                            let remaining = clock.remaining();
+                            if remaining.is_zero() {
+                                return Err((false, TimeoutError::query_cancel().into()));
                             }
-                            // Renewing and resending does not count against the abort attempt budget.
-                            if let Err(error) =
-                                self.auth.renew(&self.api, &tokens, clock.remaining()).await
+                            let (status, body) = match timeout(remaining, async {
+                                let response = request.send().await?;
+                                let status = response.status();
+                                let body = response.bytes().await?;
+                                Ok::<_, reqwest::Error>((status, body))
+                            })
+                            .await
                             {
-                                return Err(with_optional_query_id(
-                                    error.into_scoped(observed, TimeoutError::query_cancel()),
-                                    None,
-                                ));
+                                Ok(Ok(pair)) => pair,
+                                Ok(Err(error)) => {
+                                    return Err((true, classify_request_error(error)));
+                                }
+                                Err(_elapsed) => {
+                                    return Err((true, TimeoutError::query_cancel().into()));
+                                }
+                            };
+
+                            if !status.is_success() {
+                                let retryable = is_retryable_abort_status(status.as_u16());
+                                let error = NetworkError::http_status(status.as_u16(), &body);
+                                return Err((retryable, Error::from(error)));
                             }
-                            resent_after_renewal = true;
-                            continue;
-                        } else if !response.success {
-                            Err((
-                                false,
-                                ServerError::new(response.code, response.message, None).into(),
-                            ))
-                        } else {
-                            Ok(())
+
+                            let response: WireAbortResponse =
+                                from_slice(&body).map_err(|error| {
+                                    (false, Error::from(ProtocolError::json_parse(error, &body)))
+                                })?;
+                            if response.code.as_deref() == Some(SESSION_EXPIRED) {
+                                Ok(Exchange::Expired(response))
+                            } else {
+                                Ok(Exchange::Done(response))
+                            }
                         }
-                    }
+                    },
+                )
+                .await;
+
+            let attempt_result = match sent {
+                Ok(Exchange::Done(response)) if !response.success => Err((
+                    false,
+                    ServerError::new(response.code, response.message, None).into(),
+                )),
+                Ok(Exchange::Done(_)) => Ok(()),
+                Ok(Exchange::Expired(response)) => {
+                    return Err(
+                        SessionExpiredError::new(response.code, response.message, None).into(),
+                    );
                 }
-                Ok(Err(error)) => Err((true, classify_request_error(error))),
-                Err(_elapsed) => Err((true, TimeoutError::query_cancel().into())),
+                Err(RenewedSendError::Send(failure)) => Err(failure),
+                Err(RenewedSendError::Renew { response, error }) => {
+                    let observed = SessionExpiredError::new(response.code, response.message, None);
+                    return Err(with_optional_query_id(
+                        error.into_scoped(observed, TimeoutError::query_cancel()),
+                        None,
+                    ));
+                }
             };
 
             attempt += 1;
@@ -128,7 +140,6 @@ impl QueryApiClient {
                     return Err(error);
                 }
                 Err((_retryable, _error)) => {
-                    resent_after_renewal = false;
                     let remaining = clock.remaining();
                     if remaining.is_zero() {
                         return Err(TimeoutError::query_cancel().into());
