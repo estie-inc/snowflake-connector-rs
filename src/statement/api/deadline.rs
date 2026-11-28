@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::error::TimeoutError;
+use crate::{auth::Remaining, error::TimeoutError};
 
 const FAR_FUTURE: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 
@@ -18,6 +18,12 @@ pub(super) fn deadline_after(timeout: Duration) -> Instant {
 #[derive(Clone, Copy)]
 pub(crate) struct QueryResponseDeadline {
     deadline: Instant,
+}
+
+impl Remaining for QueryResponseDeadline {
+    fn remaining(&self) -> Duration {
+        QueryResponseDeadline::remaining(self)
+    }
 }
 
 impl QueryResponseDeadline {

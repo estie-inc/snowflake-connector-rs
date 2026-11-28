@@ -50,40 +50,35 @@ impl QueryApiClient {
         deadline: QueryResponseDeadline,
     ) -> Result<WireQueryResponse> {
         self.auth
-            .send_with_renewal(
-                &self.api,
-                || deadline.remaining(),
-                TimeoutError::query(),
-                |tokens| {
-                    let request = self
-                        .api
-                        .request(Method::POST, prepared.url.clone())
-                        .header(ACCEPT, "application/snowflake")
-                        .header(CONTENT_TYPE, "application/json")
-                        .header(AUTHORIZATION, tokens.authorization())
-                        .body(prepared.body.clone());
-                    async move {
-                        let remaining = deadline
-                            .remaining_or_timeout()
-                            .map_err(|error| SendError::Other(error.into()))?;
-                        let body = self
-                            .send_snowflake(request, remaining, TimeoutError::query())
-                            .await
-                            .map_err(|failure| SendError::Other(failure.into()))?;
+            .send_with_renewal(&self.api, &deadline, TimeoutError::query(), |tokens| {
+                let request = self
+                    .api
+                    .request(Method::POST, prepared.url.clone())
+                    .header(ACCEPT, "application/snowflake")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(AUTHORIZATION, tokens.authorization())
+                    .body(prepared.body.clone());
+                async move {
+                    let remaining = deadline
+                        .remaining_or_timeout()
+                        .map_err(|error| SendError::Other(error.into()))?;
+                    let body = self
+                        .send_snowflake(request, remaining, TimeoutError::query())
+                        .await
+                        .map_err(|failure| SendError::Other(failure.into()))?;
 
-                        let response = parse_query_response(body)
-                            .map_err(|error| SendError::Other(error.into()))?;
-                        // UNVERIFIED (no public protocol reference): the assumption that a "session expired" answer
-                        // guarantees Snowflake did not start the query. The submission is resent without checking for
-                        // a duplicate execution, with the same `requestId` and no retry parameters, exactly as both
-                        // official connectors do. Keeping the `requestId` also keeps cancellation working, since abort
-                        // addresses the query by that id.
-                        response
-                            .reject_session_expired(None)
-                            .map_err(SendError::Expired)
-                    }
-                },
-            )
+                    let response = parse_query_response(body)
+                        .map_err(|error| SendError::Other(error.into()))?;
+                    // UNVERIFIED (no public protocol reference): the assumption that a "session expired" answer
+                    // guarantees Snowflake did not start the query. The submission is resent without checking for
+                    // a duplicate execution, with the same `requestId` and no retry parameters, exactly as both
+                    // official connectors do. Keeping the `requestId` also keeps cancellation working, since abort
+                    // addresses the query by that id.
+                    response
+                        .reject_session_expired(None)
+                        .map_err(SendError::Expired)
+                }
+            })
             .await
     }
 }

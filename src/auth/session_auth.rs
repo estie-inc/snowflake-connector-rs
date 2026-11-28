@@ -115,6 +115,10 @@ impl RenewError {
     }
 }
 
+pub(crate) trait Remaining {
+    fn remaining(&self) -> Duration;
+}
+
 pub(crate) enum SendError<E> {
     Expired(SessionExpiredError),
     Other(E),
@@ -160,7 +164,7 @@ impl SessionAuth {
     pub(crate) async fn send_with_renewal<T, E, F, Fut>(
         &self,
         api: &Arc<ApiContext>,
-        renew_budget: impl FnOnce() -> Duration,
+        deadline: &impl Remaining,
         deadline_error: TimeoutError,
         mut send: F,
     ) -> Result<T, E>
@@ -176,7 +180,7 @@ impl SessionAuth {
             Err(SendError::Expired(observed)) => observed,
         };
 
-        if let Err(error) = self.renew(api, &tokens, renew_budget()).await {
+        if let Err(error) = self.renew(api, &tokens, deadline.remaining()).await {
             let query_id = observed.query_id.clone();
             return Err(E::from(RenewFailure {
                 error: error.into_scoped(observed, deadline_error),

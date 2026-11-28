@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     Error, Result,
-    auth::{RenewFailure, SendError},
+    auth::{Remaining, RenewFailure, SendError},
     error::{ProtocolError, ServerError, SessionExpiredError, TimeoutError},
     statement::wire::{
         request::WireAbortBody,
@@ -56,47 +56,41 @@ impl QueryApiClient {
             // Renewing and resending happens inside one attempt, so it does not count against the abort attempt budget.
             let sent: std::result::Result<WireAbortResponse, AbortAttemptError> = self
                 .auth
-                .send_with_renewal(
-                    &self.api,
-                    || clock.remaining(),
-                    TimeoutError::query_cancel(),
-                    |tokens| {
-                        let request = self
-                            .api
-                            .request(Method::POST, url.clone())
-                            .header(ACCEPT, "application/snowflake")
-                            .header(CONTENT_TYPE, "application/json")
-                            .header(AUTHORIZATION, tokens.authorization())
-                            .body(body.clone());
-                        async move {
-                            let remaining = clock.remaining();
-                            if remaining.is_zero() {
-                                return Err(SendError::Other(AbortAttemptError::fatal(
-                                    TimeoutError::query_cancel(),
-                                )));
-                            }
-                            let body = self
-                                .send_snowflake(request, remaining, TimeoutError::query_cancel())
-                                .await
-                                .map_err(|failure| SendError::Other(failure.into()))?;
-
-                            let response: WireAbortResponse =
-                                from_slice(&body).map_err(|error| {
-                                    SendError::Other(AbortAttemptError::fatal(
-                                        ProtocolError::json_parse(error, &body),
-                                    ))
-                                })?;
-                            if response.code.as_deref() == Some(SESSION_EXPIRED) {
-                                return Err(SendError::Expired(SessionExpiredError::new(
-                                    response.code,
-                                    response.message,
-                                    None,
-                                )));
-                            }
-                            Ok(response)
+                .send_with_renewal(&self.api, clock, TimeoutError::query_cancel(), |tokens| {
+                    let request = self
+                        .api
+                        .request(Method::POST, url.clone())
+                        .header(ACCEPT, "application/snowflake")
+                        .header(CONTENT_TYPE, "application/json")
+                        .header(AUTHORIZATION, tokens.authorization())
+                        .body(body.clone());
+                    async move {
+                        let remaining = clock.remaining();
+                        if remaining.is_zero() {
+                            return Err(SendError::Other(AbortAttemptError::fatal(
+                                TimeoutError::query_cancel(),
+                            )));
                         }
-                    },
-                )
+                        let body = self
+                            .send_snowflake(request, remaining, TimeoutError::query_cancel())
+                            .await
+                            .map_err(|failure| SendError::Other(failure.into()))?;
+
+                        let response: WireAbortResponse = from_slice(&body).map_err(|error| {
+                            SendError::Other(AbortAttemptError::fatal(ProtocolError::json_parse(
+                                error, &body,
+                            )))
+                        })?;
+                        if response.code.as_deref() == Some(SESSION_EXPIRED) {
+                            return Err(SendError::Expired(SessionExpiredError::new(
+                                response.code,
+                                response.message,
+                                None,
+                            )));
+                        }
+                        Ok(response)
+                    }
+                })
                 .await;
 
             let attempt_result = match sent {
@@ -156,8 +150,7 @@ impl From<RenewFailure> for AbortAttemptError {
     }
 }
 
-trait AbortClock {
-    fn remaining(&self) -> Duration;
+trait AbortClock: Remaining {
     fn sleep(&self, duration: Duration) -> impl std::future::Future<Output = ()> + Send;
 }
 
@@ -173,11 +166,13 @@ impl RealAbortClock {
     }
 }
 
-impl AbortClock for RealAbortClock {
+impl Remaining for RealAbortClock {
     fn remaining(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
     }
+}
 
+impl AbortClock for RealAbortClock {
     fn sleep(&self, duration: Duration) -> impl std::future::Future<Output = ()> + Send {
         sleep(duration)
     }
@@ -424,11 +419,13 @@ mod tests {
         }
     }
 
-    impl AbortClock for MockAbortClock {
+    impl Remaining for MockAbortClock {
         fn remaining(&self) -> Duration {
             *self.remaining.lock().unwrap()
         }
+    }
 
+    impl AbortClock for MockAbortClock {
         fn sleep(&self, duration: Duration) -> impl std::future::Future<Output = ()> + Send {
             self.sleeps.lock().unwrap().push(duration);
             let mut remaining = self.remaining.lock().unwrap();
