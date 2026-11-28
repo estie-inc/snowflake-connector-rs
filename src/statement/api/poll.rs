@@ -5,13 +5,12 @@ use http::{
     header::{ACCEPT, AUTHORIZATION},
 };
 use reqwest::Url;
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 
 use crate::{
     auth::{Exchange, RenewedSendError},
     error::{
-        NetworkError, ProtocolError, QueryScopedError, QueryScopedResult, SessionExpiredError,
-        TimeoutError,
+        ProtocolError, QueryScopedError, QueryScopedResult, SessionExpiredError, TimeoutError,
     },
     statement::wire::response::{
         QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, SESSION_EXPIRED, WireQueryResponse,
@@ -55,41 +54,15 @@ impl QueryApiClient {
                             let remaining = deadline
                                 .remaining_or_timeout()
                                 .map_err(|err| QueryScopedError::new(Arc::clone(&query_id), err))?;
-                            let (status, body) = match timeout(remaining, async {
-                                let resp = request.send().await?;
-                                let status = resp.status();
-                                let body = resp.bytes().await?;
-                                Ok::<_, reqwest::Error>((status, body))
-                            })
-                            .await
+                            let body = match self
+                                .send_snowflake(request, remaining, TimeoutError::query())
+                                .await
                             {
-                                Ok(Ok(pair)) => pair,
-                                Ok(Err(error)) if error.is_timeout() => {
-                                    return Err(QueryScopedError::new(
-                                        query_id,
-                                        TimeoutError::request(error),
-                                    ));
-                                }
-                                Ok(Err(error)) => {
-                                    return Err(QueryScopedError::new(
-                                        query_id,
-                                        NetworkError::Http(error),
-                                    ));
-                                }
-                                Err(_elapsed) => {
-                                    return Err(QueryScopedError::new(
-                                        query_id,
-                                        TimeoutError::query(),
-                                    ));
+                                Ok(body) => body,
+                                Err(failure) => {
+                                    return Err(QueryScopedError::new(query_id, failure));
                                 }
                             };
-
-                            if !status.is_success() {
-                                return Err(QueryScopedError::new(
-                                    query_id,
-                                    NetworkError::http_status(status.as_u16(), &body),
-                                ));
-                            }
 
                             let response = parse_query_response(body)
                                 .map_err(|err| QueryScopedError::new(query_id, err))?;
@@ -461,5 +434,33 @@ mod tests {
         let (requests, quiet) = server.await.unwrap();
         assert_eq!(requests.len(), 1);
         assert!(quiet);
+    }
+
+    #[tokio::test]
+    async fn poll_error_status_is_network_error_with_query_id() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_http_request(&mut socket).await.unwrap();
+            write_json_response(&mut socket, StatusCode::BAD_GATEWAY, r#"{"busy":true}"#)
+                .await
+                .unwrap();
+        });
+
+        let client = test_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let err: Error = client
+            .poll_async_results(
+                POLL_PATH,
+                QueryResponseDeadline::new(Duration::from_secs(30)),
+                Arc::from("query-id"),
+            )
+            .await
+            .unwrap_err()
+            .into();
+
+        assert_eq!(err.kind(), ErrorKind::Network);
+        assert_eq!(err.query_id(), Some("query-id"));
+        server.await.unwrap();
     }
 }
