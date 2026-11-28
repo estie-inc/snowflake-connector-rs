@@ -11,17 +11,15 @@ use uuid::Uuid;
 
 use crate::{
     Error, Result,
-    auth::{Exchange, RenewedSendError},
-    error::{
-        ProtocolError, ServerError, SessionExpiredError, TimeoutError, with_optional_query_id,
-    },
+    auth::{RenewFailure, SendError},
+    error::{ProtocolError, ServerError, SessionExpiredError, TimeoutError},
     statement::wire::{
         request::WireAbortBody,
         response::{SESSION_EXPIRED, WireAbortResponse},
     },
 };
 
-use super::{QueryApiClient, deadline::deadline_after};
+use super::{QueryApiClient, deadline::deadline_after, send::SendFailure};
 
 const MAX_ABORT_ATTEMPTS: usize = 8;
 
@@ -56,11 +54,12 @@ impl QueryApiClient {
 
         loop {
             // Renewing and resending happens inside one attempt, so it does not count against the abort attempt budget.
-            let sent = self
+            let sent: std::result::Result<WireAbortResponse, AbortAttemptError> = self
                 .auth
                 .send_with_renewal(
                     &self.api,
                     || clock.remaining(),
+                    TimeoutError::query_cancel(),
                     |tokens| {
                         let request = self
                             .api
@@ -72,57 +71,51 @@ impl QueryApiClient {
                         async move {
                             let remaining = clock.remaining();
                             if remaining.is_zero() {
-                                return Err((false, TimeoutError::query_cancel().into()));
+                                return Err(SendError::Other(AbortAttemptError::fatal(
+                                    TimeoutError::query_cancel(),
+                                )));
                             }
                             let body = self
                                 .send_snowflake(request, remaining, TimeoutError::query_cancel())
                                 .await
-                                .map_err(|failure| {
-                                    (failure.is_retryable(), Error::from(failure))
-                                })?;
+                                .map_err(|failure| SendError::Other(failure.into()))?;
 
                             let response: WireAbortResponse =
                                 from_slice(&body).map_err(|error| {
-                                    (false, Error::from(ProtocolError::json_parse(error, &body)))
+                                    SendError::Other(AbortAttemptError::fatal(
+                                        ProtocolError::json_parse(error, &body),
+                                    ))
                                 })?;
                             if response.code.as_deref() == Some(SESSION_EXPIRED) {
-                                Ok(Exchange::Expired(response))
-                            } else {
-                                Ok(Exchange::Done(response))
+                                return Err(SendError::Expired(SessionExpiredError::new(
+                                    response.code,
+                                    response.message,
+                                    None,
+                                )));
                             }
+                            Ok(response)
                         }
                     },
                 )
                 .await;
 
             let attempt_result = match sent {
-                Ok(Exchange::Done(response)) if !response.success => Err((
-                    false,
-                    ServerError::new(response.code, response.message, None).into(),
+                Ok(response) if !response.success => Err(AbortAttemptError::fatal(
+                    ServerError::new(response.code, response.message, None),
                 )),
-                Ok(Exchange::Done(_)) => Ok(()),
-                Ok(Exchange::Expired(response)) => {
-                    return Err(
-                        SessionExpiredError::new(response.code, response.message, None).into(),
-                    );
-                }
-                Err(RenewedSendError::Send(failure)) => Err(failure),
-                Err(RenewedSendError::Renew { response, error }) => {
-                    let observed = SessionExpiredError::new(response.code, response.message, None);
-                    return Err(with_optional_query_id(
-                        error.into_scoped(observed, TimeoutError::query_cancel()),
-                        None,
-                    ));
-                }
+                Ok(_) => Ok(()),
+                Err(error) => Err(error),
             };
 
             attempt += 1;
             match attempt_result {
                 Ok(()) => return Ok(()),
-                Err((retryable, error)) if !retryable || attempt == MAX_ABORT_ATTEMPTS => {
+                Err(AbortAttemptError { retryable, error })
+                    if !retryable || attempt == MAX_ABORT_ATTEMPTS =>
+                {
                     return Err(error);
                 }
-                Err((_retryable, _error)) => {
+                Err(_) => {
                     let remaining = clock.remaining();
                     if remaining.is_zero() {
                         return Err(TimeoutError::query_cancel().into());
@@ -131,6 +124,35 @@ impl QueryApiClient {
                 }
             }
         }
+    }
+}
+
+struct AbortAttemptError {
+    retryable: bool,
+    error: Error,
+}
+
+impl AbortAttemptError {
+    fn fatal(error: impl Into<Error>) -> Self {
+        Self {
+            retryable: false,
+            error: error.into(),
+        }
+    }
+}
+
+impl From<SendFailure> for AbortAttemptError {
+    fn from(failure: SendFailure) -> Self {
+        Self {
+            retryable: failure.is_retryable(),
+            error: failure.into(),
+        }
+    }
+}
+
+impl From<RenewFailure> for AbortAttemptError {
+    fn from(failure: RenewFailure) -> Self {
+        Self::fatal(failure)
     }
 }
 

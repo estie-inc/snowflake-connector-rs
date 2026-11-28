@@ -10,8 +10,11 @@ use tokio::{
 };
 
 use crate::{
-    ApiContext,
-    error::{NetworkError, ProtocolError, QueryScopedRepr, SessionExpiredError, TimeoutError},
+    ApiContext, Error,
+    error::{
+        NetworkError, ProtocolError, QueryScopedRepr, SessionExpiredError, TimeoutError,
+        with_optional_query_id,
+    },
 };
 
 use super::{
@@ -89,7 +92,7 @@ impl RenewError {
         }
     }
 
-    pub(crate) fn into_scoped(
+    fn into_scoped(
         self,
         observed: SessionExpiredError,
         deadline_error: TimeoutError,
@@ -112,14 +115,26 @@ impl RenewError {
     }
 }
 
-pub(crate) enum Exchange<T> {
-    Done(T),
-    Expired(T),
+pub(crate) enum SendError<E> {
+    Expired(SessionExpiredError),
+    Other(E),
 }
 
-pub(crate) enum RenewedSendError<T, E> {
-    Send(E),
-    Renew { response: T, error: RenewError },
+pub(crate) struct RenewFailure {
+    pub(crate) error: QueryScopedRepr,
+    pub(crate) query_id: Option<Arc<str>>,
+}
+
+impl From<RenewFailure> for Error {
+    fn from(failure: RenewFailure) -> Self {
+        with_optional_query_id(failure.error, failure.query_id)
+    }
+}
+
+impl From<RenewFailure> for QueryScopedRepr {
+    fn from(failure: RenewFailure) -> Self {
+        failure.error
+    }
 }
 
 impl SessionAuth {
@@ -146,24 +161,37 @@ impl SessionAuth {
         &self,
         api: &Arc<ApiContext>,
         renew_budget: impl FnOnce() -> Duration,
+        deadline_error: TimeoutError,
         mut send: F,
-    ) -> Result<Exchange<T>, RenewedSendError<T, E>>
+    ) -> Result<T, E>
     where
         F: FnMut(Arc<TokenSet>) -> Fut,
-        Fut: Future<Output = Result<Exchange<T>, E>>,
+        Fut: Future<Output = Result<T, SendError<E>>>,
+        E: From<RenewFailure>,
     {
         let tokens = self.snapshot();
-        let response = match send(Arc::clone(&tokens)).await {
-            Ok(Exchange::Expired(response)) => response,
-            Ok(done) => return Ok(done),
-            Err(error) => return Err(RenewedSendError::Send(error)),
+        let observed = match send(Arc::clone(&tokens)).await {
+            Ok(value) => return Ok(value),
+            Err(SendError::Other(error)) => return Err(error),
+            Err(SendError::Expired(observed)) => observed,
         };
 
         if let Err(error) = self.renew(api, &tokens, renew_budget()).await {
-            return Err(RenewedSendError::Renew { response, error });
+            let query_id = observed.query_id.clone();
+            return Err(E::from(RenewFailure {
+                error: error.into_scoped(observed, deadline_error),
+                query_id,
+            }));
         }
 
-        send(self.snapshot()).await.map_err(RenewedSendError::Send)
+        match send(self.snapshot()).await {
+            Ok(value) => Ok(value),
+            Err(SendError::Other(error)) => Err(error),
+            Err(SendError::Expired(observed)) => Err(E::from(RenewFailure {
+                query_id: observed.query_id.clone(),
+                error: observed.into(),
+            })),
+        }
     }
 
     async fn renew(
