@@ -6,15 +6,14 @@ use http::{
     header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
 };
 use serde_json::from_slice;
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::{
     Error, Result,
     auth::{Exchange, RenewedSendError},
     error::{
-        NetworkError, ProtocolError, ServerError, SessionExpiredError, TimeoutError,
-        classify_request_error, with_optional_query_id,
+        ProtocolError, ServerError, SessionExpiredError, TimeoutError, with_optional_query_id,
     },
     statement::wire::{
         request::WireAbortBody,
@@ -75,28 +74,12 @@ impl QueryApiClient {
                             if remaining.is_zero() {
                                 return Err((false, TimeoutError::query_cancel().into()));
                             }
-                            let (status, body) = match timeout(remaining, async {
-                                let response = request.send().await?;
-                                let status = response.status();
-                                let body = response.bytes().await?;
-                                Ok::<_, reqwest::Error>((status, body))
-                            })
-                            .await
-                            {
-                                Ok(Ok(pair)) => pair,
-                                Ok(Err(error)) => {
-                                    return Err((true, classify_request_error(error)));
-                                }
-                                Err(_elapsed) => {
-                                    return Err((true, TimeoutError::query_cancel().into()));
-                                }
-                            };
-
-                            if !status.is_success() {
-                                let retryable = is_retryable_abort_status(status.as_u16());
-                                let error = NetworkError::http_status(status.as_u16(), &body);
-                                return Err((retryable, Error::from(error)));
-                            }
+                            let body = self
+                                .send_snowflake(request, remaining, TimeoutError::query_cancel())
+                                .await
+                                .map_err(|failure| {
+                                    (failure.is_retryable(), Error::from(failure))
+                                })?;
 
                             let response: WireAbortResponse =
                                 from_slice(&body).map_err(|error| {
@@ -149,10 +132,6 @@ impl QueryApiClient {
             }
         }
     }
-}
-
-fn is_retryable_abort_status(status: u16) -> bool {
-    matches!(status, 408 | 429 | 500..=599)
 }
 
 trait AbortClock {

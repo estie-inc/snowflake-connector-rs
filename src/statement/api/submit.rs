@@ -4,15 +4,11 @@ use http::{
     header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
 };
 use reqwest::Url;
-use tokio::time::timeout;
 
 use crate::{
     Error, Result,
     auth::{Exchange, RenewError, RenewedSendError},
-    error::{
-        NetworkError, SessionExpiredError, TimeoutError, classify_request_error,
-        with_optional_query_id,
-    },
+    error::{SessionExpiredError, TimeoutError, with_optional_query_id},
     statement::{
         StatementParts,
         wire::{
@@ -68,23 +64,9 @@ impl QueryApiClient {
                         .body(prepared.body.clone());
                     async move {
                         let remaining = deadline.remaining_or_timeout()?;
-                        let body = match timeout(remaining, async {
-                            let response = request.send().await.map_err(classify_request_error)?;
-                            let status = response.status();
-                            let body = response.bytes().await.map_err(classify_request_error)?;
-                            if !status.is_success() {
-                                return Err(Error::from(NetworkError::http_status(
-                                    status.as_u16(),
-                                    &body,
-                                )));
-                            }
-                            Ok(body)
-                        })
-                        .await
-                        {
-                            Ok(result) => result?,
-                            Err(_elapsed) => return Err(TimeoutError::query().into()),
-                        };
+                        let body = self
+                            .send_snowflake(request, remaining, TimeoutError::query())
+                            .await?;
 
                         let response = parse_query_response(body).map_err(Error::from)?;
                         // UNVERIFIED (no public protocol reference): the assumption that a "session expired" answer
