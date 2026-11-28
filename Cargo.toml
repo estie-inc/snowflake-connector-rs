@@ -75,7 +75,7 @@ sha2 = { version = "0.11", optional = true, default-features = false, features =
 ] }
 
 http-body-util = { version = "0.1", optional = true }
-hyper = { version = "1.12", optional = true, features = [
+hyper = { version = "1.13", optional = true, features = [
     "http1",
     "server",
 ] }
@@ -84,7 +84,7 @@ hyper-util = { version = "0.1", optional = true, features = [
     "server",
     "tokio",
 ] }
-nix = { version = "0.31", optional = true, features = [
+nix = { version = "0.32", optional = true, features = [
     "term",
 ] }
 socket2 = { version = "0.6", optional = true }
