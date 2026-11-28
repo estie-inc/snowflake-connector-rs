@@ -3,22 +3,20 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use crate::{
     QueryExecutionSettings,
     error::{
-        CancelledError, ProtocolError, QueryScopedResult, ServerError, SessionExpiredError,
-        with_optional_query_id,
+        CancelledError, ProtocolError, QueryScopedResult, ServerError, with_optional_query_id,
     },
     result_cursor::{CollectPolicy, RemotePartitionSource, ResultCursor},
     runtime::QueryRuntime,
     statement::StatementParts,
-    {Error, Result, Session},
+    {Error, ErrorKind, Result, Session},
 };
 
 use super::{
     api::{QueryApiClient, QueryResponseDeadline},
-    cancel::{QueryControl, SubmissionDecision},
+    cancel::{ExecutionGuard, QueryControl, SubmissionDecision},
     manifest::ResultManifest,
     wire::response::{
-        QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, SESSION_EXPIRED, WireQueryData,
-        WireQueryResponse,
+        QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, WireQueryData, WireQueryResponse,
     },
 };
 
@@ -72,7 +70,11 @@ impl StatementExecutor {
             }
         };
 
-        let mut response = self.api.send_prepared_submit(prepared, deadline).await?;
+        let mut response = self
+            .api
+            .send_prepared_submit(prepared, deadline)
+            .await
+            .map_err(|error| finish_on_session_expired(&mut guard, error))?;
         if let Some(data) = response.data.as_ref() {
             guard.record_query_id(Arc::clone(&data.query_id));
         }
@@ -98,7 +100,7 @@ impl StatementExecutor {
                 .api
                 .poll_async_results(&result_url, deadline, Arc::clone(&data.query_id))
                 .await
-                .map_err(Error::from)?;
+                .map_err(|error| finish_on_session_expired(&mut guard, error.into()))?;
             if let Some(data) = response.data.as_ref() {
                 guard.record_query_id(Arc::clone(&data.query_id));
             }
@@ -123,13 +125,6 @@ impl StatementExecutor {
                     response.message.clone(),
                     query_id.clone(),
                 ),
-                query_id,
-            ));
-        }
-
-        if response.code.as_deref() == Some(SESSION_EXPIRED) {
-            return Err(with_optional_query_id(
-                SessionExpiredError::new(response.code, response.message, query_id.clone()),
                 query_id,
             ));
         }
@@ -176,6 +171,17 @@ impl StatementExecutor {
     }
 }
 
+// This also finishes a submission whose renewal was rejected, so a later cancel no longer sends a doomed abort.
+fn finish_on_session_expired(guard: &mut ExecutionGuard, error: Error) -> Error {
+    if error.kind() == ErrorKind::SessionExpired {
+        if let Some(query_id) = error.query_id() {
+            guard.record_query_id(Arc::from(query_id));
+        }
+        guard.mark_terminal();
+    }
+    error
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -192,7 +198,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ApiContext, ClientSharedPartial, ErrorKind, QueryOptions, Statement,
+        ApiContext, ClientSharedPartial, QueryOptions, Statement,
         auth::SessionAuth,
         config::{DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT, DEFAULT_QUERY_RESPONSE_TIMEOUT},
         rowset::BLOCKING_PARSE_CELLS,
@@ -200,6 +206,8 @@ mod tests {
         statement::{
             api::QueryApiClient,
             builder::into_statement_parts,
+            cancel::{CancelDecision, ExecutionPhase},
+            handle::QueryCancelStatus,
             wire::response::{WireQueryData, WireRowType},
         },
     };
@@ -886,5 +894,54 @@ mod tests {
             assert!(result.is_exhausted());
             assert!(result.next_table().await.unwrap().is_none());
         }
+    }
+
+    fn assert_cancel_is_already_finished(control: &QueryControl) {
+        assert_eq!(control.execution_phase(), ExecutionPhase::Finished);
+        assert!(matches!(
+            control.begin_cancel_attempt(),
+            CancelDecision::Return(QueryCancelStatus::AlreadyFinished)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancel_after_session_expired_answer_is_already_finished() {
+        let session = test_session(spawn_single_response_server(
+            r#"{"code":"390112","message":"session expired","success":false,"data":{"queryId":"query-id"}}"#,
+        ));
+        let control = fresh_control();
+
+        let Err(err) = StatementExecutor::new(&session, default_settings(&session))
+            .execute(select_1_parts(), Arc::clone(&control))
+            .await
+        else {
+            panic!("session expired response must fail");
+        };
+
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert_eq!(control.query_id().as_deref(), Some("query-id"));
+        assert_cancel_is_already_finished(&control);
+    }
+
+    #[tokio::test]
+    async fn cancel_after_rejected_renewal_is_already_finished() {
+        let session = renewable_session(spawn_scripted_server(vec![
+            ServerStep::Respond(SESSION_EXPIRED_RESPONSE),
+            ServerStep::Respond(
+                r#"{"code":"390114","message":"master token expired","success":false}"#,
+            ),
+        ]));
+        let control = fresh_control();
+
+        let Err(err) = StatementExecutor::new(&session, default_settings(&session))
+            .execute(select_1_parts(), Arc::clone(&control))
+            .await
+        else {
+            panic!("a rejected renewal must fail the query");
+        };
+
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert_eq!(err.snowflake_code(), Some("390114"));
+        assert_cancel_is_already_finished(&control);
     }
 }

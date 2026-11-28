@@ -5,7 +5,7 @@ use http::{HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
-use crate::error::ProtocolError;
+use crate::error::{ProtocolError, SessionExpiredError};
 
 pub(crate) const SESSION_EXPIRED: &str = "390112";
 pub(crate) const QUERY_IN_PROGRESS_CODE: &str = "333333";
@@ -31,6 +31,17 @@ impl WireQueryResponse {
         !self.success
             && (self.code.as_deref() == Some(QUERY_CANCELLED_CODE)
                 || self.sql_state.as_deref() == Some(QUERY_CANCELLED_SQL_STATE))
+    }
+
+    pub(crate) fn reject_session_expired(
+        self,
+        fallback_query_id: Option<Arc<str>>,
+    ) -> Result<Self, SessionExpiredError> {
+        if self.code.as_deref() != Some(SESSION_EXPIRED) {
+            return Ok(self);
+        }
+        let query_id = self.data.map(|data| data.query_id).or(fallback_query_id);
+        Err(SessionExpiredError::new(self.code, self.message, query_id))
     }
 }
 

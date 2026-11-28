@@ -8,12 +8,10 @@ use reqwest::Url;
 use tokio::time::sleep;
 
 use crate::{
-    auth::{Exchange, RenewedSendError},
-    error::{
-        ProtocolError, QueryScopedError, QueryScopedResult, SessionExpiredError, TimeoutError,
-    },
+    auth::SendError,
+    error::{ProtocolError, QueryScopedError, QueryScopedRepr, QueryScopedResult, TimeoutError},
     statement::wire::response::{
-        QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, SESSION_EXPIRED, WireQueryResponse,
+        QUERY_IN_PROGRESS_ASYNC_CODE, QUERY_IN_PROGRESS_CODE, WireQueryResponse,
         parse_query_response,
     },
 };
@@ -36,11 +34,12 @@ impl QueryApiClient {
         let mut backoff = PollBackoff::new();
 
         loop {
-            let sent = self
+            let sent: Result<WireQueryResponse, QueryScopedRepr> = self
                 .auth
                 .send_with_renewal(
                     &self.api,
                     || deadline.remaining(),
+                    TimeoutError::query(),
                     |tokens| {
                         let request = self
                             .api
@@ -53,41 +52,23 @@ impl QueryApiClient {
                             // to the whole GET instead of only checking the deadline between poll attempts.
                             let remaining = deadline
                                 .remaining_or_timeout()
-                                .map_err(|err| QueryScopedError::new(Arc::clone(&query_id), err))?;
-                            let body = match self
+                                .map_err(|error| SendError::Other(error.into()))?;
+                            let body = self
                                 .send_snowflake(request, remaining, TimeoutError::query())
                                 .await
-                            {
-                                Ok(body) => body,
-                                Err(failure) => {
-                                    return Err(QueryScopedError::new(query_id, failure));
-                                }
-                            };
+                                .map_err(|failure| SendError::Other(failure.into()))?;
 
                             let response = parse_query_response(body)
-                                .map_err(|err| QueryScopedError::new(query_id, err))?;
-                            if response.code.as_deref() == Some(SESSION_EXPIRED) {
-                                Ok(Exchange::Expired(response))
-                            } else {
-                                Ok(Exchange::Done(response))
-                            }
+                                .map_err(|error| SendError::Other(error.into()))?;
+                            response
+                                .reject_session_expired(Some(query_id))
+                                .map_err(SendError::Expired)
                         }
                     },
                 )
                 .await;
-
-            let response = match sent {
-                // A response that is still expired is final; the executor turns it into a session-expired error.
-                Ok(Exchange::Done(response) | Exchange::Expired(response)) => response,
-                Err(RenewedSendError::Send(err)) => return Err(err),
-                Err(RenewedSendError::Renew { response, error }) => {
-                    let observed = SessionExpiredError::new(response.code, response.message, None);
-                    return Err(QueryScopedError::new(
-                        query_id,
-                        error.into_scoped(observed, TimeoutError::query()),
-                    ));
-                }
-            };
+            let response =
+                sent.map_err(|error| QueryScopedError::new(Arc::clone(&query_id), error))?;
 
             if response.code.as_deref() != Some(QUERY_IN_PROGRESS_ASYNC_CODE)
                 && response.code.as_deref() != Some(QUERY_IN_PROGRESS_CODE)
@@ -412,7 +393,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn poll_without_master_token_returns_expired_response() {
+    async fn poll_without_master_token_is_session_expired() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = serve_script(listener, vec![SESSION_EXPIRED_BODY]);
@@ -461,6 +442,28 @@ mod tests {
 
         assert_eq!(err.kind(), ErrorKind::Network);
         assert_eq!(err.query_id(), Some("query-id"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn poll_session_expired_without_data_uses_the_polled_query_id() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = serve_script(listener, vec![SESSION_EXPIRED_BODY]);
+
+        let client = test_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let err: Error = client
+            .poll_async_results(
+                POLL_PATH,
+                QueryResponseDeadline::new(Duration::from_secs(30)),
+                Arc::from("polled-query-id"),
+            )
+            .await
+            .unwrap_err()
+            .into();
+
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert_eq!(err.query_id(), Some("polled-query-id"));
         server.await.unwrap();
     }
 }
