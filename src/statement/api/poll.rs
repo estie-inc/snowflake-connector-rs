@@ -36,36 +36,31 @@ impl QueryApiClient {
         loop {
             let sent: Result<WireQueryResponse, QueryScopedRepr> = self
                 .auth
-                .send_with_renewal(
-                    &self.api,
-                    || deadline.remaining(),
-                    TimeoutError::query(),
-                    |tokens| {
-                        let request = self
-                            .api
-                            .request(Method::GET, poll_url.clone())
-                            .header(ACCEPT, "application/snowflake")
-                            .header(AUTHORIZATION, tokens.authorization());
-                        let query_id = Arc::clone(&query_id);
-                        async move {
-                            // The poll endpoint is a server-side long-poll, so apply the remaining query-response budget
-                            // to the whole GET instead of only checking the deadline between poll attempts.
-                            let remaining = deadline
-                                .remaining_or_timeout()
-                                .map_err(|error| SendError::Other(error.into()))?;
-                            let body = self
-                                .send_snowflake(request, remaining, TimeoutError::query())
-                                .await
-                                .map_err(|failure| SendError::Other(failure.into()))?;
+                .send_with_renewal(&self.api, &deadline, TimeoutError::query(), |tokens| {
+                    let request = self
+                        .api
+                        .request(Method::GET, poll_url.clone())
+                        .header(ACCEPT, "application/snowflake")
+                        .header(AUTHORIZATION, tokens.authorization());
+                    let query_id = Arc::clone(&query_id);
+                    async move {
+                        // The poll endpoint is a server-side long-poll, so apply the remaining query-response budget
+                        // to the whole GET instead of only checking the deadline between poll attempts.
+                        let remaining = deadline
+                            .remaining_or_timeout()
+                            .map_err(|error| SendError::Other(error.into()))?;
+                        let body = self
+                            .send_snowflake(request, remaining, TimeoutError::query())
+                            .await
+                            .map_err(|failure| SendError::Other(failure.into()))?;
 
-                            let response = parse_query_response(body)
-                                .map_err(|error| SendError::Other(error.into()))?;
-                            response
-                                .reject_session_expired(Some(query_id))
-                                .map_err(SendError::Expired)
-                        }
-                    },
-                )
+                        let response = parse_query_response(body)
+                            .map_err(|error| SendError::Other(error.into()))?;
+                        response
+                            .reject_session_expired(Some(query_id))
+                            .map_err(SendError::Expired)
+                    }
+                })
                 .await;
             let response =
                 sent.map_err(|error| QueryScopedError::new(Arc::clone(&query_id), error))?;
