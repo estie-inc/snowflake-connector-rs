@@ -1,7 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
 use http::Method;
-use reqwest::{Url, header::ACCEPT};
+use reqwest::{
+    Url,
+    header::{ACCEPT, AUTHORIZATION},
+};
+use uuid::Uuid;
 
 use crate::{
     ApiContext, Result,
@@ -12,10 +16,17 @@ use crate::{
 use super::wire::{
     AuthenticatorRequest, ClientEnvironment, ExternalBrowserChallenge, parse_authenticator_response,
 };
-use super::wire::{LoginRequest, LoginSession, parse_login_response};
+use super::{
+    RenewError,
+    session_auth::snowflake_token_header,
+    wire::{
+        LoginRequest, LoginSession, TokenRequestBody, TokenResponse, parse_login_response,
+        parse_token_response,
+    },
+};
 
 const AUTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-const LOGIN_REQUEST_ACCEPT: &str = "application/snowflake";
+const SNOWFLAKE_ACCEPT: &str = "application/snowflake";
 #[cfg(feature = "external-browser-sso")]
 const AUTHENTICATOR_REQUEST_ACCEPT: &str = "application/json";
 
@@ -45,7 +56,7 @@ impl AuthApiClient {
         let url = self.api.resolve("session/v1/login-request");
 
         let response = self
-            .post(url, LOGIN_REQUEST_ACCEPT)
+            .post(url, SNOWFLAKE_ACCEPT)
             .query(&request.query)
             .json(&request.body)
             .send()
@@ -59,6 +70,47 @@ impl AuthApiClient {
         }
 
         parse_login_response(&body)
+    }
+
+    pub(crate) async fn renew_session(
+        &self,
+        session_token: &str,
+        master_token: &str,
+        request_timeout: Duration,
+    ) -> std::result::Result<TokenResponse, RenewError> {
+        let mut url = self.api.resolve("session/token-request");
+        url.query_pairs_mut()
+            .append_pair("requestId", &Uuid::new_v4().to_string());
+
+        let send_error = |error: reqwest::Error| {
+            if error.is_timeout() {
+                RenewError::RequestTimeout(error)
+            } else {
+                RenewError::Network(NetworkError::Http(error))
+            }
+        };
+
+        let response = self
+            .api
+            .request(Method::POST, url)
+            .header(ACCEPT, SNOWFLAKE_ACCEPT)
+            .header(AUTHORIZATION, snowflake_token_header(master_token))
+            .timeout(request_timeout)
+            .json(&TokenRequestBody::renew(session_token))
+            .send()
+            .await
+            .map_err(send_error)?;
+
+        let status = response.status();
+        let body = response.bytes().await.map_err(send_error)?;
+        if !status.is_success() {
+            return Err(RenewError::Network(NetworkError::http_status(
+                status.as_u16(),
+                &body,
+            )));
+        }
+
+        parse_token_response(&body).map_err(RenewError::Protocol)
     }
 
     #[cfg(feature = "external-browser-sso")]

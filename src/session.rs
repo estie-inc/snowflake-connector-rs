@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     ClientShared, IntoStatement, Result,
+    auth::SessionAuth,
     result_cursor::{ResultCursor, TypedResultCursor},
     result_table::FromRow,
     statement::{QueryControl, QueryHandle, StatementExecutor, builder::into_statement_parts},
@@ -57,29 +58,13 @@ impl QueryOptions {
     }
 }
 
-/// Per-session authentication state.
-pub(crate) struct SessionAuth {
-    pub(crate) session_token: String,
-}
-
 impl fmt::Debug for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // The session token authenticates every request; never print it.
         f.debug_struct("Session")
             .field("base_url", &self.shared.api.base_url())
             .field("session_token", &"<redacted>")
             .field("query", &self.shared.query)
             .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-impl SessionAuth {
-    /// Build a per-session auth handle for unit tests.
-    pub(crate) fn for_test(session_token: impl Into<String>) -> Arc<Self> {
-        Arc::new(Self {
-            session_token: session_token.into(),
-        })
     }
 }
 

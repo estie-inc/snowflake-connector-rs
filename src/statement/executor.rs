@@ -193,10 +193,10 @@ mod tests {
     use super::*;
     use crate::{
         ApiContext, ClientSharedPartial, ErrorKind, QueryOptions, Statement,
+        auth::SessionAuth,
         config::{DEFAULT_QUERY_CANCEL_REQUEST_TIMEOUT, DEFAULT_QUERY_RESPONSE_TIMEOUT},
         rowset::BLOCKING_PARSE_CELLS,
         runtime::QueryRuntime,
-        session::SessionAuth,
         statement::{
             api::QueryApiClient,
             builder::into_statement_parts,
@@ -602,6 +602,79 @@ mod tests {
             err.snowflake_message(),
             Some("Your session has expired. Please login again.")
         );
+        assert_eq!(err.query_id(), Some("query-id"));
+    }
+
+    const SESSION_EXPIRED_RESPONSE: &str =
+        r#"{"code":"390112","message":"session expired","success":false,"data":null}"#;
+    const RENEWED_RESPONSE: &str = r#"{"success":true,"data":{"sessionToken":"renewed-token","masterToken":"renewed-master"}}"#;
+
+    fn renewable_session(base_url: Url) -> Session {
+        Session {
+            shared: ClientSharedPartial::new().with_base_url(base_url).build(),
+            auth: SessionAuth::for_test_with_master("test-token", "master-token"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_renews_session_expired_at_submit_and_returns_result() {
+        let session = renewable_session(spawn_scripted_server(vec![
+            ServerStep::Respond(SESSION_EXPIRED_RESPONSE),
+            ServerStep::Respond(RENEWED_RESPONSE),
+            ServerStep::Respond(FINAL_INLINE_RESPONSE),
+        ]));
+
+        let cursor = StatementExecutor::new(&session, default_settings(&session))
+            .execute(select_1_parts(), fresh_control())
+            .await
+            .unwrap();
+
+        assert_eq!(cursor.query_id(), "query-id");
+        // The session keeps the renewed token for later queries.
+        assert_eq!(
+            session.auth.snapshot().authorization(),
+            r#"Snowflake Token="renewed-token""#
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_renews_session_expired_while_polling_and_returns_result() {
+        let session = renewable_session(spawn_scripted_server(vec![
+            ServerStep::Respond(ASYNC_SUBMIT_RESPONSE),
+            ServerStep::Respond(SESSION_EXPIRED_RESPONSE),
+            ServerStep::Respond(RENEWED_RESPONSE),
+            ServerStep::Respond(FINAL_INLINE_RESPONSE),
+        ]));
+
+        let cursor = StatementExecutor::new(&session, default_settings(&session))
+            .execute(select_1_parts(), fresh_control())
+            .await
+            .unwrap();
+
+        assert_eq!(cursor.query_id(), "query-id");
+    }
+
+    #[tokio::test]
+    async fn execute_failed_renewal_is_session_expired_with_renewal_code() {
+        let session = renewable_session(spawn_scripted_server(vec![
+            ServerStep::Respond(ASYNC_SUBMIT_RESPONSE),
+            ServerStep::Respond(SESSION_EXPIRED_RESPONSE),
+            ServerStep::Respond(
+                r#"{"code":"390114","message":"master token expired","success":false}"#,
+            ),
+        ]));
+
+        let err = match StatementExecutor::new(&session, default_settings(&session))
+            .execute(select_1_parts(), fresh_control())
+            .await
+        {
+            Ok(_) => panic!("a rejected renewal must fail the query"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert_eq!(err.snowflake_code(), Some("390114"));
+        assert_eq!(err.snowflake_message(), Some("master token expired"));
         assert_eq!(err.query_id(), Some("query-id"));
     }
 

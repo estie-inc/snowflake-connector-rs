@@ -11,9 +11,10 @@ use uuid::Uuid;
 
 use crate::{
     Error, Result,
+    auth::{Exchange, RenewedSendError},
     error::{
         NetworkError, ProtocolError, ServerError, SessionExpiredError, TimeoutError,
-        classify_request_error,
+        classify_request_error, with_optional_query_id,
     },
     statement::wire::{
         request::WireAbortBody,
@@ -52,67 +53,90 @@ impl QueryApiClient {
             .map_err(|error| Error::other(format!("failed to serialize abort request: {error}")))?,
         );
         let mut backoff = AbortBackoff::new();
+        let mut attempt = 0;
 
-        for attempt in 0..MAX_ABORT_ATTEMPTS {
-            let remaining = clock.remaining();
-            if remaining.is_zero() {
-                return Err(TimeoutError::query_cancel().into());
-            }
+        loop {
+            // Renewing and resending happens inside one attempt, so it does not count against the abort attempt budget.
+            let sent = self
+                .auth
+                .send_with_renewal(
+                    &self.api,
+                    || clock.remaining(),
+                    |tokens| {
+                        let request = self
+                            .api
+                            .request(Method::POST, url.clone())
+                            .header(ACCEPT, "application/snowflake")
+                            .header(CONTENT_TYPE, "application/json")
+                            .header(AUTHORIZATION, tokens.authorization())
+                            .body(body.clone());
+                        async move {
+                            let remaining = clock.remaining();
+                            if remaining.is_zero() {
+                                return Err((false, TimeoutError::query_cancel().into()));
+                            }
+                            let (status, body) = match timeout(remaining, async {
+                                let response = request.send().await?;
+                                let status = response.status();
+                                let body = response.bytes().await?;
+                                Ok::<_, reqwest::Error>((status, body))
+                            })
+                            .await
+                            {
+                                Ok(Ok(pair)) => pair,
+                                Ok(Err(error)) => {
+                                    return Err((true, classify_request_error(error)));
+                                }
+                                Err(_elapsed) => {
+                                    return Err((true, TimeoutError::query_cancel().into()));
+                                }
+                            };
 
-            let request = self
-                .api
-                .request(Method::POST, url.clone())
-                .header(ACCEPT, "application/snowflake")
-                .header(CONTENT_TYPE, "application/json")
-                .header(
-                    AUTHORIZATION,
-                    format!(r#"Snowflake Token="{}""#, self.auth.session_token),
+                            if !status.is_success() {
+                                let retryable = is_retryable_abort_status(status.as_u16());
+                                let error = NetworkError::http_status(status.as_u16(), &body);
+                                return Err((retryable, Error::from(error)));
+                            }
+
+                            let response: WireAbortResponse =
+                                from_slice(&body).map_err(|error| {
+                                    (false, Error::from(ProtocolError::json_parse(error, &body)))
+                                })?;
+                            if response.code.as_deref() == Some(SESSION_EXPIRED) {
+                                Ok(Exchange::Expired(response))
+                            } else {
+                                Ok(Exchange::Done(response))
+                            }
+                        }
+                    },
                 )
-                .body(body.clone());
+                .await;
 
-            let attempt_result = match timeout(remaining, async {
-                let response = request.send().await?;
-                let status = response.status();
-                let body = response.bytes().await?;
-                Ok::<_, reqwest::Error>((status, body))
-            })
-            .await
-            {
-                Ok(Ok((status, body))) => {
-                    if !status.is_success() {
-                        let error = NetworkError::http_status(status.as_u16(), &body);
-                        if is_retryable_abort_status(status.as_u16()) {
-                            Err((true, Error::from(error)))
-                        } else {
-                            Err((false, Error::from(error)))
-                        }
-                    } else {
-                        let response: WireAbortResponse = from_slice(&body).map_err(|error| {
-                            Error::from(ProtocolError::json_parse(error, &body))
-                        })?;
-                        if response.code.as_deref() == Some(SESSION_EXPIRED) {
-                            Err((
-                                false,
-                                SessionExpiredError::new(response.code, response.message, None)
-                                    .into(),
-                            ))
-                        } else if !response.success {
-                            Err((
-                                false,
-                                ServerError::new(response.code, response.message, None).into(),
-                            ))
-                        } else {
-                            Ok(())
-                        }
-                    }
+            let attempt_result = match sent {
+                Ok(Exchange::Done(response)) if !response.success => Err((
+                    false,
+                    ServerError::new(response.code, response.message, None).into(),
+                )),
+                Ok(Exchange::Done(_)) => Ok(()),
+                Ok(Exchange::Expired(response)) => {
+                    return Err(
+                        SessionExpiredError::new(response.code, response.message, None).into(),
+                    );
                 }
-                Ok(Err(error)) => Err((true, classify_request_error(error))),
-                Err(_elapsed) => Err((true, TimeoutError::query_cancel().into())),
+                Err(RenewedSendError::Send(failure)) => Err(failure),
+                Err(RenewedSendError::Renew { response, error }) => {
+                    let observed = SessionExpiredError::new(response.code, response.message, None);
+                    return Err(with_optional_query_id(
+                        error.into_scoped(observed, TimeoutError::query_cancel()),
+                        None,
+                    ));
+                }
             };
 
+            attempt += 1;
             match attempt_result {
                 Ok(()) => return Ok(()),
-                Err((retryable, error)) if !retryable || attempt + 1 == MAX_ABORT_ATTEMPTS => {
+                Err((retryable, error)) if !retryable || attempt == MAX_ABORT_ATTEMPTS => {
                     return Err(error);
                 }
                 Err((_retryable, _error)) => {
@@ -124,8 +148,6 @@ impl QueryApiClient {
                 }
             }
         }
-
-        unreachable!("abort retry loop always returns within the attempt budget");
     }
 }
 
@@ -195,7 +217,10 @@ mod tests {
     use crate::{
         ErrorKind,
         api_context::DEFAULT_USER_AGENT,
-        statement::api::test_support::{respond_once, test_query_api},
+        statement::api::test_support::{
+            RENEWED_BODY, SESSION_EXPIRED_BODY, renewable_query_api, request_target, respond_once,
+            serve_script, test_query_api,
+        },
         test_support::http::{read_http_request, write_json_response},
     };
 
@@ -502,5 +527,130 @@ mod tests {
             server.await.unwrap(),
             "no request may be sent once the deadline is exhausted"
         );
+    }
+
+    #[tokio::test]
+    async fn abort_renews_expired_session_and_resends_same_request() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = serve_script(
+            listener,
+            vec![SESSION_EXPIRED_BODY, RENEWED_BODY, r#"{"success":true}"#],
+        );
+
+        let client = renewable_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        client
+            .abort_query("query-request-id", Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        let (requests, quiet) = server.await.unwrap();
+        assert!(quiet);
+        assert!(requests[0].contains(r#"authorization: Snowflake Token="test-token""#));
+        assert!(request_target(&requests[1]).starts_with("/session/token-request?"));
+        assert!(requests[2].contains(r#"authorization: Snowflake Token="renewed-token""#));
+        assert_eq!(request_target(&requests[0]), request_target(&requests[2]));
+        assert_eq!(
+            requests[0].split("\r\n\r\n").nth(1).unwrap(),
+            requests[2].split("\r\n\r\n").nth(1).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_renewal_does_not_consume_the_attempt_budget() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..MAX_ABORT_ATTEMPTS - 1 {
+                respond_once(&listener, 503, "unavailable").await;
+            }
+            respond_once(&listener, 200, SESSION_EXPIRED_BODY).await;
+            respond_once(&listener, 200, RENEWED_BODY).await;
+            respond_once(&listener, 200, r#"{"success":true}"#).await;
+        });
+
+        let client = renewable_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let clock = MockAbortClock::new(Duration::from_secs(60));
+        client
+            .abort_query_with_clock("query-request-id", &clock)
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn abort_renews_again_after_another_answer_was_observed() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            respond_once(&listener, 200, SESSION_EXPIRED_BODY).await;
+            respond_once(&listener, 200, RENEWED_BODY).await;
+            // A transient failure separates the two expiries, so the second one is renewed as well.
+            respond_once(&listener, 503, "unavailable").await;
+            respond_once(&listener, 200, SESSION_EXPIRED_BODY).await;
+            respond_once(
+                &listener,
+                200,
+                r#"{"success":true,"data":{"sessionToken":"renewed-again"}}"#,
+            )
+            .await;
+            respond_once(&listener, 200, r#"{"success":true}"#).await;
+        });
+
+        let client = renewable_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let clock = MockAbortClock::new(Duration::from_secs(60));
+        client
+            .abort_query_with_clock("query-request-id", &clock)
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn abort_still_expired_after_renewal_is_session_expired() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = serve_script(
+            listener,
+            vec![SESSION_EXPIRED_BODY, RENEWED_BODY, SESSION_EXPIRED_BODY],
+        );
+
+        let client = renewable_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let err = client
+            .abort_query("query-request-id", Duration::from_secs(5))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert_eq!(err.snowflake_code(), Some("390112"));
+        let (requests, quiet) = server.await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(quiet, "a second renewal must not be attempted");
+    }
+
+    #[tokio::test]
+    async fn abort_rejected_renewal_is_session_expired_with_renewal_code() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = serve_script(
+            listener,
+            vec![
+                SESSION_EXPIRED_BODY,
+                r#"{"success":false,"code":"390115","message":"master token invalid"}"#,
+            ],
+        );
+
+        let client = renewable_query_api(Url::parse(&format!("http://{addr}/")).unwrap());
+        let err = client
+            .abort_query("query-request-id", Duration::from_secs(5))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::SessionExpired);
+        assert_eq!(err.snowflake_code(), Some("390115"));
+        let (_requests, quiet) = server.await.unwrap();
+        assert!(quiet);
     }
 }
