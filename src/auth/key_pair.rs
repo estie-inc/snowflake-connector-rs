@@ -3,7 +3,7 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use pkcs8::{DecodePrivateKey as _, EncodePublicKey as _};
-use rsa::{Pkcs1v15Sign, RsaPrivateKey};
+use rsa::{Pkcs1v15Sign, PrivateKey};
 use serde::{Serialize, Serializer, ser::SerializeStruct as _};
 use sha2::{Digest as _, Sha256};
 
@@ -77,9 +77,9 @@ pub(super) fn generate_jwt_from_key_pair(
     timestamp: i64,
 ) -> std::result::Result<String, AuthError> {
     let private = if let Some(password) = password {
-        RsaPrivateKey::from_pkcs8_encrypted_pem(pem, password).map_err(AuthError::key_parse)?
+        PrivateKey::from_pkcs8_encrypted_pem(pem, password).map_err(AuthError::key_parse)?
     } else {
-        RsaPrivateKey::from_pkcs8_pem(pem).map_err(AuthError::key_parse)?
+        PrivateKey::from_pkcs8_pem(pem).map_err(AuthError::key_parse)?
     };
     let public = private.to_public_key();
     let der = public.to_public_key_der().map_err(AuthError::der_parse)?;
@@ -107,7 +107,7 @@ pub(super) fn generate_jwt_from_key_pair(
 
 fn encode_rs256_jwt(
     payload: &JwtPayload,
-    private: RsaPrivateKey,
+    private: PrivateKey,
 ) -> std::result::Result<String, AuthError> {
     let encoded_payload =
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(payload).map_err(AuthError::jwt_sign)?);

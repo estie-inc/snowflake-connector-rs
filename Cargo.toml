@@ -65,11 +65,13 @@ uuid = { version = "1.26", features = [
     "v4",
 ] }
 
-pkcs8 = { version = "0.10", optional = true, features = [
+pkcs8 = { version = "0.11", optional = true, features = [
     "encryption",
     "pem",
 ] }
-rsa = { version = "0.9", optional = true }
+rsa = { version = "0.10", optional = true, features = [
+    "pkcs1v15",
+] }
 sha2 = { version = "0.11", optional = true, default-features = false, features = [
     "alloc",
 ] }
